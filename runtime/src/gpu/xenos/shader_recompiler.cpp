@@ -413,7 +413,17 @@ void ShaderRecompiler::recompile(const TextureFetchInstruction& instr, bool bicu
         out += "Lod";
 
     print("({0}_Texture{1}DescriptorIndex, {0}_SamplerDescriptorIndex, ", constNamePtr, dimension);
+    // tx_coord_denorm: coordinates are in texels (Conviction's full-screen post copies use the
+    // param-gen pixel position). Normalize by the bound texture size.
+    // shortcut: host size, exact only at internal scale 1 (scaled resolve views are scale x guest).
+    const bool denorm = instr.texCoordDenorm && instr.opcode == FetchOpcode::TextureFetch &&
+        (instr.dimension == TextureDimension::Texture1D || instr.dimension == TextureDimension::Texture2D);
+    if (denorm)
+        out += "(";
     printSrcRegister(componentCount);
+    if (denorm)
+        print(" / Dims2D(g_Tex2D[{}_Texture2DDescriptorIndex]){})", constNamePtr,
+            instr.dimension == TextureDimension::Texture1D ? ".x" : "");
 
     switch (instr.dimension)
     {

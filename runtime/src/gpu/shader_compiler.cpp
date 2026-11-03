@@ -15,7 +15,7 @@
 #include <gpu/xenos/translate.h>
 
 // Bump when the translator or shader_common changes: old disk entries are then ignored.
-static constexpr uint32_t kTranslatorVersion = 24; // v24: sky nudge only for w > 0 (behind-camera vertices); v22: user clip planes (v21: far-only sky depth nudge in XenosViewport; v20: PRED_SET_INV 1 -> 0)
+static constexpr uint32_t kTranslatorVersion = 25; // v25: tx_coord_denorm fetches normalized; v24: sky nudge only for w > 0 (behind-camera vertices); v22: user clip planes (v21: far-only sky depth nudge in XenosViewport; v20: PRED_SET_INV 1 -> 0)
 static constexpr uint32_t kCacheMagic = 0x53444353; // "SCDS"
 
 struct CacheHeader
