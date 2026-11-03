@@ -25,12 +25,12 @@
 - CP drops no predicated packets (`SCDA_TRACE_PRED=1`: 0). 26 patch ops reviewed: update forms match upstream, bdzf (627 real BO=0001y encodings) correct.
 - Xenia: screenshot via Alt+D,T works (screenshots/ in _run/xenia), pre-START black too. Desktop capture returns black. Gemini bridge 503 on first try in fresh/.
 - Xenia canary (copied to _run/xenia) sees the same shader set (22 VS/26 PS) in 60 s: likely same stall. Screen capture of its window returns black.
-- Bink red is a REAL bug: Xenia shows the Clancy logo silhouette white; ours dark red (BT.601 consts + PS verified -> plane data/upload).
+- Bink: Xenia shows Clancy logo white; ours dark red Ubisoft logo frames 25-75, Clancy logo not seen. Upload matches guest RAM (SCDA_TEXHASH_COMPARE 0 misses); frame-50 planes Y<=48, Cr<=181 (guest decode output). `SCDA_DUMP_TEX_AT=<present>` dumps all textures of one present. Low priority.
 - Visibility: renderer l3d uses cell/portal (VCell/VGraph/VPlane, l3d.CellVisibility/ZoneVisibility); 18 VisibilityPass boxes (draws 61-78, VS c188ee) all visible, still no mesh follows. Render fns cluster 0x82ED0000-0x82F10000.
 ## Known outer-repo fixes NOT ported (cherry-pick from outer when the symptom shows)
 - 8cea794: k_16 / k_16*_EXPAND texture formats. b5c9e94..fd81c4d: renderer/CP debug traces (SCDA_TRACE_*, SCDA_DUMP_RAM).
 - Open outer bug: menu shows sky only, no world/UI (occlusion, camera, timebase ruled out). Bink logo red only.
 ## Next
-1. Find the consumer of the menu RT 0C4D5000 (3D_MainMenu_1024 -> projected plane material): why the 18 visible objects never reach the main pass. Xenia keyboard: START=X, A=';' (--keyboard_mode=1); Xenia flow after logos differs (stays black), weak reference.
+1. Menu RT texture header in RAM at ~0x4014F78C (88000002 AC4D5086 007FE3FF); RT wrappers vt 8206CDA0 at 0x49E97550+ (stride 0x78), no pointer refs (bound by name/CRC?). `SCDA_SCAN=<val>/<mask>` (watchdog) scans guest RAM. Find the consumer of the menu RT 0C4D5000 (3D_MainMenu_1024 -> projected plane material): why the 18 visible objects never reach the main pass. Xenia keyboard: START=X, A=';' (--keyboard_mode=1); Xenia flow after logos differs (stays black), weak reference.
 2. If Xenia shows world/text: audit 26 untested XenonRecomp ops by frequency (update forms, bdzf/bdnzt, addme/subfze, lhau).
 2. Review the 3 HEURISTIC jump tables and the .text tail decode failures.

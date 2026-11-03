@@ -1656,10 +1656,17 @@ void D3D11Renderer::BindRegisterState(const RegisterFile& regs, uint32_t texSlot
                 // SCDA_DUMP_TEXTURES=<dir>: each converted texture once, as <physical>_<format>_<w>x<h>.bmp.
                 static const char* dumpDir = getenv("SCDA_DUMP_TEXTURES");
                 static std::unordered_set<uint64_t> dumped;
-                if (dumpDir && dumped.insert(key).second && dumped.size() < 2000)
+                // SCDA_DUMP_TEX_AT=<present>: also every texture converted in that present (name gets _p<n>).
+                static const long long dumpAt = getenv("SCDA_DUMP_TEX_AT") ? atoll(getenv("SCDA_DUMP_TEX_AT")) : -1;
+                const bool dumpNow = dumpAt >= 0 && (long long)m_presented == dumpAt;
+                if (dumpDir && ((dumped.insert(key).second && dumped.size() < 2000) || dumpNow))
                 {
                     char name[96];
-                    snprintf(name, sizeof(name), "\\%08X_%u_%ux%u.bmp", t.physical, t.format, t.width, t.height);
+                    if (dumpNow)
+                        snprintf(name, sizeof(name), "\\%08X_%u_%ux%u_p%llu.bmp", t.physical, t.format, t.width, t.height,
+                            (unsigned long long)m_presented);
+                    else
+                        snprintf(name, sizeof(name), "\\%08X_%u_%ux%u.bmp", t.physical, t.format, t.width, t.height);
                     WriteBmp(dumpDir + std::string(name), texels, t.width, t.height);
                     if ((t.offsetX | t.offsetY) && !isFloat) // packed-tail base: also as read from (0, 0)
                     {

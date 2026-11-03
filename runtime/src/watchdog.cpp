@@ -102,6 +102,40 @@ std::string WatchdogReport(const uint8_t* guestBase)
         out += buf;
         out += "\n";
     }
+    // SCDA_SCAN=<value hex>/<mask hex>: guest dwords (big-endian) with (v & mask) == value, in
+    // committed guest memory below 0xE0000000; first 128 hits with the 8 dwords around each.
+    if (const char* s = getenv("SCDA_SCAN"))
+    {
+        const uint32_t want = strtoul(s, nullptr, 16), mask = strchr(s, '/') ? strtoul(strchr(s, '/') + 1, nullptr, 16) : ~0u;
+        int hits = 0;
+        for (uint64_t a = 0x10000; a < 0xE0000000ull && hits < 128;)
+        {
+            MEMORY_BASIC_INFORMATION mi{};
+            if (!VirtualQuery(guestBase + a, &mi, sizeof(mi)))
+                break;
+            const uint64_t end = (uint64_t)((uint8_t*)mi.BaseAddress + mi.RegionSize - guestBase);
+            if (mi.State == MEM_COMMIT && !(mi.Protect & (PAGE_NOACCESS | PAGE_GUARD)))
+                for (uint64_t p = a & ~3ull; p + 4 <= end && hits < 128; p += 4)
+                {
+                    const uint32_t v = _byteswap_ulong(*(const uint32_t*)(guestBase + p));
+                    if ((v & mask) != want)
+                        continue;
+                    hits++;
+                    snprintf(buf, sizeof(buf), "[watchdog] scan hit 0x%08X = 0x%08X ctx", uint32_t(p), v);
+                    out += buf;
+                    for (int k = -4; k < 4; k++)
+                    {
+                        const uint64_t q = p + k * 4;
+                        snprintf(buf, sizeof(buf), " %08X", q >= a && q + 4 <= end ? _byteswap_ulong(*(const uint32_t*)(guestBase + q)) : 0);
+                        out += buf;
+                    }
+                    out += "\n";
+                }
+            a = end;
+        }
+        snprintf(buf, sizeof(buf), "[watchdog] scan %08X/%08X: %d hits\n", want, mask, hits);
+        out += buf;
+    }
     // SCDA_PEEK=<addr>[,<addr>...]: guest dwords to show with each dump (and the dword each points at).
     for (const char* p = getenv("SCDA_PEEK"); p && *p;)
     {
