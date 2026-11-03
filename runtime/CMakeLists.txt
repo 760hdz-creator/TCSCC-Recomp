@@ -109,6 +109,7 @@ add_executable(scda
     src/fs.cpp
     src/kernel.cpp
     src/gfx_log.cpp
+    src/l3d_trace.cpp
     src/imports_stubs.cpp
     scda.rc)
 # SCDA guest hooks (menu_hooks, travel_trace, audio_trace, wait_trace, xma_xaudio) are not built:

@@ -125,6 +125,7 @@ static uint32_t g_watchAddr[4];
 static int g_watchCount;
 static std::atomic<int> g_watchHits;
 static int g_watchMax = 40;
+static std::atomic<int> g_watchGen;
 
 static LONG CALLBACK WatchHandler(EXCEPTION_POINTERS* e)
 {
@@ -168,8 +169,14 @@ static LONG CALLBACK WatchHandler(EXCEPTION_POINTERS* e)
 static void WatchThread()
 {
     std::set<DWORD> armed;
+    int gen = g_watchGen.load();
     for (;;)
     {
+        if (g_watchGen.load() != gen)
+        {
+            gen = g_watchGen.load();
+            armed.clear(); // WatchAdd: re-arm every thread with the new address list
+        }
         for (DWORD id : OtherThreads())
         {
             if (armed.count(id))
@@ -199,6 +206,25 @@ static void WatchThread()
         }
         Sleep(200);
     }
+}
+
+// WatchAdd(addr): arm one more watchpoint at run time (heap addresses known only after a hook).
+void WatchAdd(uint32_t addr, int maxHits)
+{
+    static std::once_flag start;
+    if (g_watchCount >= 4)
+        return;
+    g_watchAddr[g_watchCount++] = addr & ~3u;
+    g_watchMax = maxHits;
+    g_watchHits = 0; // the hit cap is shared: restart it for the new address
+    RuntimeLog("[watch] armed %08X\n", addr & ~3u);
+    g_watchGen++;
+    std::call_once(start, [] {
+        if (getenv("SCDA_WATCH_WRITE"))
+            return; // WatchStart already runs the handler and thread
+        AddVectoredExceptionHandler(1, WatchHandler);
+        std::thread(WatchThread).detach();
+    });
 }
 
 void WatchStart()

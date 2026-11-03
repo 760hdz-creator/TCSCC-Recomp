@@ -1,0 +1,25 @@
+# l3d renderer visibility (Conviction, verified 2026-11-03)
+
+Symptom: main menu showed only the night sky; world, characters and projected menu planes missing.
+
+## Chain (guest addresses)
+- Lighting pass `sub_82F0F078(P)` draws buckets via `sub_82F0F018(P, i, name)`; bucket i = { items @P+16+12i, count @P+20+12i } ("Opaque", "OpaqueEmissive", "OpaqueStaticDecals", "Mirrors", ..., "Transparent").
+- Buckets filled per pass by `sub_82F0E258` from the visible list of view R[24092]: `*(R+16) + 12*view` { items @+152, count @+156 } (R = *P = renderer, ctor `sub_82EF3CA8`).
+- Visible list filled by `sub_82EF8CA8(R, V)` from candidates { prim, u64, mask @+12 } (16 B, items @V+44, count @V+48), kept when prim byte +236 != 0.
+- Candidates come from the visibility driver `sub_82EF9990(V)`:
+  - always-visible skybox list via `sub_82EF8B18` (only source that worked);
+  - world objects: lock (`sub_82511988`, lr 0x82EF99F0) a GPU-written buffer, byte i at ptr + V[184] + i, V[188] objects (354 in the menu). Bits 0+1 = candidate, 2-3 / 4 extra lists, 5-7 view/light mask.
+- The bytes are written by the GPU: VisibilityPass draws (from `sub_82EF7E90`, stream constant built by `sub_82EF5CA8`: eA = 0x40000000 | addr>>2, format k_8) with PS `f374a14f971cb1bd`. The PS does 16 depth taps on a downsampled depth texture (512x256) and MEMEXPORTs the byte (r32 = eA, r33 = eM0). Draws 57-59 in the menu frame.
+- The shader translator has no memexport: r32/r33 are plain temps, so the buffer stays 0.
+
+## Workaround (l3d_trace.cpp)
+After the lock, every object byte = 0xFF (no occlusion culling). Menu: 197 -> 1850 draws, full scene. `SCDA_VISBUF_FILL=<hex>|off`.
+Real fix: PS memexport in the translator (UAV write of eM0 to eA address, format from the stream constant) plus a write-back to guest RAM before the CPU lock.
+
+## Dead ends
+- `sub_82EFD598` (lists "DrawVisibleOpaque"/"DrawVisibleTransparent") is the SONAR pass. Its gate byte R+24456 = S+432 is the sonar-goggle flag (`sub_82D8BF68`, set by the "Gadget_SonarGoogle" handlers `sub_82BC7000` / cleared `sub_82BC6BF0`). Forcing it gives a white screen.
+- Draw 60 (VS e66e371ea23144fd, 512 vertices, mask 0) has no memory alloc: dummy draw, not the writer.
+- No CPU writer of the buffer (watched C/A/E aliases), no PM4 packet writer (unhandled only 0x3B, 0x46, 0x48).
+
+## Tools
+`SCDA_TRACE_L3D=<n>` (bucket counts), `SCDA_TRACE_L3D_ITEMS=<n>`, `SCDA_SKIP_L3D_BUCKET=<hex mask>`, `SCDA_WATCH_L3D=1|2` (hardware write watch on visible-list / candidate count), `SCDA_TRACE_VISBUF=<n>`, `SCDA_DUMP_SHADERS=<dir>` (raw ucode). Shader translate failures go to stdout, not scda.log.
