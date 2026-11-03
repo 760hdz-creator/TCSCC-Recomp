@@ -29,6 +29,12 @@ Real fix: PS memexport in the translator (UAV write of eM0 to eA address, format
 - In the menu frame the only write to depth 1D4 before the resolve is the clear quad (draw 23, z always): level 0 is all 1.0 (far), so Hi-Z culls nothing there; culling is VS/PS logic.
 - Fill off now: intro street correct at 12 ms/frame (FF 19 ms), mission ~1130 candidates. Still wrong: big near objects (ground, table, Sam) culled at some frames, lighting darker, one overexposed frame. Next suspects: VS b3b454 bounding-box loop (loop constant i15, corners behind the camera), draws 2-3 overwriting draw 1 bytes.
 
+## GPU culling default (166b3a2)
+- One buffer, 3 visibility draws per frame, c1.w = 2^23 + total elements: draw 1 = main list (slots 0-353 in the menu, read by sub_82EF9990 at +V[184] x V[188]), draws 2-3 = light list (slots 354+, read by sub_82EF9100 at +X[192] x X[196] with its own lock, lr 0x82EF914C; bits 0+1 -> lights onto X->+80 / +92).
+- Bug: point GS clamped the 1 px points to PA_SU_POINT_MINMAX min (2 px), so each point wrote its neighbours' slots. MINMAX only applies to a VS-exported size.
+- Default now: GPU bytes for the main list. The light-list bytes are cleared at their lock (= what FF gave). With the GPU light bytes the menu Sams and the mission go near black; same without depth resolves, so not the shadow maps. Open: what those lights break (SCDA_VISBUF_LIGHTS=gpu).
+- Speed: draws ~2.7x fewer than FF (mission ~3.5k vs ~9.5k), but gameplay still ~85 ms/frame at ~9 us/draw: profile next.
+
 ## Dead ends
 - `sub_82EFD598` (lists "DrawVisibleOpaque"/"DrawVisibleTransparent") is the SONAR pass. Its gate byte R+24456 = S+432 is the sonar-goggle flag (`sub_82D8BF68`, set by the "Gadget_SonarGoogle" handlers `sub_82BC7000` / cleared `sub_82BC6BF0`). Forcing it gives a white screen.
 - Draw 60 (VS e66e371ea23144fd, 512 vertices, mask 0) has no memory alloc: dummy draw, not the writer.

@@ -14,7 +14,7 @@
 - XamUserGetSigninInfo (0x28: xuid, state @+0xC, name @+0x18) + XamUserGetName ("Player"): were stubs -> crash after START.
 - 2026-11-03 flat-colour world fixed (d176044): translator ignored tx_coord_denorm; full-screen post copies (VS a2b4ed14 has no texcoord, PS uses param-gen pixel pos) sampled one clamped texel. Now coord / Dims2D (exact at scale 1 only). Translator v25.
 - 2026-11-03 mission-load crash fixed: HUD_Saving wrapper borrowed the loading screen's movie (registry lookup, no refcount), teardown freed it; dtor hook clears the wrapper's +4 (save icon skipped). `docs/hud_saving_uaf.md`.
-- 2026-11-03 MAIN MENU RENDERS (3D room, both Sams, menu planes; 197 -> 1850 draws). Cause: world visibility = GPU PS MEMEXPORT (PS f374a14f971cb1bd writes 1 byte/object, Hi-Z test) into a buffer the CPU reads (sub_82EF9990); translator has no memexport -> bytes 0 -> only skybox. Workaround `l3d_trace.cpp`: bytes = FF after lock (no occlusion culling; `SCDA_VISBUF_FILL=<hex>|off`). Details `docs/l3d_visibility.md`.
+- 2026-11-03 MAIN MENU RENDERS (3D room, both Sams, menu planes; 197 -> 1850 draws). Cause: world visibility = GPU PS MEMEXPORT (PS f374a14f971cb1bd writes 1 byte/object, Hi-Z test) into a buffer the CPU reads (sub_82EF9990); translator has no memexport -> bytes 0 -> only skybox. Now real: PS memexport + Hi-Z depth resolves (see Next 1); `SCDA_VISBUF_FILL=FF` = old no-culling workaround. Details `docs/l3d_visibility.md`.
 ## Current behaviour
 - ~29 presents/s, no fatal in menus. Pre-START screen black (Xenia too). Input script: `SCDA_AUTOPRESS='240:START,400:A:20,500:A:20,600:A:20'` (A needs `:20` hold).
 - Scaleform UI works: "Corrupted Data - Player" dialog, autosave notice. GFx OpenFile (sub_83377E98) loads `ingame\3D_MainMenu_1024.swf` etc.
@@ -33,7 +33,7 @@
 ## Xenia reference (`_run\xenia`, copy of SCDA build)
 - Screenshot: focus window, Alt+D then T -> `screenshots\5553080B\`. Keyboard (`--keyboard_mode=1`): START=X, A=';'. After logos stays black even with START: weak reference.
 ## Next
-1. Speed: FF fill ~47 ms/frame. PS memexport (6b649b9) + Hi-Z depth resolves (aa212dc) work; `SCDA_VISBUF_FILL=off` renders the intro street at 12 ms but culls big near objects (ground/table/Sam) and lights darker. Next: VS b3b454 bbox loop (i15, near plane), draw 2-3 overlap. `docs/l3d_visibility.md`.
+1. Speed: GPU culling is default (166b3a2; ~2.7x fewer draws) but gameplay ~85 ms/frame at ~9 us/draw: profile (`SCDA_PROFILE`), check the 3 blocking memexport Maps. Open: GPU light-list bytes darken the scene (cleared for now, `SCDA_VISBUF_LIGHTS=gpu`). `docs/l3d_visibility.md`.
 2. Play past the opening: drive input further into 01_Market, look for the next crash / missing effect.
 3. tx_coord_denorm at internal scale > 1: pass guest texture size instead of host Dims2D.
 4. Save icon: reload the HUD_Saving movie instead of clearing it. Corrupted save check; Bink colour; review HEURISTIC jump tables.
