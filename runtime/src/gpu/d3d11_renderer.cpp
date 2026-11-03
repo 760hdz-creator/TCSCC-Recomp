@@ -270,6 +270,39 @@ void main(uint3 id : SV_DispatchThreadID)
 }
 )HLSL";
 
+// Depth-source resolves (Hi-Z, ResolveDepthPyramid): mode 0 copies guest pixel rect.xy + p of the
+// depth target (block = host texels per guest pixel, max of them); mode 1 reduces the previous level
+// (size rect.zw) 2x2 by max (farthest depth: conservative occluder depth).
+static const char kDepthPyramidCs[] = R"HLSL(
+Texture2D<float> src : register(t0);
+RWTexture2D<float> dst : register(u0);
+cbuffer P : register(b0) { int4 rect; int2 block; int mode; int pad; };
+[numthreads(8, 8, 1)]
+void main(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    dst.GetDimensions(w, h);
+    const int2 p = int2(id.xy);
+    if (p.x >= int(w) || p.y >= int(h))
+        return;
+    float m = 0.0;
+    if (mode == 0)
+    {
+        const int2 b = (rect.xy + p) * block;
+        for (int y = 0; y < block.y; y++)
+            for (int x = 0; x < block.x; x++)
+                m = max(m, src[b + int2(x, y)]);
+    }
+    else
+    {
+        for (int y = 0; y < 2; y++)
+            for (int x = 0; x < 2; x++)
+                m = max(m, src[min(p * 2 + int2(x, y), rect.zw - 1)]);
+    }
+    dst[p] = m;
+}
+)HLSL";
+
 // Rect lists: 3 corners per rectangle. The corner opposite the longest edge is the right angle;
 // the 4th corner (and its interpolators) is the other two minus it. Layout = translated VS output.
 static const char kRectListGs[] = R"HLSL(
@@ -391,6 +424,19 @@ struct DrawResources
     ComPtr<ID3D11GeometryShader> pointListGs;
     ComPtr<ID3D11PixelShader> zeroPs; // aliased depth-only clears: returns 1 (x blend factor), never kills
     ComPtr<ID3D11ComputeShader> saturateCs;
+    ComPtr<ID3D11ComputeShader> depthPyramidCs; // kDepthPyramidCs (cbuffer = saturateRect)
+    // Depth-source resolves by destination base: R32_FLOAT copy of the depth rect + max mip chain,
+    // bound for k_24_8 fetches of that base (Conviction's l3d Hi-Z: PS f374a14f971cb1bd).
+    struct DepthPyramid
+    {
+        ComPtr<ID3D11Texture2D> texture;
+        ComPtr<ID3D11ShaderResourceView> srv;
+        std::vector<ComPtr<ID3D11ShaderResourceView>> mipSrv;
+        std::vector<ComPtr<ID3D11UnorderedAccessView>> mipUav;
+        uint32_t width = 0, height = 0;
+    };
+    std::unordered_map<uint32_t, DepthPyramid> depthPyramids;
+    std::unordered_map<uint32_t, ComPtr<ID3D11ShaderResourceView>> depthSrvs; // by depth key: depth as R32
     ComPtr<ID3D11Buffer> saturateRect;
     ComPtr<ID3D11RasterizerState> rasterizer;
     ComPtr<ID3D11SamplerState> sampler;
@@ -641,6 +687,9 @@ bool D3D11Renderer::CreateDrawResources()
     if (cs.empty() || FAILED(m_device->CreateComputeShader(cs.data(), cs.size(), nullptr, &r->saturateCs)) ||
         FAILED(m_device->CreateBuffer(&rb, nullptr, &r->saturateRect)))
         printf("[d3d11] saturate shader: %s\n", error.c_str()); // resolves then copy unclamped
+    auto zcs = CompileHlsl(kDepthPyramidCs, "cs_5_0", &error);
+    if (zcs.empty() || FAILED(m_device->CreateComputeShader(zcs.data(), zcs.size(), nullptr, &r->depthPyramidCs)))
+        RuntimeLog("[d3d11] depth pyramid shader: %s\n", error.c_str()); // depth resolves then copy nothing
 
     D3D11_RASTERIZER_DESC rd{};
     rd.FillMode = D3D11_FILL_SOLID;
@@ -1009,13 +1058,22 @@ static ID3D11DepthStencilView* DepthTargetFor(ID3D11Device* device, ID3D11Device
     td.Width = EdramKeySamplePitch(key) * TargetScale(r, EdramKeySamplePitch(key));
     td.Height = EdramSampleRows(EdramKeySamplePitch(key)) * TargetScale(r, EdramKeySamplePitch(key));
     td.MipLevels = td.ArraySize = 1;
-    td.Format = DXGI_FORMAT_D32_FLOAT_S8X24_UINT;
+    // Typeless so depth-source resolves can read it (depthSrvs: depth as R32_FLOAT).
+    td.Format = DXGI_FORMAT_R32G8X24_TYPELESS;
     td.SampleDesc.Count = 1;
-    td.BindFlags = D3D11_BIND_DEPTH_STENCIL;
+    td.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE;
     ComPtr<ID3D11Texture2D> tex;
     ComPtr<ID3D11DepthStencilView> dsv;
-    if (FAILED(device->CreateTexture2D(&td, nullptr, &tex)) || FAILED(device->CreateDepthStencilView(tex.Get(), nullptr, &dsv)))
+    D3D11_DEPTH_STENCIL_VIEW_DESC dd{};
+    dd.Format = DXGI_FORMAT_D32_FLOAT_S8X24_UINT;
+    dd.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2D;
+    D3D11_SHADER_RESOURCE_VIEW_DESC vd{};
+    vd.Format = DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS;
+    vd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+    vd.Texture2D.MipLevels = 1;
+    if (FAILED(device->CreateTexture2D(&td, nullptr, &tex)) || FAILED(device->CreateDepthStencilView(tex.Get(), &dd, &dsv)))
         return nullptr;
+    device->CreateShaderResourceView(tex.Get(), &vd, &r.depthSrvs[key]);
     context->ClearDepthStencilView(dsv.Get(), D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 0.0f, 0);
     return (r.depthTargets[key] = dsv).Get();
 }
@@ -1508,6 +1566,15 @@ void D3D11Renderer::BindRegisterState(const RegisterFile& regs, uint32_t texSlot
                 t.format, t.width, t.height, t.depth, t.dimension, t.stacked, t.tiled, hit != r.resolved.end() ? hit->second.width : 0, hit != r.resolved.end() ? hit->second.height : 0,
                 hit != r.resolved.end() ? hit->second.destFormat : 0);
         }
+        // A depth-source resolve's destination fetched as k_24_8 / k_24_8_FLOAT: the depth pyramid
+        // (ExecuteResolve). Same address can also hold a colour resolve of another format (the menu
+        // frame reuses 00532000 for the HDR scene), so this goes first and by format.
+        if (t.format == 22 || t.format == 23)
+            if (auto z = r.depthPyramids.find(t.physical & 0x1FFFF000); z != r.depthPyramids.end() && z->second.srv)
+            {
+                srvs[slot] = z->second.srv.Get();
+                continue;
+            }
         // A resolve target: guest memory there does not hold the image, the host copy does.
         // shortcut: matched by address and size only; entries are never invalidated.
         // SCDA_TRACE_STALE 19-map census (2026-10-29): no copy fetched after a CPU write in a later frame.
@@ -2927,6 +2994,131 @@ void D3D11Renderer::ExecuteResolve(const Resolve& res)
         RuntimeLog("[rtrace] resolve @draw %u ctrl %08X src %08X surf %08X -> dest %08X fmt %u %ux%u rect %d %d %d %d info %08X\n", res.drawIndex, res.copyControl,
             res.colorInfo, res.surfaceInfo, res.destBase, (res.destInfo >> 7) & 0x3F, ResolveWidth(res), ResolveHeight(res), res.rect[0], res.rect[1],
             res.rect[2], res.rect[3], res.destInfo);
+    // Depth-source resolves: an R32_FLOAT copy of the depth rect plus a max-depth mip chain, bound
+    // for k_24_8 fetches of the destination (Conviction's l3d Hi-Z pyramid at draw 25 of the menu
+    // frame; the visibility PS f374a14f971cb1bd samples it with register LOD).
+    // shortcut: the game's own pyramid draws (PS 024c1fe3, colour resolves per level) are not used;
+    // the chain is built here. SCDA_NO_DEPTH_RESOLVE=1: old (copies nothing).
+    static const bool noDepthResolve = getenv("SCDA_NO_DEPTH_RESOLVE") != nullptr;
+    if (ResolveCopies(res) && ResolveFromDepth(res) && !noDepthResolve && r.depthPyramidCs)
+    {
+        const uint32_t depthKey = EdramDepthKey(res.depthInfo, res.surfaceInfo);
+        DepthTargetFor(m_device, m_context, r, depthKey);
+        auto zsrv = r.depthSrvs.find(depthKey);
+        const uint32_t w = ResolveWidth(res), h = ResolveHeight(res), base = res.destBase & 0x1FFFF000;
+        if (zsrv != r.depthSrvs.end() && zsrv->second && w && h && w <= 8192 && h <= 8192)
+        {
+            auto& z = r.depthPyramids[base];
+            if (z.width != w || z.height != h || !z.texture)
+            {
+                z = {};
+                D3D11_TEXTURE2D_DESC td{};
+                td.Width = w;
+                td.Height = h;
+                td.MipLevels = 0; // full chain
+                td.ArraySize = 1;
+                td.Format = DXGI_FORMAT_R32_FLOAT;
+                td.SampleDesc.Count = 1;
+                td.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+                if (SUCCEEDED(m_device->CreateTexture2D(&td, nullptr, &z.texture)))
+                {
+                    z.texture->GetDesc(&td);
+                    m_device->CreateShaderResourceView(z.texture.Get(), nullptr, &z.srv);
+                    for (UINT m = 0; m < td.MipLevels; m++)
+                    {
+                        D3D11_SHADER_RESOURCE_VIEW_DESC vd{};
+                        vd.Format = td.Format;
+                        vd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+                        vd.Texture2D.MostDetailedMip = m;
+                        vd.Texture2D.MipLevels = 1;
+                        D3D11_UNORDERED_ACCESS_VIEW_DESC ud{};
+                        ud.Format = td.Format;
+                        ud.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D;
+                        ud.Texture2D.MipSlice = m;
+                        z.mipSrv.emplace_back();
+                        z.mipUav.emplace_back();
+                        m_device->CreateShaderResourceView(z.texture.Get(), &vd, &z.mipSrv.back());
+                        m_device->CreateUnorderedAccessView(z.texture.Get(), &ud, &z.mipUav.back());
+                    }
+                    z.width = w;
+                    z.height = h;
+                }
+            }
+            if (z.srv && !z.mipUav.empty())
+            {
+                // The depth target is bound for draws: unbind it before reading it.
+                m_context->OMSetRenderTargets(0, nullptr, nullptr);
+                r.bound = false;
+                r.srvShadow = false;
+                const SurfaceLayout layout = EdramSurfaceLayout(res.surfaceInfo);
+                const uint32_t scale = TargetScale(r, layout.samplePitch);
+                m_context->CSSetShader(r.depthPyramidCs.Get(), nullptr, 0);
+                m_context->CSSetConstantBuffers(0, 1, r.saturateRect.GetAddressOf());
+                uint32_t lw = w, lh = h;
+                for (size_t m = 0; m < z.mipUav.size(); m++)
+                {
+                    // rect.xy = source origin (level 0), rect.zw = previous level's size (levels 1+).
+                    const int32_t q[8] = { res.hasRect ? std::max(res.rect[0], 0) : 0, res.hasRect ? std::max(res.rect[1], 0) : 0,
+                        m ? int32_t(std::max(w >> (m - 1), 1u)) : 0, m ? int32_t(std::max(h >> (m - 1), 1u)) : 0,
+                        int32_t(scale * layout.samplesX), int32_t(scale * layout.samplesY), m ? 1 : 0, 0 };
+                    m_context->UpdateSubresource(r.saturateRect.Get(), 0, nullptr, q, 0, 0);
+                    ID3D11ShaderResourceView* srv = m ? z.mipSrv[m - 1].Get() : zsrv->second.Get();
+                    ID3D11UnorderedAccessView* uav = z.mipUav[m].Get();
+                    m_context->CSSetShaderResources(0, 1, &srv);
+                    m_context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
+                    m_context->Dispatch((lw + 7) / 8, (lh + 7) / 8, 1);
+                    srv = nullptr;
+                    uav = nullptr;
+                    m_context->CSSetShaderResources(0, 1, &srv);
+                    m_context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
+                    lw = std::max(lw / 2, 1u);
+                    lh = std::max(lh / 2, 1u);
+                }
+                static uint32_t logged;
+                if (logged++ < 3)
+                    RuntimeLog("[resolve] depth pyramid %08X %ux%u (%zu levels) from depth key %08X\n", base, w, h, z.mipUav.size(), depthKey);
+                // SCDA_TRACE_HIZ=<n>: level 0 statistics of the first n pyramids built.
+                static const long traceHiz = getenv("SCDA_TRACE_HIZ") ? atol(getenv("SCDA_TRACE_HIZ")) : 0;
+                static long traced;
+                if (traced < traceHiz)
+                {
+                    traced++;
+                    D3D11_TEXTURE2D_DESC sd{};
+                    sd.Width = w;
+                    sd.Height = h;
+                    sd.MipLevels = sd.ArraySize = 1;
+                    sd.Format = DXGI_FORMAT_R32_FLOAT;
+                    sd.SampleDesc.Count = 1;
+                    sd.Usage = D3D11_USAGE_STAGING;
+                    sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+                    ComPtr<ID3D11Texture2D> st;
+                    D3D11_MAPPED_SUBRESOURCE map;
+                    if (SUCCEEDED(m_device->CreateTexture2D(&sd, nullptr, &st)))
+                    {
+                        m_context->CopySubresourceRegion(st.Get(), 0, 0, 0, 0, z.texture.Get(), 0, nullptr);
+                        if (SUCCEEDED(m_context->Map(st.Get(), 0, D3D11_MAP_READ, 0, &map)))
+                        {
+                            float lo = 1e30f, hi = -1e30f;
+                            uint32_t zeros = 0, ones = 0;
+                            for (uint32_t y = 0; y < h; y++)
+                                for (uint32_t x = 0; x < w; x++)
+                                {
+                                    const float v = ((const float*)((const uint8_t*)map.pData + y * map.RowPitch))[x];
+                                    lo = std::min(lo, v);
+                                    hi = std::max(hi, v);
+                                    zeros += v == 0.0f;
+                                    ones += v >= 1.0f;
+                                }
+                            m_context->Unmap(st.Get(), 0);
+                            RuntimeLog("[hiz] %08X %ux%u rect %d,%d block %ux%u: min %g max %g zeros %u ones %u of %u\n", base, w, h,
+                                res.hasRect ? res.rect[0] : -1, res.hasRect ? res.rect[1] : -1, scale * layout.samplesX, scale * layout.samplesY,
+                                lo, hi, zeros, ones, w * h);
+                        }
+                    }
+                }
+            }
+        }
+    }
     // shortcut: depth-source resolves copy nothing (the destination keeps its last copy, if any).
     if (ResolveCopies(res) && source && !ResolveFromDepth(res))
     {
@@ -3594,7 +3786,7 @@ void D3D11Renderer::Present(const Frame& frame)
 static uint32_t TexelToRgba8(DXGI_FORMAT format, const uint8_t* p)
 {
     float c[4] = { 0, 0, 0, 1 };
-    if (format == DXGI_FORMAT_D32_FLOAT_S8X24_UINT) // depth dumps: unorm24 depth in RGB (R high), stencil in A
+    if (format == DXGI_FORMAT_D32_FLOAT_S8X24_UINT || format == DXGI_FORMAT_R32G8X24_TYPELESS) // depth dumps: unorm24 depth in RGB (R high), stencil in A
     {
         float z;
         memcpy(&z, p, 4);
@@ -3654,7 +3846,7 @@ static std::vector<uint32_t> ReadTarget(ID3D11Device* device, ID3D11DeviceContex
     if (FAILED(context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &m)))
         return out;
     const uint32_t bpp = td.Format == DXGI_FORMAT_R16G16B16A16_FLOAT || td.Format == DXGI_FORMAT_R32G32_FLOAT ||
-        td.Format == DXGI_FORMAT_D32_FLOAT_S8X24_UINT ? 8 : 4;
+        td.Format == DXGI_FORMAT_D32_FLOAT_S8X24_UINT || td.Format == DXGI_FORMAT_R32G8X24_TYPELESS ? 8 : 4;
     out.resize(size_t(td.Width) * td.Height);
     // SCDA_RT_STATS=1: log the FP16 maxima (rgb, alpha) of each target read back (dumps squash to 8-bit).
     static const bool stats = getenv("SCDA_RT_STATS") != nullptr;
