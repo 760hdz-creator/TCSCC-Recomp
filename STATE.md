@@ -33,7 +33,7 @@
 ## Xenia reference (`_run\xenia`, copy of SCDA build)
 - Screenshot: focus window, Alt+D then T -> `screenshots\5553080B\`. Keyboard (`--keyboard_mode=1`): START=X, A=';'. After logos stays black even with START: weak reference.
 ## Next
-1. Speed: FF fill = every object in every view/light list (~47 ms/frame). PS memexport now works (6b649b9, `SCDA_VISBUF_FILL=off|or03`) but the GPU bytes are wrong: off = sky only, or03 = scene too dark + more draws. Next: does f374's Hi-Z fetch (slot 0) hit a resolve; do draws 2-3 overwrite draw 1. `docs/l3d_visibility.md`.
+1. Speed: FF fill ~47 ms/frame. PS memexport (6b649b9) + Hi-Z depth resolves (aa212dc) work; `SCDA_VISBUF_FILL=off` renders the intro street at 12 ms but culls big near objects (ground/table/Sam) and lights darker. Next: VS b3b454 bbox loop (i15, near plane), draw 2-3 overlap. `docs/l3d_visibility.md`.
 2. Play past the opening: drive input further into 01_Market, look for the next crash / missing effect.
 3. tx_coord_denorm at internal scale > 1: pass guest texture size instead of host Dims2D.
 4. Save icon: reload the HUD_Saving movie instead of clearing it. Corrupted save check; Bink colour; review HEURISTIC jump tables.

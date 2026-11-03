@@ -23,6 +23,12 @@ Real fix: PS memexport in the translator (UAV write of eM0 to eA address, format
 - Implemented: MemExport (translate.cpp) -> u7 window, written range copied back to guest RAM after the draw. Only with SCDA_VISBUF_FILL=off / or<hex>.
 - Result: off = 15/354 menu candidates (bits 0-1 almost never set), sky only. or03 = full scene but far too dark, 15k draws (FF 12k), no faster. So both the occlusion bits and the light-list bits (2-7) from the GPU are wrong. Suspects: Hi-Z depth input of f374 (fetch slot 0: does it hit a resolve this frame?), draws 2-3 overwriting draw 1's bytes (last writer wins), eM conversion.
 
+## Hi-Z input (aa212dc)
+- f374 slot 0 = depth resolve (copy_src_select 4) of depth base 1D4 to 00532000, 512x256, fetched as k_24_8 with mips (tfetch2DLod). Draws 25-33 (PS 024c1fe3) build the game's own pyramid (depth resolves to 005B2000 ... 005E1000).
+- The renderer copied nothing for depth resolves; the fetch matched the HDR scene resolve (fmt 26) that reuses 00532000 later in the frame. Fixed: R32 depth copy + max mip chain per depth resolve, bound for fmt 22/23 fetches.
+- In the menu frame the only write to depth 1D4 before the resolve is the clear quad (draw 23, z always): level 0 is all 1.0 (far), so Hi-Z culls nothing there; culling is VS/PS logic.
+- Fill off now: intro street correct at 12 ms/frame (FF 19 ms), mission ~1130 candidates. Still wrong: big near objects (ground, table, Sam) culled at some frames, lighting darker, one overexposed frame. Next suspects: VS b3b454 bounding-box loop (loop constant i15, corners behind the camera), draws 2-3 overwriting draw 1 bytes.
+
 ## Dead ends
 - `sub_82EFD598` (lists "DrawVisibleOpaque"/"DrawVisibleTransparent") is the SONAR pass. Its gate byte R+24456 = S+432 is the sonar-goggle flag (`sub_82D8BF68`, set by the "Gadget_SonarGoogle" handlers `sub_82BC7000` / cleared `sub_82BC6BF0`). Forcing it gives a white screen.
 - Draw 60 (VS e66e371ea23144fd, 512 vertices, mask 0) has no memory alloc: dummy draw, not the writer.
