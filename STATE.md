@@ -13,7 +13,7 @@
 ## Ported from outer (symptom seen on fresh boot, 2026-11-03)
 - 04db715 (runtime part): audio callback arg cell + RtlInitializeCriticalSectionAndSpinCount. Symptom: fatal KeWaitForMultipleObjects lr 0x82811AD0.
 - 37a180e (kernel.cpp only, pz_trace.cpp debug hooks left out): NtSuspend/ResumeThread pseudo handle. Symptom: main() returns, exit-time AVs (guest 0x400/0x18).
-- Boot now: no fatal over 90 s, Bink logos opened, menu.umd/menu.ass loaded. Test exe: `_install\tcscc_fresh.exe` (outer tcscc.exe untouched).
+- Boot now: no fatal over 90 s; SCDA_TRACE_PRESENT 40 s run = 1176 presents, 159 draws/frame (outer tcscc.exe: 1170, 159 = same), Bink logos opened, menu.umd/menu.ass loaded. Test exe: `_install\tcscc_fresh.exe` (outer tcscc.exe untouched).
 ## Known outer-repo fixes NOT ported (cherry-pick from outer when the symptom shows)
 - 99a759a: mftb scaled to 50 MHz, KeQueryPerformanceFrequency 50000000 (guest_time).
 - 8cea794: k_16 / k_16*_EXPAND texture formats. b5c9e94..fd81c4d: renderer/CP debug traces (SCDA_TRACE_*, SCDA_DUMP_RAM).
