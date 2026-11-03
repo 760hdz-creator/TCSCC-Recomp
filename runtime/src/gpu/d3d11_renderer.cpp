@@ -1,0 +1,3605 @@
+#include <algorithm>
+#include <bit>
+#include <atomic>
+#include <bitset>
+#include <cmath>
+#include <cstdio>
+#include <cstring>
+#include <filesystem>
+#include <map>
+#include <tuple>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+#include <wrl/client.h>
+#include <gpu/d3d11_renderer.h>
+#include <gpu/draw_state.h>
+#include <prompts.h>
+#include <gpu/gamma_ramp.h>
+#include <gpu/shader_compiler.h>
+#include <gpu/xenos/translate.h>
+#include <gpu_state.h>
+#include <runtime.h>
+
+namespace
+{
+// SCDA_CB_STATS counters (render thread only).
+struct CbStats
+{
+    unsigned long long aluBinds[2], aluUploads[2], sharedBinds, sharedUploads;
+};
+CbStats g_cbStats{};
+}
+
+using Microsoft::WRL::ComPtr;
+
+template <class T> static void Release(T*& p)
+{
+    if (p)
+        p->Release();
+    p = nullptr;
+}
+
+static const char kBlitVs[] = R"HLSL(
+void main(uint id : SV_VertexID, out float4 pos : SV_Position, out float2 uv : TEXCOORD0)
+{
+    uv = float2((id << 1) & 2, id & 2);
+    pos = float4(uv * float2(2.0, -2.0) + float2(-1.0, 1.0), 0.0, 1.0);
+}
+)HLSL";
+
+static const char kBlitPs[] = R"HLSL(
+Texture2D t : register(t0);
+Texture2D ramp : register(t1); // display gamma ramp, 256x1 (gamma_ramp.h)
+SamplerState s : register(s0);
+float Ramp(float v, int channel)
+{
+    return ramp.SampleLevel(s, float2((saturate(v) * 255.0 + 0.5) / 256.0, 0.5), 0)[channel];
+}
+// A source larger than the window (internal resolution scale) is box-filtered: n x n taps at the
+// centres of the source texels under the window pixel; otherwise one bilinear tap.
+float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target
+{
+    float w, h;
+    t.GetDimensions(w, h);
+    float2 texels = float2(ddx(uv.x) * w, ddy(uv.y) * h);
+    int2 n = clamp(int2(ceil(texels - 0.01)), 1, 4);
+    // Scaled frames: the last host column/row can be stale (half-integer-edged passes miss it with the
+    // host-pixel half-pixel offset), so taps stop at the one before.
+    float2 last = n > 1 ? (float2(w, h) - 1.5) / float2(w, h) : 1.0;
+    float4 sum = 0;
+    for (int y = 0; y < n.y; y++)
+        for (int x = 0; x < n.x; x++)
+            sum += t.SampleLevel(s, min(uv + ((float2(x, y) + 0.5) / float2(n) - 0.5) * texels / float2(w, h), last), 0);
+    float4 c = sum / float(n.x * n.y);
+    // Scan-out applies the ramp after the frontbuffer (and after scaling).
+    return float4(Ramp(c.r, 0), Ramp(c.g, 1), Ramp(c.b, 2), c.a);
+}
+)HLSL";
+
+// Post-processing passes (PostFx, F1 menu), one full-screen triangle each (kBlitVs):
+// mode 0 = scale (box filter down / bilinear up, as kBlitPs), 1 = Lanczos-2 upscale clamped to the
+// 2x2 texels around the tap (no ringing), 2 = FXAA (luma edge search, own implementation),
+// 3 = CAS sharpening (AMD FidelityFX CAS, MIT: per-channel adaptive 3x3 cross), 4 = copy.
+// ramp: apply the display gamma ramp (the last pass).
+static const char kPostPs[] = R"HLSL(
+Texture2D t : register(t0);
+Texture2D ramp : register(t1);
+SamplerState s : register(s0);
+cbuffer Post : register(b0) { int mode; int applyRamp; float sharpness; float pad; };
+float Ramp(float v, int channel)
+{
+    return ramp.SampleLevel(s, float2((saturate(v) * 255.0 + 0.5) / 256.0, 0.5), 0)[channel];
+}
+float Luma(float3 c) { return dot(c, float3(0.299, 0.587, 0.114)); }
+float4 Tap(float2 uv) { return t.SampleLevel(s, uv, 0); }
+float4 Box(float2 uv, float2 size, float2 duv)
+{
+    float2 texels = duv * size;
+    int2 n = clamp(int2(ceil(texels - 0.01)), 1, 4);
+    float2 last = n > 1 ? (size - 1.5) / size : 1.0;
+    float4 sum = 0;
+    for (int y = 0; y < n.y; y++)
+        for (int x = 0; x < n.x; x++)
+            sum += Tap(min(uv + ((float2(x, y) + 0.5) / float2(n) - 0.5) * texels / size, last));
+    return sum / float(n.x * n.y);
+}
+float Lanczos2(float x)
+{
+    x = abs(x);
+    if (x < 1e-4)
+        return 1.0;
+    if (x >= 2.0)
+        return 0.0;
+    float px = 3.14159265 * x;
+    return 2.0 * sin(px) * sin(px * 0.5) / (px * px);
+}
+float4 Lanczos(float2 uv, float2 size)
+{
+    float2 p = uv * size - 0.5;
+    float2 f = frac(p);
+    float2 base = floor(p) + 0.5;
+    float4 sum = 0;
+    float wsum = 0;
+    for (int y = -1; y <= 2; y++)
+    {
+        float wy = Lanczos2(float(y) - f.y);
+        for (int x = -1; x <= 2; x++)
+        {
+            float w = Lanczos2(float(x) - f.x) * wy;
+            sum += Tap((base + float2(x, y)) / size) * w;
+            wsum += w;
+        }
+    }
+    float4 c = sum / wsum;
+    float4 a = Tap(base / size), b = Tap((base + float2(1, 0)) / size), d = Tap((base + float2(0, 1)) / size), e = Tap((base + 1.0) / size);
+    return clamp(c, min(min(a, b), min(d, e)), max(max(a, b), max(d, e)));
+}
+float4 Fxaa(float2 uv, float2 size)
+{
+    float2 px = 1.0 / size;
+    float4 m = Tap(uv);
+    float lM = Luma(m.rgb);
+    float lN = Luma(Tap(uv + float2(0, -px.y)).rgb), lS = Luma(Tap(uv + float2(0, px.y)).rgb);
+    float lW = Luma(Tap(uv + float2(-px.x, 0)).rgb), lE = Luma(Tap(uv + float2(px.x, 0)).rgb);
+    float lMax = max(lM, max(max(lN, lS), max(lW, lE))), lMin = min(lM, min(min(lN, lS), min(lW, lE)));
+    float range = lMax - lMin;
+    if (range < max(0.0312, lMax * 0.125))
+        return m;
+    float lNW = Luma(Tap(uv - px).rgb), lSE = Luma(Tap(uv + px).rgb);
+    float lNE = Luma(Tap(uv + float2(px.x, -px.y)).rgb), lSW = Luma(Tap(uv + float2(-px.x, px.y)).rgb);
+    // Sub-pixel blend: how much the centre differs from its neighbourhood average.
+    float avg = (2.0 * (lN + lS + lW + lE) + lNW + lNE + lSW + lSE) / 12.0;
+    float sub = saturate(abs(avg - lM) / range);
+    sub = sub * sub * (3.0 - 2.0 * sub);
+    sub = sub * sub * 0.75;
+    // Edge direction: horizontal when the vertical second differences dominate.
+    float edgeH = abs(lNW - 2.0 * lW + lSW) + 2.0 * abs(lN - 2.0 * lM + lS) + abs(lNE - 2.0 * lE + lSE);
+    float edgeV = abs(lNW - 2.0 * lN + lNE) + 2.0 * abs(lW - 2.0 * lM + lE) + abs(lSW - 2.0 * lS + lSE);
+    bool horizontal = edgeH >= edgeV;
+    float l1 = horizontal ? lN : lW, l2 = horizontal ? lS : lE;
+    float g1 = abs(l1 - lM), g2 = abs(l2 - lM);
+    float stepLen = horizontal ? px.y : px.x;
+    float lEdge;
+    if (g1 >= g2)
+    {
+        stepLen = -stepLen;
+        lEdge = 0.5 * (l1 + lM);
+    }
+    else
+        lEdge = 0.5 * (l2 + lM);
+    float gradient = 0.25 * max(g1, g2);
+    float2 edgeUv = uv + (horizontal ? float2(0, stepLen * 0.5) : float2(stepLen * 0.5, 0));
+    float2 dir = horizontal ? float2(px.x, 0) : float2(0, px.y);
+    // Walk both ways along the edge until the luma leaves it.
+    static const float steps[10] = { 1.0, 1.0, 1.0, 1.5, 2.0, 2.0, 2.0, 2.0, 4.0, 8.0 };
+    float2 uvP = edgeUv + dir, uvN = edgeUv - dir;
+    float dP = Luma(Tap(uvP).rgb) - lEdge, dN = Luma(Tap(uvN).rgb) - lEdge;
+    bool doneP = abs(dP) >= gradient, doneN = abs(dN) >= gradient;
+    [unroll] for (int i = 0; i < 10 && !(doneP && doneN); i++)
+    {
+        if (!doneP)
+        {
+            uvP += dir * steps[i];
+            dP = Luma(Tap(uvP).rgb) - lEdge;
+            doneP = abs(dP) >= gradient;
+        }
+        if (!doneN)
+        {
+            uvN -= dir * steps[i];
+            dN = Luma(Tap(uvN).rgb) - lEdge;
+            doneN = abs(dN) >= gradient;
+        }
+    }
+    float distP = horizontal ? uvP.x - uv.x : uvP.y - uv.y;
+    float distN = horizontal ? uv.x - uvN.x : uv.y - uvN.y;
+    bool nearP = distP < distN;
+    float dist = min(distP, distN);
+    // Blend only when the nearer end's luma crosses the edge the opposite way to the centre.
+    bool centreBelow = lM - lEdge < 0.0;
+    bool good = ((nearP ? dP : dN) < 0.0) != centreBelow;
+    float edgeOffset = good ? 0.5 - dist / (distP + distN) : 0.0;
+    float offset = max(edgeOffset, sub);
+    float2 o = horizontal ? float2(0, offset * stepLen) : float2(offset * stepLen, 0);
+    return Tap(uv + o);
+}
+float4 Cas(float2 uv, float2 size)
+{
+    float2 px = 1.0 / size;
+    float3 a = Tap(uv + float2(-px.x, -px.y)).rgb, b = Tap(uv + float2(0, -px.y)).rgb, c = Tap(uv + float2(px.x, -px.y)).rgb;
+    float4 e4 = Tap(uv);
+    float3 d = Tap(uv + float2(-px.x, 0)).rgb, f = Tap(uv + float2(px.x, 0)).rgb;
+    float3 g = Tap(uv + float2(-px.x, px.y)).rgb, h = Tap(uv + float2(0, px.y)).rgb, i = Tap(uv + px).rgb;
+    float3 e = e4.rgb;
+    float3 mn = min(min(min(d, e), min(f, b)), h);
+    mn += min(mn, min(min(a, c), min(g, i)));
+    float3 mx = max(max(max(d, e), max(f, b)), h);
+    mx += max(mx, max(max(a, c), max(g, i)));
+    float3 amp = sqrt(saturate(min(mn, 2.0 - mx) / max(mx, 1e-5)));
+    float3 w = amp * (-1.0 / lerp(8.0, 5.0, sharpness));
+    return float4(saturate((b * w + d * w + f * w + h * w + e) / (1.0 + 4.0 * w)), e4.a);
+}
+float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target
+{
+    float2 size;
+    t.GetDimensions(size.x, size.y);
+    float2 duv = float2(ddx(uv.x), ddy(uv.y));
+    float4 c;
+    [branch] if (mode == 0)
+        c = Box(uv, size, duv);
+    else if (mode == 1)
+        c = Lanczos(uv, size);
+    else if (mode == 2)
+        c = Fxaa(uv, size);
+    else if (mode == 3)
+        c = Cas(uv, size);
+    else
+        c = Tap(uv);
+    if (applyRamp)
+        c.rgb = float3(Ramp(c.r, 0), Ramp(c.g, 1), Ramp(c.b, 2));
+    return c;
+}
+)HLSL";
+
+// Resolve copy: rect = destination host texels (x0 y0 x1 y1), written dy rows down; each reads the
+// samples.x x samples.y source texels of its guest pixel (MSAA supersampling), averaged (flags
+// bit 0, copy_sample_select 4+) or sample 0. flags bit 1: fixed-point destination format, so
+// saturate like the EDRAM -> memory conversion (float host targets hold values past [0, 1]: FP16
+// 7e3 blending overflows the 2-bit alpha).
+static const char kSaturateCs[] = R"HLSL(
+Texture2D<float4> src : register(t0);
+RWTexture2D<float4> dst : register(u0);
+cbuffer Rect : register(b0) { int4 rect; int dy; int2 samples; int flags; };
+[numthreads(8, 8, 1)]
+void main(uint3 id : SV_DispatchThreadID)
+{
+    int2 p = int2(rect.xy) + int2(id.xy);
+    if (p.x >= rect.z || p.y >= rect.w)
+        return;
+    float4 c = 0;
+    if (flags & 1)
+    {
+        for (int y = 0; y < samples.y; y++)
+            for (int x = 0; x < samples.x; x++)
+                c += src[p * samples + int2(x, y)];
+        c /= float(samples.x * samples.y);
+    }
+    else
+        c = src[p * samples];
+    dst[p + int2(0, dy)] = (flags & 2) ? saturate(c) : c;
+}
+)HLSL";
+
+// Rect lists: 3 corners per rectangle. The corner opposite the longest edge is the right angle;
+// the 4th corner (and its interpolators) is the other two minus it. Layout = translated VS output.
+static const char kRectListGs[] = R"HLSL(
+struct V
+{
+    float4 pos : SV_Position;
+    float4 t[16] : TEXCOORD0;
+    float4 psize : POINTSIZE;
+    float4 clip0 : SV_ClipDistance0;
+    float2 clip1 : SV_ClipDistance1;
+};
+[maxvertexcount(4)]
+void main(triangle V v[3], inout TriangleStream<V> s)
+{
+    float2 p0 = v[0].pos.xy / v[0].pos.w, p1 = v[1].pos.xy / v[1].pos.w, p2 = v[2].pos.xy / v[2].pos.w;
+    float d01 = dot(p1 - p0, p1 - p0), d12 = dot(p2 - p1, p2 - p1), d20 = dot(p0 - p2, p0 - p2);
+    uint c = d12 >= d01 && d12 >= d20 ? 0 : (d20 >= d01 ? 1 : 2);
+    V vc = v[c], va = v[(c + 1) % 3], vb = v[(c + 2) % 3], vd;
+    vd.pos = va.pos + vb.pos - vc.pos;
+    [unroll] for (int i = 0; i < 16; i++)
+        vd.t[i] = va.t[i] + vb.t[i] - vc.t[i];
+    vd.psize = va.psize;
+    vd.clip0 = va.clip0 + vb.clip0 - vc.clip0;
+    vd.clip1 = va.clip1 + vb.clip1 - vc.clip1;
+    s.Append(vc);
+    s.Append(va);
+    s.Append(vb);
+    s.Append(vd);
+}
+)HLSL";
+
+// Point lists (Xenos point sprites): each point becomes a screen-aligned quad of the VS-exported
+// diameter (oPts.x, else PA_SU_POINT_SIZE), clamped to PA_SU_POINT_MINMAX, in guest pixels. With
+// param gen on, the sprite coordinate (0..1, t down) goes to that interpolator's zw (Xenia).
+static const char kPointListGs[] = R"HLSL(
+struct V
+{
+    float4 pos : SV_Position;
+    float4 t[16] : TEXCOORD0;
+    float4 psize : POINTSIZE;
+    float4 clip0 : SV_ClipDistance0;
+    float2 clip1 : SV_ClipDistance1;
+};
+cbuffer SharedTail : register(b2)
+{
+    uint4 skip[61];
+    float4 windowToNdc;   // xy: 2 / target size in guest pixels
+    uint4 misc;           // colorClamp, alphaFunc, tex3DIs2D, paramGen
+    float4 scaleAndPoint; // positionScale.xy, point diameter, PA_SU_POINT_MINMAX
+};
+[maxvertexcount(4)]
+void main(point V v[1], inout TriangleStream<V> s)
+{
+    const uint mm = asuint(scaleAndPoint.w);
+    float size = v[0].psize.x > 0.0 ? v[0].psize.x : scaleAndPoint.z;
+    size = clamp(size, float(mm & 0xFFFF) / 8.0, float(mm >> 16) / 8.0);
+    const float2 h = 0.5 * size * windowToNdc.xy * v[0].pos.w;
+    const uint gen = misc.w;
+    [unroll] for (int i = 0; i < 4; i++)
+    {
+        const float2 c = float2(i & 1, i >> 1); // (0,0) top left .. (1,1) bottom right
+        V o = v[0];
+        o.pos.xy += float2(c.x * 2.0 - 1.0, 1.0 - c.y * 2.0) * h;
+        [unroll] for (uint k = 0; k < 16; k++)
+            if (gen == k + 1)
+                o.t[k].zw = c;
+        s.Append(o);
+    }
+}
+)HLSL";
+
+// Host render target for one EDRAM colour surface (EdramColorKey).
+struct ColorTarget
+{
+    ComPtr<ID3D11Texture2D> texture;
+    ComPtr<ID3D11RenderTargetView> rtv;
+    ComPtr<ID3D11ShaderResourceView> srv;
+    uint32_t width = 0, height = 0; // host texels
+    bool aliasCleared = false;      // last written by an aliased depth-only clear (see kLensDropPs)
+};
+
+// Device objects for executing draws; rebuilt with the device.
+struct DrawResources
+{
+    // EDRAM surfaces, sample pitch x EdramSampleRows (x scale) each (EdramSurfaceLayout), kept across
+    // frames like EDRAM. Depth is float with stencil: it holds both guest formats (D24S8, D24FS8).
+    uint32_t scale = 1; // host texels per guest pixel, each axis (targets and resolve copies)
+    uint32_t anisotropy = 1; // settings minimum for linear-filtered textures
+    std::unordered_map<uint32_t, ColorTarget> colorTargets;
+    std::unordered_map<uint32_t, ComPtr<ID3D11DepthStencilView>> depthTargets;
+    uint32_t boundKeys[5] = {}; // RT0-3 + depth keys bound now; ~0u = none
+    bool bound = false;         // boundKeys valid (false after the blit or a new frame)
+    ColorTarget* boundTargets[4] = {}; // RT0-3 of the last BindRegisterState (null = unused)
+    // t0-t95 as bound now (VS, PS), valid while srvShadow: only changed slots are rebound. Any other
+    // SRV or render target bind clears srvShadow (D3D11 silently unbinds SRVs whose resource
+    // becomes a render target, so the shadow could otherwise claim a slot that is now null).
+    ID3D11ShaderResourceView* boundSrv[2][96] = {};
+    bool srvShadow = false;
+    ColorTarget* last = nullptr; // RT0 of the last draw or resolve: presented when there is no frontbuffer
+    SurfaceLayout lastLayout{ 1280, 1, 1, 1280, 1280 }; // surface layout `last` was bound with
+    ComPtr<ID3D11VertexShader> blitVs;
+    ComPtr<ID3D11PixelShader> blitPs;
+    // PostFx (kPostPs): its constants and two intermediate targets, (re)made at the size a pass needs.
+    ComPtr<ID3D11PixelShader> postPs;
+    ComPtr<ID3D11Buffer> postConstants;
+    struct PostTarget
+    {
+        ComPtr<ID3D11Texture2D> texture;
+        ComPtr<ID3D11ShaderResourceView> srv;
+        ComPtr<ID3D11RenderTargetView> rtv;
+        uint32_t width = 0, height = 0;
+    } post[2];
+    ComPtr<ID3D11Texture2D> gammaRamp; // 256x1 R10G10B10A2, display gamma ramp
+    // CleanGoggles: 1x1 average of a noise texture, by physical address | format << 32.
+    std::unordered_map<uint64_t, ComPtr<ID3D11ShaderResourceView>> averageTextures;
+    ComPtr<ID3D11ShaderResourceView> gammaRampSrv;
+    uint32_t gammaRampVersion = ~0u;
+    ComPtr<ID3D11GeometryShader> rectListGs;
+    ComPtr<ID3D11GeometryShader> pointListGs;
+    ComPtr<ID3D11PixelShader> zeroPs; // aliased depth-only clears: returns 1 (x blend factor), never kills
+    ComPtr<ID3D11ComputeShader> saturateCs;
+    ComPtr<ID3D11Buffer> saturateRect;
+    ComPtr<ID3D11RasterizerState> rasterizer;
+    ComPtr<ID3D11SamplerState> sampler;
+    ComPtr<ID3D11Buffer> constants[3]; // b0 VS, b1 PS, b2 shared
+    ComPtr<ID3D11ShaderResourceView> white;
+    // Raw view of guest physical memory from address 0 (t96); grown on demand.
+    ComPtr<ID3D11Buffer> memory;
+    ComPtr<ID3D11ShaderResourceView> memorySrv;
+    uint32_t memoryBytes = 0;
+    // Dynamic ring for per-draw index data (NO_OVERWRITE appends, DISCARD on wrap).
+    ComPtr<ID3D11Buffer> indexRing;
+    uint32_t indexRingBytes = 0, indexRingPos = 0;
+    std::vector<uint8_t> indexScratch; // reused per draw
+    // Occlusion queries: the one begun by the last EVENT_WRITE_ZPD begin, and ended ones whose
+    // results are still on the GPU (polled each present, see PollQueries).
+    ComPtr<ID3D11Query> activeQuery;
+    struct PendingQuery
+    {
+        ComPtr<ID3D11Query> query;
+        uint32_t address;
+        uint32_t generation;
+        uint64_t ended; // GetTickCount64 at the end
+        uint32_t samplesPerPixel; // host samples per guest pixel: scale^2 x MSAA samples of the surface
+        uint64_t seq;             // order among query ends (fences wait for the ends before them)
+    };
+    std::vector<PendingQuery> pendingQueries;
+    uint64_t querySeq = 0;
+    // Fences reached while a query ended before them is still pending (WritePendingFences).
+    struct PendingFence
+    {
+        Fence fence;
+        uint64_t seq; // querySeq when reached: written once no pending query has seq < this
+    };
+    std::vector<PendingFence> pendingFences;
+    std::unordered_map<uint64_t, ComPtr<ID3D11VertexShader>> vs;
+    std::unordered_map<uint64_t, ComPtr<ID3D11PixelShader>> ps;
+    // Fixed-function state by the registers it is built from.
+    std::unordered_map<uint64_t, ComPtr<ID3D11BlendState>> blend;
+    std::map<std::tuple<uint32_t, int32_t, float>, ComPtr<ID3D11RasterizerState>> raster; // flags, depth bias, slope
+    std::unordered_map<uint64_t, ComPtr<ID3D11DepthStencilState>> depthStates;
+    std::unordered_map<uint64_t, ComPtr<ID3D11SamplerState>> samplers;
+    // Guest ranges in the memory buffer (kept across frames); per frame: textures by fetch constant.
+    std::unordered_map<uint64_t, uint64_t> uploaded; // range key -> Frame::Snapshot::id in the buffer
+    std::map<uint32_t, std::pair<uint32_t, uint64_t>> uploadedSpans; // start -> (end, key); disjoint
+    std::vector<uint8_t> uploadMirror; // SCDA_UPLOAD_CHECK: CPU copy of the buffer
+    std::unordered_map<uint64_t, ComPtr<ID3D11ShaderResourceView>> textures;
+    // Cube textures (fetch dimension 3) by fetch constant, re-made when the faces' guest bytes change.
+    struct CubeEntry
+    {
+        ComPtr<ID3D11ShaderResourceView> srv;
+        uint64_t hash = 0;
+        uint64_t checkedAt = ~0ull;
+    };
+    std::unordered_map<uint64_t, CubeEntry> cubes;
+    std::unordered_map<uint64_t, CubeEntry> volumes; // 3D textures (dimension 2), same scheme
+    // Converted textures across frames by fetch constant, reused while the guest bytes hash the same.
+    struct CachedTexture
+    {
+        ComPtr<ID3D11ShaderResourceView> srv;
+        uint64_t hash = 0, lastUsed = 0;
+        uint64_t probe = 0, fullAt = 0; // ProbeBytes of level 0 and present number at the last full hash
+        uint32_t stable = 0; // consecutive full hashes equal to hash
+        // Controller-prompt icon (prompts.h) index, -1 none; found for the guest bytes hashing iconFor.
+        int icon = -1;
+        uint64_t iconFor = 0;
+        // Guest bytes of level 0, 1, ...: fixed by the fetch constant (the key), so computed once.
+        std::vector<uint32_t> levelBytes;
+    };
+    std::unordered_map<uint64_t, CachedTexture> textureCache;
+    // Register state replayed from Frame::regWrites; applied = writes of the current frame done.
+    RegisterFile regs;
+    size_t applied = 0;
+    bool stateDirty = true;            // registers changed, or bindings invalidated, since the last bind
+    bool aluDirty[2] = { true, true }; // b0 / b1 constants changed since their last upload
+    // b2 as last uploaded (SharedConstants has no padding); sharedValid false = must upload.
+    SharedConstants lastShared{};
+    bool sharedValid = false;
+    // Per fetch slot: the 6 fetch dwords last decoded, their TextureFetch and texture key. Only the
+    // decode is cached; resolve lookup, hashing and SRV choice still run per bind.
+    struct FetchSlot
+    {
+        uint32_t raw[6];
+        TextureFetch t;
+        uint64_t key;
+        bool valid = false;
+    };
+    FetchSlot fetchSlots[32];
+    uint32_t lastTexSlots = 0;         // texture slots the last bind decoded
+    // Resolve copies of the target by guest physical destination; kept across frames (the
+    // frontbuffer and render-to-texture results are read after the frame that made them).
+    struct Resolved
+    {
+        ComPtr<ID3D11Texture2D> texture;
+        ComPtr<ID3D11ShaderResourceView> srv;
+        ComPtr<ID3D11UnorderedAccessView> uav; // float formats: saturating copies (kSaturateCs)
+        uint32_t width = 0, height = 0; // guest pixels; the texture is scale times larger
+        uint32_t scale = 0;             // host texels per guest pixel of the texture (TargetScale of its source)
+        DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN; // the source target's
+        uint32_t rowBytes = 0; // guest bytes per row (RB_COPY_DEST_INFO format x width)
+        uint32_t destFormat = 0; // RB_COPY_DEST_INFO bits 7-12
+        bool destSwap = false;   // RB_COPY_DEST_INFO bit 24: red and blue swapped in memory
+        uint32_t version = 0;    // bumped by each copy into texture
+        uint64_t lastCopy = 0;   // resolveSerial at the last copy into texture
+        uint64_t guestHash = 0;  // SCDA_TRACE_STALE: guest bytes under the texture after the last copy
+        uint64_t checkedAt = ~0ull; // SCDA_TRACE_STALE: presented frame of the last hash check
+        uint64_t staleSince = 0;    // SCDA_TRACE_STALE: presented frame + 1 the change was seen, 0 = fresh
+        // Fetches smaller than the resolve (pitch-aligned dest, e.g. a 1x1 fetch of a 32x1 resolve
+        // that wrote 8x8): the top-left w x h, so normalized coordinates hit the written texels.
+        struct Crop
+        {
+            ComPtr<ID3D11Texture2D> texture;
+            ComPtr<ID3D11ShaderResourceView> srv;
+            uint32_t version = ~0u;
+        };
+        std::unordered_map<uint32_t, Crop> crops; // by w << 16 | h
+    };
+    std::unordered_map<uint32_t, Resolved> resolved;
+    uint64_t resolveSerial = 0; // resolve copies so far (Resolved::lastCopy)
+};
+
+static std::atomic<bool> g_resetRequested;
+
+void D3D11Renderer::RequestReset() { g_resetRequested = true; }
+
+D3D11Renderer::D3D11Renderer() = default;
+
+void D3D11Renderer::ReleaseAll()
+{
+    m_draw.reset();
+    Release(m_backBuffer);
+    Release(m_swapChain);
+    Release(m_context);
+    Release(m_device);
+}
+
+D3D11Renderer::~D3D11Renderer() { ReleaseAll(); }
+
+bool D3D11Renderer::Init(HWND hwnd, uint32_t width, uint32_t height, bool vsync, uint32_t scale, uint32_t anisotropy)
+{
+    m_scale = std::clamp<uint32_t>(scale, 1, 4);
+    m_anisotropy = std::clamp<uint32_t>(anisotropy, 1, 16);
+    RuntimeLog("[d3d11] internal resolution %ux%u (scale %u)\n", kTargetWidth * m_scale, 720 * m_scale, m_scale);
+    m_vsync = vsync;
+    m_hwnd = hwnd;
+    m_width = width;
+    m_height = height;
+    DXGI_SWAP_CHAIN_DESC sd{};
+    sd.BufferCount = 2;
+    sd.BufferDesc.Width = width;
+    sd.BufferDesc.Height = height;
+    sd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    sd.OutputWindow = hwnd;
+    sd.SampleDesc.Count = 1;
+    sd.Windowed = TRUE;
+    sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    D3D_FEATURE_LEVEL level = D3D_FEATURE_LEVEL_11_0;
+    // SCDA_D3D_DEBUG=1: debug layer; its messages go to the runtime log after each frame.
+    UINT flags = getenv("SCDA_D3D_DEBUG") ? D3D11_CREATE_DEVICE_DEBUG : 0;
+    HRESULT hr = D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, flags, &level, 1,
+        D3D11_SDK_VERSION, &sd, &m_swapChain, &m_device, nullptr, &m_context);
+    if (FAILED(hr) && flags)
+    {
+        printf("[d3d11] debug layer unavailable (install Graphics Tools)\n");
+        hr = D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, &level, 1,
+            D3D11_SDK_VERSION, &sd, &m_swapChain, &m_device, nullptr, &m_context);
+    }
+    if (FAILED(hr))
+        return false;
+    CreateBackBufferView();
+    if (m_backBuffer && !CreateDrawResources())
+        printf("[d3d11] draw resources unavailable: presenting placeholder frames\n");
+    return m_backBuffer != nullptr;
+}
+
+void D3D11Renderer::CreateBackBufferView()
+{
+    ID3D11Texture2D* tex = nullptr;
+    if (SUCCEEDED(m_swapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&tex)))
+    {
+        m_device->CreateRenderTargetView(tex, nullptr, &m_backBuffer);
+        tex->Release();
+    }
+}
+
+bool D3D11Renderer::CreateDrawResources()
+{
+    auto r = std::make_unique<DrawResources>();
+    r->scale = m_scale;
+    r->anisotropy = m_anisotropy;
+    D3D11_TEXTURE2D_DESC td{};
+    td.MipLevels = td.ArraySize = 1;
+    td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    td.SampleDesc.Count = 1;
+
+    std::string error;
+    auto vs = CompileHlsl(kBlitVs, false, &error), ps = CompileHlsl(kBlitPs, true, &error);
+    if (vs.empty() || ps.empty() || FAILED(m_device->CreateVertexShader(vs.data(), vs.size(), nullptr, &r->blitVs)) ||
+        FAILED(m_device->CreatePixelShader(ps.data(), ps.size(), nullptr, &r->blitPs)))
+    {
+        printf("[d3d11] blit shader: %s\n", error.c_str());
+        return false;
+    }
+    {
+        // Optional: without it the PostFx settings do nothing (plain blit).
+        auto post = CompileHlsl(kPostPs, true, &error);
+        D3D11_BUFFER_DESC bd{ 16, D3D11_USAGE_DEFAULT, D3D11_BIND_CONSTANT_BUFFER };
+        if (post.empty() || FAILED(m_device->CreatePixelShader(post.data(), post.size(), nullptr, &r->postPs)) ||
+            FAILED(m_device->CreateBuffer(&bd, nullptr, &r->postConstants)))
+        {
+            printf("[d3d11] post shader: %s\n", error.c_str());
+            r->postPs.Reset();
+        }
+    }
+    {
+        D3D11_TEXTURE2D_DESC gd{};
+        gd.Width = 256;
+        gd.Height = gd.MipLevels = gd.ArraySize = 1;
+        gd.Format = DXGI_FORMAT_R10G10B10A2_UNORM;
+        gd.SampleDesc.Count = 1;
+        gd.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        if (FAILED(m_device->CreateTexture2D(&gd, nullptr, &r->gammaRamp)) ||
+            FAILED(m_device->CreateShaderResourceView(r->gammaRamp.Get(), nullptr, &r->gammaRampSrv)))
+            return false;
+    }
+    auto gs = CompileHlsl(kRectListGs, "gs_5_0", &error);
+    if (gs.empty() || FAILED(m_device->CreateGeometryShader(gs.data(), gs.size(), nullptr, &r->rectListGs)))
+        printf("[d3d11] rect list shader: %s\n", error.c_str()); // rect lists are then skipped
+    auto pgs = CompileHlsl(kPointListGs, "gs_5_0", &error);
+    if (pgs.empty() || FAILED(m_device->CreateGeometryShader(pgs.data(), pgs.size(), nullptr, &r->pointListGs)))
+        printf("[d3d11] point list shader: %s\n", error.c_str()); // point lists are then skipped
+    {
+        static const char kZeroPs[] = "void main(out float4 o0 : SV_Target0, out float4 o1 : SV_Target1, out float4 o2 : SV_Target2,"
+             " out float4 o3 : SV_Target3) { o0 = o1 = o2 = o3 = 1.0; }";
+        auto zero = CompileHlsl(kZeroPs, true, &error);
+        if (zero.empty() || FAILED(m_device->CreatePixelShader(zero.data(), zero.size(), nullptr, &r->zeroPs)))
+            printf("[d3d11] zero shader: %s\n", error.c_str());
+    }
+    auto cs = CompileHlsl(kSaturateCs, "cs_5_0", &error);
+    D3D11_BUFFER_DESC rb{};
+    rb.ByteWidth = 32;
+    rb.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    if (cs.empty() || FAILED(m_device->CreateComputeShader(cs.data(), cs.size(), nullptr, &r->saturateCs)) ||
+        FAILED(m_device->CreateBuffer(&rb, nullptr, &r->saturateRect)))
+        printf("[d3d11] saturate shader: %s\n", error.c_str()); // resolves then copy unclamped
+
+    D3D11_RASTERIZER_DESC rd{};
+    rd.FillMode = D3D11_FILL_SOLID;
+    rd.CullMode = D3D11_CULL_NONE; // blit; draws use state from PA_SU_SC_MODE_CNTL
+    rd.DepthClipEnable = TRUE;
+    D3D11_SAMPLER_DESC sd{};
+    sd.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR; // blit; draws use samplers from fetch constants
+    sd.AddressU = sd.AddressV = sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+    sd.MaxLOD = D3D11_FLOAT32_MAX;
+    if (FAILED(m_device->CreateRasterizerState(&rd, &r->rasterizer)) || FAILED(m_device->CreateSamplerState(&sd, &r->sampler)))
+        return false;
+
+    const UINT cbSizes[3] = { 4096, 4096, sizeof(SharedConstants) };
+    for (int i = 0; i < 3; i++)
+    {
+        D3D11_BUFFER_DESC bd{};
+        bd.ByteWidth = cbSizes[i];
+        bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+        if (FAILED(m_device->CreateBuffer(&bd, nullptr, &r->constants[i])))
+            return false;
+    }
+
+    // Unsupported or unreadable textures sample opaque white.
+    const uint32_t white = 0xFFFFFFFF;
+    D3D11_TEXTURE2D_DESC wd = td;
+    wd.Width = wd.Height = 1;
+    wd.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    wd.Usage = D3D11_USAGE_IMMUTABLE;
+    D3D11_SUBRESOURCE_DATA init{ &white, 4, 4 };
+    ComPtr<ID3D11Texture2D> wt;
+    if (FAILED(m_device->CreateTexture2D(&wd, &init, &wt)) || FAILED(m_device->CreateShaderResourceView(wt.Get(), nullptr, &r->white)))
+        return false;
+    m_draw = std::move(r);
+    return true;
+}
+
+void D3D11Renderer::Resize(uint32_t width, uint32_t height)
+{
+    if (!m_swapChain || !width || !height)
+        return;
+    m_width = width;
+    m_height = height;
+    // Views must be gone (ClearState + Flush release deferred references) before ResizeBuffers.
+    m_context->ClearState();
+    Release(m_backBuffer);
+    m_context->Flush();
+    if (FAILED(m_swapChain->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, 0)))
+        printf("[d3d11] ResizeBuffers failed\n");
+    CreateBackBufferView();
+}
+
+// Writes RGBA8 texels (row by row) as a top-down 32-bit BMP.
+static bool WriteBmp(const std::string& path, std::vector<uint32_t> texels, uint32_t width, uint32_t height)
+{
+    FILE* f = texels.empty() ? nullptr : fopen(path.c_str(), "wb");
+    if (!f)
+        return false;
+    BITMAPFILEHEADER fh{};
+    BITMAPINFOHEADER ih{};
+    ih.biSize = sizeof(ih);
+    ih.biWidth = width;
+    ih.biHeight = -int32_t(height); // top-down
+    ih.biPlanes = 1;
+    ih.biBitCount = 32;
+    fh.bfType = 0x4D42;
+    fh.bfOffBits = sizeof(fh) + sizeof(ih);
+    fh.bfSize = fh.bfOffBits + uint32_t(texels.size() * 4);
+    for (auto& t : texels) // RGBA -> BGRA
+        t = (t & 0xFF00FF00) | ((t & 0xFF) << 16) | ((t >> 16) & 0xFF);
+    fwrite(&fh, sizeof(fh), 1, f);
+    fwrite(&ih, sizeof(ih), 1, f);
+    fwrite(texels.data(), 4, texels.size(), f);
+    fclose(f);
+    return true;
+}
+
+// SCDA_TRACE_RESOLVE=1: each suspicious resolve/fetch pairing once (sub-page dest offsets, dest or
+// fetch bases inside a resolve texture that do not match it, exact hits with another shape).
+static bool TraceResolveOnce(uint64_t key)
+{
+    static const bool on = getenv("SCDA_TRACE_RESOLVE") != nullptr;
+    static std::unordered_set<uint64_t> seen;
+    return on && seen.size() < 2000 && seen.insert(key).second;
+}
+
+// SCDA_TRACE_RESOLVE=<n>[/<period>]: also log every resolve and texture fetch of presented frame n
+// (and every period-th one after it) in order.
+static bool g_tracingDump = false; // SCDA_TRACE_DUMPED=1: trace every SCDA_DUMP_FRAME present
+static int g_traceJumpPresents = 0; // SCDA_DUMP_ON_JUMP: presents left to trace after a jump
+static bool TraceResolveFrame(uint64_t presented)
+{
+    if (g_tracingDump || g_traceJumpPresents > 0)
+        return true;
+    static const char* v = getenv("SCDA_TRACE_RESOLVE");
+    static const long long frame = v && strcmp(v, "1") ? atoll(v) : -1;
+    static const long long period = v && strchr(v, '/') ? std::max(1ll, atoll(strchr(v, '/') + 1)) : 0;
+    const long long n = (long long)presented;
+    return frame >= 0 && (n == frame || (period && n > frame && (n - frame) % period == 0));
+}
+
+// SCDA_DUMP_DRAWS file numbering: draws of this guest frame's earlier partial Frames.
+static size_t g_frameDrawBase = 0;
+
+static const uint8_t* PhysicalPtr(uint32_t physical) { return (const uint8_t*)GuestPtr(GuestPhysical(physical)); }
+
+static uint32_t ToUnorm8(float v) { return uint32_t(std::clamp(v, 0.0f, 1.0f) * 255.0f + 0.5f); }
+
+// Garbage registers must not allocate targets without bound (each is several MB).
+constexpr size_t kMaxEdramTargets = 64;
+
+// The host target for an EDRAM colour surface, created (cleared to 0) on first use; null on failure.
+// 64-bit content hash (4 independent multiply-xor lanes); never 0.
+static uint64_t HashBytes(const uint8_t* p, size_t n);
+
+// The TextureCube for a cube fetch constant (see the texture loop). Faces are hashed once per present.
+static ID3D11ShaderResourceView* CubeView(ID3D11Device* device, ID3D11DeviceContext* context, DrawResources& r, const RegisterFile& regs,
+    uint32_t slot, const TextureFetch& t, uint64_t presented)
+{
+    if (!TextureElementBytes(t.format) || !t.width || !t.height || t.width != t.height)
+        return nullptr;
+    uint64_t key = 0xC0BEull;
+    for (uint32_t i = 0; i < 6; i++)
+        key = (key ^ regs[kRegFetchConstants + slot * 6 + i]) * 1099511628211ull;
+    auto& e = r.cubes[key];
+    if (e.srv && e.checkedAt == presented)
+        return e.srv.Get();
+    const uint32_t faceBytes = TextureCubeFaceBytes(t);
+    const uint8_t* guest = PhysicalPtr(t.physical);
+    if (!GuestRangeReadable(guest, size_t(faceBytes) * 5 + TextureGuestBytes(t)))
+        return e.srv.Get();
+    const uint64_t hash = HashBytes(guest, size_t(faceBytes) * 5 + TextureGuestBytes(t));
+    e.checkedAt = presented;
+    if (e.srv && e.hash == hash)
+        return e.srv.Get();
+    const bool isFloat = IsFloatTextureFormat(t.format);
+    D3D11_TEXTURE2D_DESC td{};
+    td.Width = t.width;
+    td.Height = t.height;
+    td.MipLevels = 0; // full chain, generated
+    td.ArraySize = 6;
+    td.Format = isFloat ? DXGI_FORMAT_R32G32B32A32_FLOAT : DXGI_FORMAT_R8G8B8A8_UNORM;
+    td.SampleDesc.Count = 1;
+    td.Usage = D3D11_USAGE_DEFAULT;
+    td.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+    td.MiscFlags = D3D11_RESOURCE_MISC_TEXTURECUBE | D3D11_RESOURCE_MISC_GENERATE_MIPS;
+    ComPtr<ID3D11Texture2D> tex;
+    ComPtr<ID3D11ShaderResourceView> srv;
+    if (FAILED(device->CreateTexture2D(&td, nullptr, &tex)) || FAILED(device->CreateShaderResourceView(tex.Get(), nullptr, &srv)))
+        return e.srv.Get();
+    D3D11_TEXTURE2D_DESC made;
+    tex->GetDesc(&made);
+    for (uint32_t face = 0; face < 6; face++)
+    {
+        TextureFetch f = t;
+        f.physical = t.physical + face * faceBytes;
+        f.dimension = 1;
+        const uint8_t* g = PhysicalPtr(f.physical);
+        const UINT sub = D3D11CalcSubresource(0, face, made.MipLevels);
+        if (isFloat)
+        {
+            std::vector<float> texels = ConvertTextureFloat(f, g);
+            context->UpdateSubresource(tex.Get(), sub, nullptr, texels.data(), t.width * 16, 0);
+        }
+        else
+        {
+            std::vector<uint32_t> texels = ConvertTexture(f, g);
+            context->UpdateSubresource(tex.Get(), sub, nullptr, texels.data(), t.width * 4, 0);
+            // SCDA_DUMP_TEXTURES also writes each cube face once: <physical>_<format>_<w>x<h>_face<n>.bmp.
+            static const char* dumpDir = getenv("SCDA_DUMP_TEXTURES");
+            static std::unordered_set<uint64_t> dumpedFaces;
+            if (dumpDir && dumpedFaces.insert(uint64_t(t.physical) << 3 | face).second && dumpedFaces.size() < 600)
+            {
+                char name[96];
+                snprintf(name, sizeof(name), "\\%08X_%u_%ux%u_face%u.bmp", t.physical, t.format, t.width, t.height, face);
+                WriteBmp(dumpDir + std::string(name), texels, t.width, t.height);
+            }
+        }
+    }
+    context->GenerateMips(srv.Get());
+    static const bool trace = getenv("SCDA_TRACE_CUBE") != nullptr;
+    if (trace)
+        RuntimeLog("[cube] %08X fmt %u %ux%u tiled %d face stride %u (re)made\n", t.physical, t.format, t.width, t.height, t.tiled, faceBytes);
+    e.srv = srv;
+    e.hash = hash;
+    return e.srv.Get();
+}
+
+// The Texture3D for a 3D fetch constant (dimension 2): slices de-tiled (Texture3DSlice), level 0
+// only. Hashed once per present like cubes.
+static ID3D11ShaderResourceView* VolumeView(ID3D11Device* device, DrawResources& r, const RegisterFile& regs,
+    uint32_t slot, const TextureFetch& t, uint64_t presented)
+{
+    if (!TextureElementBytes(t.format) || !t.width || !t.height || !t.depth)
+        return nullptr;
+    uint64_t key = 0x3D3Dull;
+    for (uint32_t i = 0; i < 6; i++)
+        key = (key ^ regs[kRegFetchConstants + slot * 6 + i]) * 1099511628211ull;
+    auto& e = r.volumes[key];
+    if (e.srv && e.checkedAt == presented)
+        return e.srv.Get();
+    const uint32_t bytes = Texture3DGuestBytes(t);
+    const uint8_t* guest = PhysicalPtr(t.physical);
+    if (!bytes || !GuestRangeReadable(guest, bytes))
+        return e.srv.Get();
+    const uint64_t hash = HashBytes(guest, bytes);
+    e.checkedAt = presented;
+    if (e.srv && e.hash == hash)
+        return e.srv.Get();
+    const bool isFloat = IsFloatTextureFormat(t.format);
+    const size_t texelBytes = isFloat ? 16 : 4, sliceBytes = size_t(t.width) * t.height * texelBytes;
+    std::vector<uint8_t> volume(sliceBytes * t.depth), linear;
+    for (uint32_t z = 0; z < t.depth; z++)
+    {
+        const TextureFetch s = Texture3DSlice(t, guest, z, linear);
+        uint8_t* dst = volume.data() + z * sliceBytes;
+        if (isFloat)
+        {
+            const std::vector<float> texels = ConvertTextureFloat(s, linear.data());
+            memcpy(dst, texels.data(), std::min(texels.size() * 4, sliceBytes));
+            continue;
+        }
+        const std::vector<uint32_t> texels = ConvertTexture(s, linear.data());
+        memcpy(dst, texels.data(), std::min(texels.size() * 4, sliceBytes));
+        // SCDA_DUMP_TEXTURES also writes each 3D slice once: <physical>_<format>_<w>x<h>_z<n>.bmp.
+        static const char* dumpDir = getenv("SCDA_DUMP_TEXTURES");
+        static std::unordered_set<uint64_t> dumpedSlices;
+        if (dumpDir && dumpedSlices.insert(uint64_t(t.physical) << 10 | z).second && dumpedSlices.size() < 600)
+        {
+            char name[96];
+            snprintf(name, sizeof(name), "\\%08X_%u_%ux%u_z%u.bmp", t.physical, t.format, t.width, t.height, z);
+            WriteBmp(dumpDir + std::string(name), texels, t.width, t.height);
+        }
+    }
+    D3D11_TEXTURE3D_DESC td{};
+    td.Width = t.width;
+    td.Height = t.height;
+    td.Depth = t.depth;
+    td.MipLevels = 1;
+    td.Format = isFloat ? DXGI_FORMAT_R32G32B32A32_FLOAT : DXGI_FORMAT_R8G8B8A8_UNORM;
+    td.Usage = D3D11_USAGE_IMMUTABLE;
+    td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    const D3D11_SUBRESOURCE_DATA init{ volume.data(), UINT(t.width * texelBytes), UINT(sliceBytes) };
+    ComPtr<ID3D11Texture3D> tex;
+    ComPtr<ID3D11ShaderResourceView> srv;
+    if (FAILED(device->CreateTexture3D(&td, &init, &tex)) || FAILED(device->CreateShaderResourceView(tex.Get(), nullptr, &srv)))
+        return e.srv.Get();
+    static const bool trace = getenv("SCDA_TRACE_CUBE") != nullptr;
+    if (trace)
+        RuntimeLog("[tex3d] %08X fmt %u %ux%ux%u tiled %d pitch %u guest bytes %u (re)made\n", t.physical, t.format, t.width, t.height,
+            t.depth, t.tiled, t.pitch, bytes);
+    e.srv = srv;
+    e.hash = hash;
+    return e.srv.Get();
+}
+
+static uint64_t HashBytes(const uint8_t* p, size_t n)
+{
+    uint64_t h[4] = { 0x9E3779B97F4A7C15ull, 0xC2B2AE3D27D4EB4Full, 0x165667B19E3779F9ull, 0x27D4EB2F165667C5ull };
+    size_t i = 0;
+    for (; i + 32 <= n; i += 32)
+        for (int l = 0; l < 4; l++)
+        {
+            uint64_t w;
+            memcpy(&w, p + i + l * 8, 8);
+            h[l] = (h[l] ^ w) * 0x100000001B3ull;
+            h[l] ^= h[l] >> 29;
+        }
+    uint64_t r = n;
+    for (; i < n; i++)
+        r = (r ^ p[i]) * 0x100000001B3ull;
+    for (int l = 0; l < 4; l++)
+        r = (r ^ h[l]) * 0x9E3779B97F4A7C15ull;
+    return r | 1;
+}
+
+// Per-present texture check: first and last 4 KB plus 16 strided 256-byte runs (all of small ones); never 0.
+static uint64_t ProbeBytes(const uint8_t* p, size_t n)
+{
+    if (n <= 16384)
+        return HashBytes(p, n);
+    uint64_t h = HashBytes(p, 4096) ^ HashBytes(p + n - 4096, 4096) * 3;
+    for (size_t i = 1; i <= 16; i++)
+        h = (h ^ HashBytes(p + (n * i / 17 & ~size_t(255)), 256)) * 1099511628211ull;
+    return h | 1;
+}
+
+constexpr uint32_t kTexStableFrames = 4, kTexFullEvery = 16;
+static struct { uint32_t probes = 0, skips = 0; uint64_t bytes = 0; } g_texHash; // SCDA_TRACE_TEXHASH counters (render thread)
+
+// The resolve's view for a w x h fetch: the whole texture, or a top-left crop copied after each resolve.
+static ID3D11ShaderResourceView* ResolvedView(ID3D11Device* device, ID3D11DeviceContext* context, DrawResources::Resolved& res, uint32_t w, uint32_t h)
+{
+    if (w >= res.width && h >= res.height)
+        return res.srv.Get();
+    auto& crop = res.crops[(w << 16) | h];
+    D3D11_TEXTURE2D_DESC sd;
+    res.texture->GetDesc(&sd);
+    const uint32_t scale = sd.Width / res.width;
+    w *= scale;
+    h *= scale;
+    if (!crop.srv)
+    {
+        D3D11_TEXTURE2D_DESC td{};
+        td.Width = w;
+        td.Height = h;
+        td.MipLevels = td.ArraySize = 1;
+        td.Format = res.format;
+        td.SampleDesc.Count = 1;
+        td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        if (FAILED(device->CreateTexture2D(&td, nullptr, &crop.texture)) ||
+            FAILED(device->CreateShaderResourceView(crop.texture.Get(), nullptr, &crop.srv)))
+            return res.srv.Get();
+    }
+    if (crop.version != res.version)
+    {
+        D3D11_BOX box{ 0, 0, 0, w, h, 1 };
+        context->CopySubresourceRegion(crop.texture.Get(), 0, 0, 0, 0, res.texture.Get(), 0, &box);
+        crop.version = res.version;
+    }
+    return crop.srv.Get();
+}
+
+// Internal resolution scale of an EDRAM surface by its sample pitch: small render-to-texture surfaces
+// (pitch <= 160 samples: the 128x128 water ripple simulation, glow/luminance chains) stay native.
+// Scaled, Okhotsk's point-sampled ripple sim (neighbours 1/128 apart) split into independent
+// sub-lattices and blew up into a checkerboard: moire rings on the water. Colour and depth of a
+// surface share the sample pitch, so they always agree. SCDA_SCALE_SMALL_TARGETS=1: old (all scaled).
+static uint32_t TargetScale(const DrawResources& r, uint32_t samplePitch)
+{
+    static const bool scaleAll = getenv("SCDA_SCALE_SMALL_TARGETS") != nullptr;
+    return !scaleAll && samplePitch <= 160 ? 1 : r.scale;
+}
+
+static ColorTarget* ColorTargetFor(ID3D11Device* device, ID3D11DeviceContext* context, DrawResources& r, uint32_t key)
+{
+    if (auto it = r.colorTargets.find(key); it != r.colorTargets.end())
+        return &it->second;
+    if (r.colorTargets.size() >= kMaxEdramTargets)
+        return nullptr;
+    D3D11_TEXTURE2D_DESC td{};
+    td.Width = EdramKeySamplePitch(key) * TargetScale(r, EdramKeySamplePitch(key));
+    td.Height = EdramSampleRows(EdramKeySamplePitch(key)) * TargetScale(r, EdramKeySamplePitch(key));
+    td.MipLevels = td.ArraySize = 1;
+    td.Format = DXGI_FORMAT(HostColorFormat((key >> 12) & 0xF));
+    td.SampleDesc.Count = 1;
+    td.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+    ColorTarget t;
+    if (FAILED(device->CreateTexture2D(&td, nullptr, &t.texture)) ||
+        FAILED(device->CreateRenderTargetView(t.texture.Get(), nullptr, &t.rtv)) ||
+        FAILED(device->CreateShaderResourceView(t.texture.Get(), nullptr, &t.srv)))
+        return nullptr;
+    t.width = td.Width;
+    t.height = td.Height;
+    const float zero[4] = {};
+    context->ClearRenderTargetView(t.rtv.Get(), zero);
+    return &r.colorTargets.emplace(key, std::move(t)).first->second;
+}
+
+static ID3D11DepthStencilView* DepthTargetFor(ID3D11Device* device, ID3D11DeviceContext* context, DrawResources& r, uint32_t key)
+{
+    if (auto it = r.depthTargets.find(key); it != r.depthTargets.end())
+        return it->second.Get();
+    if (r.depthTargets.size() >= kMaxEdramTargets)
+        return nullptr;
+    D3D11_TEXTURE2D_DESC td{};
+    td.Width = EdramKeySamplePitch(key) * TargetScale(r, EdramKeySamplePitch(key));
+    td.Height = EdramSampleRows(EdramKeySamplePitch(key)) * TargetScale(r, EdramKeySamplePitch(key));
+    td.MipLevels = td.ArraySize = 1;
+    td.Format = DXGI_FORMAT_D32_FLOAT_S8X24_UINT;
+    td.SampleDesc.Count = 1;
+    td.BindFlags = D3D11_BIND_DEPTH_STENCIL;
+    ComPtr<ID3D11Texture2D> tex;
+    ComPtr<ID3D11DepthStencilView> dsv;
+    if (FAILED(device->CreateTexture2D(&td, nullptr, &tex)) || FAILED(device->CreateDepthStencilView(tex.Get(), nullptr, &dsv)))
+        return nullptr;
+    context->ClearDepthStencilView(dsv.Get(), D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 0.0f, 0);
+    return (r.depthTargets[key] = dsv).Get();
+}
+
+// Guest vertex memory: uploads the snapshots the draw reads unless that version of the range is
+// already in the buffer (a range the CPU rewrote between draws is uploaded again).
+void D3D11Renderer::UploadVertexMemory(const DrawCall& d, const Frame& frame)
+{
+    DrawResources& r = *m_draw;
+    constexpr uint32_t kMaxMemory = 512u << 20;
+    for (uint32_t index : d.memory)
+    {
+        if (index >= frame.memory.size())
+            continue;
+        const Frame::Snapshot& snap = frame.memory[index];
+        MemoryRange range{ uint32_t(snap.key >> 32), uint32_t(snap.key) };
+        if (range.physical + uint64_t(range.bytes) > kMaxMemory)
+            continue;
+        static const bool check = getenv("SCDA_UPLOAD_CHECK") != nullptr;
+        uint32_t end = range.physical + range.bytes;
+        auto up = r.uploaded.find(snap.key);
+        if (up != r.uploaded.end() && up->second == snap.id)
+        {
+            // SCDA_UPLOAD_CHECK=1: a CPU copy of the buffer proves the skipped range holds these bytes.
+            if (check && (r.uploadMirror.size() < end || memcmp(&r.uploadMirror[range.physical], snap.Bytes().data(), range.bytes)))
+            {
+                static uint32_t mismatches;
+                if (++mismatches <= 20 || mismatches % 1000 == 0)
+                    RuntimeLog("[upload] MISMATCH %u: present %llu key %016llx\n", mismatches, m_presented, (unsigned long long)snap.key);
+            }
+            continue;
+        }
+        if (!range.bytes)
+            continue;
+        if (end > r.memoryBytes)
+        {
+            uint32_t size = std::min<uint32_t>((end + (16u << 20) - 1) & ~((16u << 20) - 1), kMaxMemory);
+            D3D11_BUFFER_DESC bd{};
+            bd.ByteWidth = size;
+            bd.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            bd.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS;
+            D3D11_SHADER_RESOURCE_VIEW_DESC vd{};
+            vd.Format = DXGI_FORMAT_R32_TYPELESS;
+            vd.ViewDimension = D3D11_SRV_DIMENSION_BUFFEREX;
+            vd.BufferEx.NumElements = size / 4;
+            vd.BufferEx.Flags = D3D11_BUFFEREX_SRV_FLAG_RAW;
+            r.memory.Reset();
+            r.memorySrv.Reset();
+            r.memoryBytes = 0;
+            r.uploaded.clear(); // new buffer: earlier ranges must be uploaded again
+            r.uploadedSpans.clear();
+            if (FAILED(m_device->CreateBuffer(&bd, nullptr, &r.memory)) ||
+                FAILED(m_device->CreateShaderResourceView(r.memory.Get(), &vd, &r.memorySrv)))
+            {
+                printf("[d3d11] guest memory buffer (%u MB) failed\n", size >> 20);
+                r.memory.Reset();
+                r.memorySrv.Reset();
+                return;
+            }
+            r.memoryBytes = size;
+        }
+        D3D11_BOX box{ range.physical, 0, 0, end, 1, 1 };
+        m_context->UpdateSubresource(r.memory.Get(), 0, &box, snap.Bytes().data(), 0, 0);
+        if (check)
+        {
+            if (r.uploadMirror.size() < r.memoryBytes)
+                r.uploadMirror.resize(r.memoryBytes);
+            memcpy(&r.uploadMirror[range.physical], snap.Bytes().data(), range.bytes);
+        }
+        // Ranges this upload overwrote (in part) no longer hold their snapshot: forget them. Spans in
+        // uploadedSpans never overlap, so only the one before the new start can reach into it.
+        auto s = r.uploadedSpans.lower_bound(range.physical);
+        if (s != r.uploadedSpans.begin() && std::prev(s)->second.first > range.physical)
+            --s;
+        while (s != r.uploadedSpans.end() && s->first < end)
+        {
+            r.uploaded.erase(s->second.second);
+            s = r.uploadedSpans.erase(s);
+        }
+        r.uploadedSpans[range.physical] = { end, snap.key };
+        r.uploaded[snap.key] = snap.id;
+    }
+    ID3D11ShaderResourceView* mem = r.memorySrv.Get();
+    m_context->VSSetShaderResources(kHlslMemorySlot, 1, &mem);
+}
+
+// texSlots: texture fetch slots (bit n) the draw's shaders sample; only those are decoded and bound.
+bool D3D11Renderer::PostFxReady() const { return m_draw && m_draw->postPs; }
+
+const RegisterFile& D3D11Renderer::Registers() const
+{
+    static const RegisterFile none;
+    return m_draw ? m_draw->regs : none;
+}
+
+void D3D11Renderer::ApplyRegisterWrites(const Frame& frame, size_t end)
+{
+    DrawResources& r = *m_draw;
+    end = std::min(end, frame.regWrites.size());
+    for (; r.applied < end; r.applied++)
+    {
+        const RegisterWrite& w = frame.regWrites[r.applied];
+        if (w.index == kRegClearAll)
+        {
+            r.regs.Clear();
+            r.aluDirty[0] = r.aluDirty[1] = true;
+        }
+        else
+        {
+            // SCDA_TRACE_CULL=<present>: every PA_SU_SC_MODE_CNTL write in that present, with the next draw number.
+            static const unsigned long long traceCull = getenv("SCDA_TRACE_CULL") ? strtoull(getenv("SCDA_TRACE_CULL"), nullptr, 10) : 0;
+            if (traceCull && m_presented == traceCull && w.index == 0x2205 && w.value != r.regs[0x2205])
+                RuntimeLog("[cull] present %llu before draw %u: %08X -> %08X (write %zu)\n", m_presented, m_lastDrawn + m_lastSkipped, r.regs[0x2205], w.value, r.applied);
+            // SCDA_NO_CB_SKIP=1: rewrites of an unchanged ALU constant still dirty b0/b1 (A/B baseline).
+            static const bool noCbSkip = getenv("SCDA_NO_CB_SKIP") != nullptr;
+            if (w.index - kRegAluConstants < 2048 && (noCbSkip || r.regs[w.index] != w.value))
+                r.aluDirty[(w.index - kRegAluConstants) >> 10] = true;
+            r.regs.Set(w.index, w.value);
+        }
+        r.stateDirty = true;
+    }
+}
+
+// RB_MODECONTROL 5 (depth only) writing depth at its colour surface's EDRAM base: the title's D3D
+// clears depth through a 4x alias whose colour info names the same tiles. EDRAM holds both, so the
+// depth/stencil write replaces the colour there (Kinshasa scope: the scope mask's stale cyan showed
+// in a bottom-of-screen blend). Host depth is separate, so the colour target is written too.
+// The colour written is the depth/stencil dword read as the colour format (AliasedClearColor).
+// SCDA_NO_DEPTH_COLOR_ALIAS=1 turns it off (A/B).
+static bool DepthOnlyOverwritesColor(const RegisterFile& regs)
+{
+    static const bool off = getenv("SCDA_NO_DEPTH_COLOR_ALIAS") != nullptr;
+    return !off && (regs[kRegRbModeControl] & 7) == 5 && (regs[0x2200] & 6) == 6 &&
+        (regs[kRegRbColorInfo] & 0xFFF) == (regs[kRegRbDepthInfo] & 0xFFF);
+}
+
+// Dword n of vertex 0 of a draw's vertex fetch slot 0 (big-endian float), from the draw's vertex
+// snapshots; NaN when none covers it. D3D clear quads (VS 10e10ea9): dwords 0-2 position, 3-6 colour.
+static float SnapshotVertexDword(const DrawCall& d, const Frame& frame, const RegisterFile& regs, uint32_t n)
+{
+    const uint32_t f0 = regs[kRegFetchConstants];
+    if ((f0 & 3) != 3)
+        return NAN;
+    const uint32_t at = (f0 & 0x1FFFFFFC) + 4 * n;
+    for (uint32_t mi : d.memory)
+    {
+        if (mi >= frame.memory.size())
+            continue;
+        const Frame::Snapshot& snap = frame.memory[mi];
+        const uint32_t base = uint32_t(snap.key >> 32);
+        if (at < base || uint64_t(at) + 4 > uint64_t(base) + snap.Bytes().size())
+            continue;
+        uint32_t w;
+        memcpy(&w, &snap.Bytes()[at - base], 4);
+        return std::bit_cast<float>(_byteswap_ulong(w));
+    }
+    return NAN;
+}
+
+// The EDRAM dword an aliased depth-only clear leaves, as RGBA of an 8_8_8_8 colour target: D24S8 /
+// D24FS8 keep stencil in bits 0-7 and depth above; 8_8_8_8 keeps R in bits 0-7 (Xenia EDRAM layouts).
+// The clear depth is the viewport z offset (the clear draws z ~ 0: depth 1 has scale -1, offset 1),
+// the stencil the reference. Kinshasa clears its 640x360 sun-shadow mask (EDRAM 0x1C0) this way to
+// depth 1, stencil 0: (0, 1, 1, 1) = lit. Writing 0 left the whole ground in shadow.
+// Open: the sniper scope's bottom band (docs/remaining_bugs.md) reads this mask's alpha after a blur
+// pass and shows cyan again; stencil-in-A removed the band but put the ground back in shadow.
+// The clear quads' own data say z 0 (VTE 0x300 skips the zs/zo transform), i.e. mask 0. Checked
+// 2026-10-31: with 0 (SCDA_ALIAS_RAW_Z=1) Kinshasa's sunlit ground goes dark (its material reads
+// min(mask.B, mask.A) when its baked-shadow s13 is the black default), and Jail traces the identical
+// clear, so 1 stays. Jail's missing floor patches come from elsewhere (docs/remaining_bugs.md).
+// shortcut: other colour formats get 0.
+// EDRAM tile owners: base + 1 of the last surface that wrote each 5120-byte tile (0 = none). Host
+// targets never alias, so this only records which surface the console's EDRAM would hold there.
+// Marked for draws with the viewport transform on (their rows = y offset + |y scale|); screen-space
+// quads (D3D clears, VTE 0x300) are skipped.
+static uint16_t g_tileOwner[2048];
+static uint8_t g_tileFormat[2048]; // owner's colour format, 16 = depth
+
+static void MarkEdramWrites(const RegisterFile& regs)
+{
+    const uint32_t vte = regs[0x2206];
+    if ((vte & 0xC) != 0xC)
+        return;
+    const float ys = std::bit_cast<float>(regs[0x2111]), yo = std::bit_cast<float>(regs[0x2112]);
+    const float rowsF = std::fabs(ys) + yo;
+    if (!(rowsF > 0))
+        return;
+    const SurfaceLayout l = EdramSurfaceLayout(regs[kRegRbSurfaceInfo]);
+    const uint32_t tileRows = (std::min(uint32_t(rowsF + 0.999f), 2048u) * l.samplesY + 15) / 16;
+    auto mark = [&](uint32_t base, bool wide, uint8_t format)
+    {
+        const uint32_t n = std::min((l.samplePitch * (wide ? 2 : 1) + 79) / 80 * tileRows, 2048u);
+        static const bool trace = getenv("SCDA_TRACE_DEPTH_ALIAS") != nullptr;
+        static std::unordered_set<uint64_t> seen;
+        if (trace && base != 0x1C0 && base <= 0x1C0 && base + n > 0x1C0 &&
+            seen.insert(uint64_t(base) << 48 ^ uint64_t(regs[kRegRbSurfaceInfo]) << 16 ^ uint64_t(n) ^ uint64_t(wide) << 40).second)
+            RuntimeLog("[zalias] tiles %03X+%u over 0x1C0: surf %08X color %08X depth %08X rows %g vte %08X\n", base, n,
+                regs[kRegRbSurfaceInfo], regs[kRegRbColorInfo], regs[kRegRbDepthInfo], double(rowsF), vte);
+        for (uint32_t t = 0; t < n; t++)
+        {
+            g_tileOwner[(base + t) & 2047] = uint16_t(base + 1);
+            g_tileFormat[(base + t) & 2047] = format;
+        }
+    };
+    static constexpr uint32_t kInfo[4] = { kRegRbColorInfo, kRegRbColor1Info, kRegRbColor2Info, kRegRbColor3Info };
+    if ((regs[kRegRbModeControl] & 7) == 4)
+        for (uint32_t n = 0; n < 4; n++)
+            if ((regs[kRegRbColorMask] >> (4 * n)) & 0xF)
+            {
+                const uint32_t format = (regs[kInfo[n]] >> 16) & 0xF;
+                mark(regs[kInfo[n]] & 0xFFF, format == 5 || format == 7 || format == 15, uint8_t(format)); // 64bpp
+            }
+    if ((regs[0x2200] & 6) == 6) // depth test + write
+        mark(regs[kRegRbDepthInfo] & 0xFFF, false, 16);
+}
+
+// Whether another surface left non-8_8_8_8 data (a float shadow map, depth) in the first 16 tile rows
+// at an aliased clear's colour base: on the console those bytes would read as a low alpha; an
+// 8_8_8_8 owner's (the final image) alpha ~1 matches the depth-1 clear we use otherwise.
+static uint32_t g_lastForeignOwner; // base + 1 of the surface found (trace)
+static bool EdramOverwrittenByOther(const RegisterFile& regs)
+{
+    const uint32_t base = regs[kRegRbColorInfo] & 0xFFF;
+    const uint32_t n = (EdramSurfaceLayout(regs[kRegRbSurfaceInfo]).samplePitch + 79) / 80 * 16;
+    for (uint32_t t = 0; t < n; t++)
+        if (const uint16_t o = g_tileOwner[(base + t) & 2047]; o && o != base + 1 && g_tileFormat[(base + t) & 2047] > 1)
+        {
+            g_lastForeignOwner = o;
+            return true;
+        }
+    return false;
+}
+
+static void AliasedClearColor(const RegisterFile& regs, float rgba[4])
+{
+    rgba[0] = rgba[1] = rgba[2] = rgba[3] = 0.0f;
+    const uint32_t format = (regs[kRegRbColorInfo] >> 16) & 0xF;
+    if (format > 1) // 8_8_8_8 and 8_8_8_8_GAMMA only
+        return;
+    const uint32_t zoBits = regs[0x2114];
+    float zo;
+    memcpy(&zo, &zoBits, 4);
+    // SCDA_ALIAS_RAW_Z=1 (A/B): honour PA_CL_VTE_CNTL bit 5 (z offset enable; off in the clears'
+    // VTE 0x300), so the clear depth is the quad's raw z ~ 0.
+    // Auto (#6): raw z when another surface overwrote the target's EDRAM since it last drew. HQ's
+    // 1024 shadow map covers the 640x360 light mask at 0x1C0 and needs the mask cleared to 0 for
+    // character shadows (wooden room = 360). Kinshasa's 512 map ends below 0x1C0; its no-lightmap
+    // meshes are lit only by the cleared alpha, which must stay 1 there. Real hardware writes the
+    // same 0 in both, so this approximates EDRAM contents we do not emulate (docs/remaining_bugs.md).
+    // SCDA_ALIAS_FIXED_Z=1: never raw (old).
+    static const bool rawZ = getenv("SCDA_ALIAS_RAW_Z") != nullptr;
+    static const bool fixedZ = getenv("SCDA_ALIAS_FIXED_Z") != nullptr;
+    const bool overwritten = !fixedZ && EdramOverwrittenByOther(regs);
+    static int lastAuto = -1;
+    if (getenv("SCDA_TRACE_DEPTH_ALIAS") && int(overwritten) != lastAuto)
+        RuntimeLog("[zalias] auto raw z %d at color %08X (owner base %03X)\n", int(overwritten), regs[kRegRbColorInfo], g_lastForeignOwner - 1);
+    lastAuto = int(overwritten);
+    if ((rawZ || overwritten) && !(regs[0x2206] & 0x20))
+        zo = 0.0f;
+    const double depth = std::clamp(double(zo), 0.0, 1.0);
+    uint32_t d24;
+    if ((regs[kRegRbDepthInfo] >> 16) & 1) // D24FS8: 20e4 float (4-bit exponent, bias 15, 20-bit mantissa)
+    {
+        int e = 0;
+        const double m = depth > 0 ? std::frexp(depth, &e) : 0.0; // depth = m * 2^e, m in [0.5, 1)
+        const int biased = e - 1 + 15;
+        d24 = depth <= 0 || biased <= 0 ? 0 : (uint32_t(biased) << 20) | uint32_t((m * 2.0 - 1.0) * (1 << 20) + 0.5);
+    }
+    else
+        d24 = uint32_t(depth * 0xFFFFFF + 0.5);
+    const uint32_t dword = (d24 << 8) | (regs[0x210D] & 0xFF);
+    for (uint32_t c = 0; c < 4; c++)
+        rgba[c] = float((dword >> (8 * c)) & 0xFF) / 255.0f;
+}
+
+void D3D11Renderer::BindRegisterState(const RegisterFile& regs, uint32_t texSlots)
+{
+    DrawResources& r = *m_draw;
+    for (uint32_t pixel = 0; pixel < 2; pixel++)
+    {
+        g_cbStats.aluBinds[pixel]++;
+        if (!r.aluDirty[pixel])
+            continue; // b0/b1 already hold these constants
+        g_cbStats.aluUploads[pixel]++;
+        // b0/b1 = ALU constants 0-1023 / 1024-2047, straight from the register file.
+        m_context->UpdateSubresource(r.constants[pixel].Get(), 0, nullptr, regs.Data() + kRegAluConstants + (pixel ? 1024 : 0), 0, 0);
+        r.aluDirty[pixel] = false;
+    }
+    // Window pixels -> the host target: guest pitch x rows wide (EdramSurfaceLayout), MSAA surfaces
+    // supersampled samplesX x samplesY, so the full-target viewport maps 1 guest pixel to
+    // samples x scale host texels.
+    const uint32_t surface = regs[kRegRbSurfaceInfo];
+    const SurfaceLayout layout = EdramSurfaceLayout(surface);
+    SharedConstants shared = BuildSharedConstants(regs, layout.pitch, layout.sampleRows / layout.samplesY);
+    const uint32_t targetScale = TargetScale(r, layout.samplePitch);
+    shared.positionScale[0] = 1.0f / float(targetScale * layout.samplesX);
+    shared.positionScale[1] = 1.0f / float(targetScale * layout.samplesY);
+
+    // Render targets: RT0, RT1-3 with a colour mask (MRT), and the depth surface.
+    static constexpr uint32_t kInfo[4] = { kRegRbColorInfo, kRegRbColor1Info, kRegRbColor2Info, kRegRbColor3Info };
+    uint32_t keys[5] = { ~0u, ~0u, ~0u, ~0u, EdramDepthKey(regs[kRegRbDepthInfo], surface) };
+    ID3D11RenderTargetView* rtvs[4] = {};
+    UINT count = 0;
+    std::fill(r.boundTargets, r.boundTargets + 4, nullptr);
+    for (uint32_t n = 0; n < 4; n++)
+    {
+        const uint32_t key = EdramColorKey(regs[kInfo[n]], surface);
+        if (n && (!((regs[kRegRbColorMask] >> (4 * n)) & 0xF) || std::count(keys, keys + n, key)))
+            continue; // RT n unused, or the same surface as an earlier RT
+        if (ColorTarget* t = ColorTargetFor(m_device, m_context, r, key))
+        {
+            keys[n] = key;
+            rtvs[n] = t->rtv.Get();
+            r.boundTargets[n] = t;
+            count = n + 1;
+            if (!n)
+            {
+                r.last = t;
+                r.lastLayout = layout;
+            }
+        }
+    }
+    if (!r.bound || !std::equal(keys, keys + 5, r.boundKeys))
+    {
+        m_context->OMSetRenderTargets(count, rtvs, DepthTargetFor(m_device, m_context, r, keys[4]));
+        r.srvShadow = false;
+        D3D11_VIEWPORT vp{ 0, 0, float(layout.samplePitch * targetScale), float(layout.sampleRows * targetScale), 0, 1 };
+        m_context->RSSetViewports(1, &vp);
+        std::copy(keys, keys + 5, r.boundKeys);
+        r.bound = true;
+    }
+
+    HostBlend b = DecodeBlend(regs);
+    const bool zeroColor = DepthOnlyOverwritesColor(regs);
+    if (zeroColor)
+        AliasedClearColor(regs, b.factor); // before this draw's own marks: reads who last wrote there
+    MarkEdramWrites(regs);
+    // SCDA_TRACE_DEPTH_ALIAS=1: each distinct depth-only state once; =<n>: also every one in frame n.
+    static const char* traceAliasEnv = getenv("SCDA_TRACE_DEPTH_ALIAS");
+    static const bool traceAlias = traceAliasEnv != nullptr;
+    static const unsigned long long traceAliasFrame = traceAliasEnv ? strtoull(traceAliasEnv, nullptr, 10) : 0;
+    static std::unordered_set<uint64_t> aliasSeen;
+    if (traceAlias && (regs[kRegRbModeControl] & 7) == 5 && (traceAliasFrame > 1 && m_presented == traceAliasFrame ||
+        aliasSeen.insert((uint64_t(regs[kRegRbColorInfo]) << 32) ^ (uint64_t(regs[kRegRbDepthInfo]) << 16) ^ regs[kRegRbSurfaceInfo] ^ (uint64_t(regs[0x2200]) << 40) ^ (uint64_t(regs[0x2114]) << 20) ^ (uint64_t(regs[0x210D]) << 8) ^ (uint64_t(regs[0x2113]) << 28)).second))
+        RuntimeLog("[zalias] frame %llu alias %d surf %08X color %08X depth %08X zctl %08X sc %08X wo %08X ref %08X zs %08X zo %08X vte %08X clip %08X\n", m_presented, zeroColor ? 1 : 0,
+            regs[kRegRbSurfaceInfo], regs[kRegRbColorInfo], regs[kRegRbDepthInfo], regs[0x2200], regs[0x2205], regs[0x2080],
+            regs[0x210D], regs[0x2113], regs[0x2114], regs[0x2206], regs[0x2204]);
+    if (zeroColor) // the blend factor (AliasedClearColor, above) whatever the PS returns (zeroPs returns 1)
+    {
+        // A non-zero clear fills the whole host target: the title's quad stops a few rows short of
+        // the 640x360 light mask's bottom (rows ~356+), which on the console keep other surfaces'
+        // EDRAM bits but here stayed 0 = shadow: a dark band over the last 16 screen rows (NY boat,
+        // Hotel). shortcut: the zero clears keep the quad's extent. SCDA_ALIAS_QUAD_ONLY=1: A/B.
+        static const bool quadOnly = getenv("SCDA_ALIAS_QUAD_ONLY") != nullptr;
+        if (!quadOnly && rtvs[0] && (b.factor[0] || b.factor[1] || b.factor[2] || b.factor[3]))
+            m_context->ClearRenderTargetView(rtvs[0], b.factor);
+        b.enable = true;
+        b.src = b.srcAlpha = D3D11_BLEND_BLEND_FACTOR;
+        b.dst = b.dstAlpha = D3D11_BLEND_ZERO;
+        b.op = b.opAlpha = D3D11_BLEND_OP_ADD;
+        b.writeMask = 0xF;
+    }
+    else if ((regs[kRegRbModeControl] & 7) == 5) // depth-only pass (Z prepass, occlusion queries)
+        b.writeMask = 0;
+    // SCDA_TRACE_BLEND=1: each RB_BLENDCONTROL0 per RT0 format and write mask once.
+    static const bool traceBlend = getenv("SCDA_TRACE_BLEND") != nullptr;
+    static std::unordered_set<uint64_t> blendSeen;
+    if (traceBlend && blendSeen.size() < 4000 &&
+        blendSeen.insert((uint64_t(regs[0x2201]) << 12) | ((regs[kRegRbColorInfo] >> 16 & 0xF) << 4) | b.writeMask).second)
+        RuntimeLog("[blend] frame %llu rt fmt %u blend %08X mask %X\n", m_presented, regs[kRegRbColorInfo] >> 16 & 0xF, regs[0x2201], b.writeMask);
+    auto& blend = r.blend[(uint64_t(regs[0x2201]) << 4) | b.writeMask | (uint64_t(zeroColor) << 36)];
+    if (!blend)
+    {
+        D3D11_BLEND_DESC bd{};
+        auto& t = bd.RenderTarget[0];
+        t.BlendEnable = b.enable;
+        t.SrcBlend = D3D11_BLEND(b.src);
+        t.DestBlend = D3D11_BLEND(b.dst);
+        t.BlendOp = D3D11_BLEND_OP(b.op);
+        t.SrcBlendAlpha = D3D11_BLEND(b.srcAlpha);
+        t.DestBlendAlpha = D3D11_BLEND(b.dstAlpha);
+        t.BlendOpAlpha = D3D11_BLEND_OP(b.opAlpha);
+        t.RenderTargetWriteMask = UINT8(b.writeMask);
+        m_device->CreateBlendState(&bd, &blend);
+    }
+    m_context->OMSetBlendState(blend.Get(), b.factor, 0xFFFFFFFF);
+
+    // PA_CL_CLIP_CNTL bit 16 (CLIP_DISABLE): no 0 <= z <= w clip. The title's D3D clears draw at
+    // z = -2^-28 with clipping off (Kinshasa scope mask); clipped, they drew nothing.
+    // SCDA_NO_CULL=<present>: culling off from that present on (same camera before/after); =1: from the start.
+    static const uint64_t noCullFrom = getenv("SCDA_NO_CULL") ? strtoull(getenv("SCDA_NO_CULL"), nullptr, 10) : 0;
+    const bool noCull = g_debugNoCull ? noCullFrom <= 1 || m_presented >= noCullFrom : false;
+    // DrawBackFaces: opaque draws (no blending) without stencil keep both sides; the depth pass resolves
+    // them. Blended passes and stencil tricks (light volumes, shadows) keep the title's culling.
+    const bool backFaces = m_drawBackFaces && !b.enable && !(regs[0x2200] & 1);
+    static const bool noDepthClip = getenv("SCDA_NO_DEPTH_CLIP") != nullptr; // A/B: never clip z
+    uint32_t cull = noCull || backFaces ? 1 : HostCullMode(regs), ccw = HostFrontCounterClockwise(regs),
+             noClip = noDepthClip || ((regs[0x2204] >> 16) & 1);
+    // Polygon offset (HostDepthBias); the slope is per host pixel: x host pixels per guest pixel.
+    float slope = 0;
+    const int32_t depthBias = HostDepthBias(regs, slope);
+    slope *= float(targetScale * layout.samplesX);
+    auto& raster = r.raster[{ cull | (ccw << 4) | (noClip << 5), depthBias, slope }];
+    if (!raster)
+    {
+        D3D11_RASTERIZER_DESC rd{};
+        rd.FillMode = D3D11_FILL_SOLID;
+        rd.CullMode = D3D11_CULL_MODE(cull);
+        rd.FrontCounterClockwise = ccw;
+        rd.DepthClipEnable = !noClip;
+        rd.DepthBias = depthBias;
+        rd.SlopeScaledDepthBias = slope;
+        m_device->CreateRasterizerState(&rd, &raster);
+    }
+    m_context->RSSetState(raster.Get());
+
+    HostDepthStencil z = DecodeDepthStencil(regs);
+    auto& depth = r.depthStates[(uint64_t(regs[0x2200]) << 16) | (z.stencilEnable ? (regs[0x210D] >> 8) & 0xFFFF : 0)];
+    if (!depth)
+    {
+        D3D11_DEPTH_STENCIL_DESC dd{};
+        dd.DepthEnable = z.depthEnable;
+        dd.DepthWriteMask = z.depthWrite ? D3D11_DEPTH_WRITE_MASK_ALL : D3D11_DEPTH_WRITE_MASK_ZERO;
+        dd.DepthFunc = D3D11_COMPARISON_FUNC(z.depthFunc);
+        dd.StencilEnable = z.stencilEnable;
+        dd.StencilReadMask = z.readMask;
+        dd.StencilWriteMask = z.writeMask;
+        auto face = [](const HostStencilFace& f) {
+            return D3D11_DEPTH_STENCILOP_DESC{D3D11_STENCIL_OP(f.fail), D3D11_STENCIL_OP(f.depthFail), D3D11_STENCIL_OP(f.pass), D3D11_COMPARISON_FUNC(f.func)};
+        };
+        dd.FrontFace = face(z.front);
+        dd.BackFace = face(z.back);
+        m_device->CreateDepthStencilState(&dd, &depth);
+    }
+    m_context->OMSetDepthStencilState(depth.Get(), z.ref);
+
+    // Textures: every texture fetch constant the stages might sample (the shader's slots are not
+    // known here), converted on the CPU once per frame.
+    ID3D11ShaderResourceView* srvs[32];
+    ID3D11ShaderResourceView* cubeSrvs[32] = {};
+    ID3D11ShaderResourceView* volumeSrvs[32] = {};
+    for (uint32_t slot = 0; slot < 32; slot++)
+    {
+        srvs[slot] = r.white.Get();
+        if (!(texSlots >> slot & 1))
+            continue;
+        // Decode only when the slot's fetch dwords changed (SCDA_NO_FETCH_CACHE=1: every bind).
+        static const bool noFetchCache = getenv("SCDA_NO_FETCH_CACHE") != nullptr;
+        const uint32_t* raw = regs.Data() + kRegFetchConstants + slot * 6;
+        DrawResources::FetchSlot& fs = r.fetchSlots[slot];
+        if (noFetchCache || !fs.valid || memcmp(fs.raw, raw, sizeof fs.raw) != 0)
+        {
+            memcpy(fs.raw, raw, sizeof fs.raw);
+            fs.t = DecodeTextureFetch(regs, slot);
+            fs.key = 1469598103934665603ull;
+            for (uint32_t i = 0; i < 6; i++)
+                fs.key = (fs.key ^ raw[i]) * 1099511628211ull;
+            fs.valid = true;
+        }
+        TextureFetch t = fs.t;
+        if (!t.valid)
+            continue;
+        // Cube textures (dimension 3) bind at g_TexCube (t64+): six faces one TextureCubeFaceBytes
+        // apart, mips generated. They were never bound, so every cube fetch read 0 (environment
+        // reflections on water, glass and shiny walls/floors). SCDA_NO_CUBE=1: old behaviour (A/B).
+        static const bool noCube = getenv("SCDA_NO_CUBE") != nullptr;
+        static const bool trace3D = getenv("SCDA_TRACE_CUBE") != nullptr;
+        static std::unordered_set<uint32_t> seen3D;
+        // 3D textures (dimension 2) bind at g_Tex3D (t32+); before, every true 3D fetch read 0
+        // (EMF vision's electronics glow). SCDA_NO_TEX3D=1: old behaviour (A/B).
+        static const bool no3D = getenv("SCDA_NO_TEX3D") != nullptr;
+        if (trace3D && t.dimension == 2 && seen3D.insert(t.physical).second)
+            RuntimeLog("[tex3d] %08X fmt %u %ux%ux%u tiled %d%s\n", t.physical, t.format, t.width, t.height, t.depth, t.tiled, no3D ? " (not bound)" : "");
+        if (t.dimension == 2 && !no3D)
+        {
+            volumeSrvs[slot] = VolumeView(m_device, r, regs, slot, t, m_presented);
+            continue;
+        }
+        if (t.dimension == 3 && !noCube)
+        {
+            cubeSrvs[slot] = CubeView(m_device, m_context, r, regs, slot, t, m_presented);
+            continue;
+        }
+        if (TraceResolveFrame(m_presented))
+        {
+            auto hit = r.resolved.find(t.physical);
+            RuntimeLog("[rtrace] draw %u slot %u fetch %08X fmt %u %ux%ux%u dim %u st %d tiled %d resolve %ux%u fmt %u\n", m_lastDrawn + m_lastSkipped, slot, t.physical,
+                t.format, t.width, t.height, t.depth, t.dimension, t.stacked, t.tiled, hit != r.resolved.end() ? hit->second.width : 0, hit != r.resolved.end() ? hit->second.height : 0,
+                hit != r.resolved.end() ? hit->second.destFormat : 0);
+        }
+        // A resolve target: guest memory there does not hold the image, the host copy does.
+        // shortcut: matched by address and size only; entries are never invalidated.
+        // SCDA_TRACE_STALE 19-map census (2026-10-29): no copy fetched after a CPU write in a later frame.
+        if (auto res = r.resolved.find(t.physical); res != r.resolved.end() && t.width <= res->second.width && t.height <= res->second.height)
+        {
+            if (res->second.destFormat != t.format && TraceResolveOnce((1ull << 60) | (uint64_t(t.physical) << 8) | t.format))
+                RuntimeLog("[resolve] fetch %08X fmt %u %ux%u hits resolve fmt %u %ux%u\n", t.physical, t.format, t.width, t.height,
+                    res->second.destFormat, res->second.width, res->second.height);
+            // SCDA_TRACE_STALE=1: the CPU wrote the destination since the resolve (once per frame and base):
+            // a texture streamed into a former resolve target would still bind the stale copy.
+            static const bool traceStale = getenv("SCDA_TRACE_STALE") != nullptr;
+            if (traceStale && res->second.checkedAt != m_presented)
+            {
+                res->second.checkedAt = m_presented;
+                const uint8_t* guest = PhysicalPtr(t.physical);
+                const size_t n = size_t(res->second.rowBytes) * res->second.height;
+                const uint64_t hash = GuestRangeReadable(guest, n) ? HashBytes(guest, n) : 0;
+                static std::unordered_set<uint32_t> stillLogged;
+                if (res->second.staleSince && res->second.staleSince - 1 < m_presented && stillLogged.insert(t.physical).second)
+                    RuntimeLog("[stale] frame %llu fetch %08X still the copy made before frame %llu\n", m_presented, t.physical, res->second.staleSince - 1);
+                if (hash != res->second.guestHash && !res->second.staleSince)
+                    res->second.staleSince = m_presented + 1;
+                if (hash != res->second.guestHash)
+                    RuntimeLog("[stale] frame %llu fetch %08X fmt %u %ux%u tiled %d: guest bytes changed since resolve v%u fmt %u %ux%u\n", m_presented,
+                        t.physical, t.format, t.width, t.height, t.tiled, res->second.version, res->second.destFormat, res->second.width, res->second.height);
+                static uint32_t checks = 0;
+                if (++checks % 5000 == 1)
+                    RuntimeLog("[stale] check #%u frame %llu fetch %08X hash %016llx\n", checks, m_presented, t.physical, (unsigned long long)hash);
+                res->second.guestHash = hash; // log each change once
+            }
+            srvs[slot] = ResolvedView(m_device, m_context, res->second, t.width, t.height);
+            // Resolve copies are bound raw (host channel order = the render target's), so the shader
+            // applies the fetch swizzle, composed with the resolve's red/blue swap (memory X = target Z).
+            // ARGB targets resolve swapped and fetch X<->Z, which cancels; single-channel float resolves
+            // fetch (r, 1, 1, 1) where the raw view reads (r, 0, 0, 1). SCDA_NO_RESOLVE_SWIZZLE=1: old.
+            static const bool noResolveSwizzle = getenv("SCDA_NO_RESOLVE_SWIZZLE") != nullptr;
+            uint32_t swizzle = t.swizzle;
+            if (res->second.destSwap)
+                for (uint32_t i = 0; i < 4; i++)
+                {
+                    const uint32_t c = (swizzle >> (i * 3)) & 7;
+                    if (c == 0 || c == 2)
+                        swizzle ^= 2u << (i * 3);
+                }
+            if (!noResolveSwizzle && swizzle != 0x688)
+                shared.texSwizzle[slot] = 0x1000 | swizzle;
+            static const bool traceResolve = getenv("SCDA_TRACE_RESOLVE") != nullptr;
+            if (traceResolve && TraceResolveOnce((3ull << 60) | (uint64_t(t.physical) << 16) | t.swizzle))
+                RuntimeLog("[resolve] fetch %08X fmt %u %ux%u swizzle %03X (resolve fmt %u)\n", t.physical, t.format, t.width, t.height,
+                    t.swizzle, res->second.destFormat);
+            continue;
+        }
+        static const bool traceResolve = getenv("SCDA_TRACE_RESOLVE") != nullptr;
+        if (traceResolve)
+            for (auto& e : r.resolved)
+                if (t.physical >= e.first && t.physical < e.first + e.second.rowBytes * e.second.height &&
+                    TraceResolveOnce((2ull << 60) | ((m_presented & 0xFFFF) << 40) | (uint64_t(t.physical) << 8) | t.format))
+                    RuntimeLog("[resolve] frame %llu fetch %08X fmt %u %ux%u tiled %d inside resolve %08X fmt %u %ux%u (+%u B), not used\n", m_presented, t.physical, t.format,
+                        t.width, t.height, t.tiled, e.first, e.second.destFormat, e.second.width, e.second.height, t.physical - e.first);
+        if (!TextureElementBytes(t.format))
+        {
+            // SCDA_DUMP_TEXTURES: each unsupported texture once, with the nearest resolve at or below it.
+            static const bool log = getenv("SCDA_DUMP_TEXTURES") != nullptr;
+            static std::unordered_set<uint64_t> logged;
+            if (log && logged.insert((uint64_t(t.physical) << 8) | t.format).second && logged.size() < 500)
+            {
+                auto res = std::find_if(r.resolved.begin(), r.resolved.end(), [&](auto& e) { return e.first <= t.physical && t.physical < e.first + 0x01000000; });
+                const bool hit = res != r.resolved.end();
+                RuntimeLog("[tex] unsupported fmt %u phys %08X %ux%u tiled %d; resolve %08X %ux%u\n", t.format, t.physical, t.width, t.height, t.tiled,
+                    hit ? res->first : 0, hit ? res->second.width : 0, hit ? res->second.height : 0);
+            }
+            continue;
+        }
+        const uint64_t key = fs.key;
+        auto it = r.textures.find(key);
+        if (it == r.textures.end())
+        {
+            ComPtr<ID3D11ShaderResourceView> srv;
+            const uint8_t* guest = PhysicalPtr(t.physical);
+            auto& cached = r.textureCache[key];
+            if (cached.levelBytes.empty())
+            {
+                cached.levelBytes.push_back(TextureGuestBytes(t));
+                for (uint32_t level = 1; level <= t.mipMaxLevel && HasGuestMips(t); level++)
+                    cached.levelBytes.push_back(TextureGuestBytes(TextureMipLevel(t, level)));
+            }
+            const uint32_t guestBytes = cached.levelBytes[0];
+            static const bool noCache = getenv("SCDA_NO_TEXCACHE") != nullptr; // debug: convert every frame
+            // A texture whose full hash held for kTexStableFrames presents is only probed (sparse
+            // sample of level 0) per present; its full hash still runs at its key phase of every kTexFullEvery
+            // presents (staggered), and at least once per kTexFullEvery presents. newyork_02 hashed ~115 MB per present before.
+            // shortcut: a CPU write outside the probed bytes shows up to kTexFullEvery presents late.
+            // SCDA_TEXHASH_COMPARE=1: always full-hash, log each change the probe alone would have missed.
+            static const bool compare = getenv("SCDA_TEXHASH_COMPARE") != nullptr;
+            const bool readable = GuestRangeReadable(guest, guestBytes);
+            const uint64_t probe = readable ? ProbeBytes(guest, guestBytes) : 0;
+            const bool probeOnly = cached.srv && !noCache && probe && probe == cached.probe && cached.stable >= kTexStableFrames && cached.icon < 0 &&
+                m_presented < cached.fullAt + kTexFullEvery && (m_presented + (key * 0x9E3779B97F4A7C15ull >> 32)) % kTexFullEvery != 0;
+            uint64_t hash = cached.hash;
+            bool guestMips = false;
+            g_texHash.probes++;
+            g_texHash.skips += probeOnly;
+            if (!probeOnly || compare)
+            {
+                hash = readable ? HashBytes(guest, guestBytes) : 0;
+                g_texHash.bytes += guestBytes;
+                // Authored mip levels (2D only): part of the hash; unreadable ones fall back to generated mips.
+                guestMips = hash && t.mipMaxLevel && HasGuestMips(t);
+                for (uint32_t level = 1; guestMips && level <= t.mipMaxLevel; level++)
+                {
+                    const uint8_t* g = PhysicalPtr(TextureMipLevel(t, level).physical);
+                    const uint32_t n = cached.levelBytes[level];
+                    guestMips = GuestRangeReadable(g, n);
+                    if (guestMips)
+                        hash = (hash ^ HashBytes(g, n)) * 1099511628211ull;
+                    g_texHash.bytes += n;
+                }
+                if (probeOnly && hash != cached.hash)
+                    RuntimeLog("[texhash] MISS present %llu fetch %08X fmt %u %ux%u tiled %d: guest bytes changed, probe unchanged (stable %u)\n",
+                        m_presented, t.physical, t.format, t.width, t.height, t.tiled, cached.stable);
+                if (!probeOnly || hash != cached.hash) // compare mode: keep the probe-only schedule
+                {
+                    cached.stable = hash && hash == cached.hash ? cached.stable + 1 : 0;
+                    cached.probe = probe;
+                    cached.fullAt = m_presented;
+                }
+            }
+            cached.lastUsed = m_presented;
+            // Prompt icons: known by their DXT blocks (any address/tiling), redrawn for the device in
+            // use; the style is folded into the hash so a device switch converts them again.
+            if (hash && t.format == 20 && t.width == t.height && (t.width == 64 || t.width == 32) && cached.iconFor != hash)
+            {
+                cached.icon = PromptIconIndex(BlockLinearHash(t, guest), t.width, t.height);
+                cached.iconFor = hash;
+                if (cached.icon >= 0 && getenv("SCDA_TRACE_PROMPTS"))
+                    RuntimeLog("[prompts] %s at %08X\n", PromptIconName(cached.icon), t.physical);
+            }
+            const PromptStyle promptStyle = cached.icon >= 0 && hash == cached.iconFor ? CurrentPromptStyle() : PromptStyle::Xbox;
+            if (promptStyle != PromptStyle::Xbox)
+                hash ^= (uint64_t(promptStyle) + 1) * 0x9E3779B97F4A7C15ull;
+            if (hash && cached.srv && cached.hash == hash && !noCache)
+                srv = cached.srv;
+            else if (hash)
+            {
+                const bool isFloat = IsFloatTextureFormat(t.format);
+                std::vector<float> floats = isFloat ? ConvertTextureFloat(t, guest) : std::vector<float>();
+                std::vector<uint32_t> texels = isFloat ? std::vector<uint32_t>() : ConvertTexture(t, guest);
+                if (promptStyle != PromptStyle::Xbox && PromptRedraw(cached.icon, promptStyle, texels, t.width, t.height))
+                    guestMips = false; // mips generated from the new icon
+                if (isFloat && getenv("SCDA_DUMP_TEXTURES")) // RGBA8 copy for the dump only
+                    for (size_t i = 0; i < floats.size(); i += 4)
+                        texels.push_back(ToUnorm8(floats[i]) | (ToUnorm8(floats[i + 1]) << 8) | (ToUnorm8(floats[i + 2]) << 16) | (ToUnorm8(floats[i + 3]) << 24));
+                // SCDA_DUMP_TEXTURES=<dir>: each converted texture once, as <physical>_<format>_<w>x<h>.bmp.
+                static const char* dumpDir = getenv("SCDA_DUMP_TEXTURES");
+                static std::unordered_set<uint64_t> dumped;
+                if (dumpDir && dumped.insert(key).second && dumped.size() < 2000)
+                {
+                    char name[96];
+                    snprintf(name, sizeof(name), "\\%08X_%u_%ux%u.bmp", t.physical, t.format, t.width, t.height);
+                    WriteBmp(dumpDir + std::string(name), texels, t.width, t.height);
+                    if ((t.offsetX | t.offsetY) && !isFloat) // packed-tail base: also as read from (0, 0)
+                    {
+                        TextureFetch origin = t;
+                        origin.offsetX = origin.offsetY = 0;
+                        WriteBmp(dumpDir + std::string(name).replace(strlen(name) - 4, 4, "_at0.bmp"), ConvertTexture(origin, guest), t.width, t.height);
+                    }
+                    uint32_t bytes = TextureGuestBytes(t), nonFF = 0;
+                    for (uint32_t i = 0; i < bytes; i++)
+                        nonFF += guest[i] != 0xFF;
+                    if (bytes <= 0x10000) // small textures also as raw guest bytes (level 0), for finding them in packages
+                        if (FILE* f = fopen((dumpDir + std::string(name).replace(strlen(name) - 4, 4, ".raw")).c_str(), "wb"))
+                        {
+                            fwrite(guest, 1, bytes, f);
+                            fclose(f);
+                        }
+                    RuntimeLog("[tex] %s fetch %08X %08X %08X %08X: %u of %u guest bytes not FF, first %02X%02X%02X%02X\n", name + 1,
+                        regs[kRegFetchConstants + slot * 6], regs[kRegFetchConstants + slot * 6 + 1], regs[kRegFetchConstants + slot * 6 + 2],
+                        regs[kRegFetchConstants + slot * 6 + 3], nonFF, bytes, guest[0], guest[1], guest[2], guest[3]);
+                }
+                D3D11_TEXTURE2D_DESC td{};
+                td.Width = t.width;
+                td.Height = t.height;
+                td.MipLevels = td.ArraySize = 1;
+                td.Format = isFloat ? DXGI_FORMAT_R32G32B32A32_FLOAT : DXGI_FORMAT_R8G8B8A8_UNORM;
+                td.SampleDesc.Count = 1;
+                td.Usage = D3D11_USAGE_IMMUTABLE;
+                td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+                const void* data = isFloat ? (const void*)floats.data() : texels.data();
+                const UINT rowPitch = t.width * (isFloat ? 16 : 4);
+                D3D11_SUBRESOURCE_DATA init{ data, rowPitch, 0 };
+                ComPtr<ID3D11Texture2D> tex;
+                // Guest mip chain (dword 4 mip_max_level, levels at dword 5 mip_address): the authored
+                // levels when readable as 2D, else generated on the GPU from level 0.
+                const uint32_t levels = t.mipMaxLevel + 1;
+                static const bool mipCheckBase = getenv("SCDA_MIP_CHECK") != nullptr;
+                if (mipCheckBase && (t.offsetX | t.offsetY))
+                    RuntimeLog("[mip] base %08X fmt %u %ux%u tiled %d at +(%u,%u) levels %u dword5 %08X\n", t.physical, t.format, t.width, t.height,
+                        t.tiled, t.offsetX, t.offsetY, levels, regs[kRegFetchConstants + slot * 6 + 5]);
+                if (guestMips)
+                {
+                    std::vector<std::vector<float>> mipFloats(levels);
+                    std::vector<std::vector<uint32_t>> mipTexels(levels);
+                    std::vector<D3D11_SUBRESOURCE_DATA> mipInit{ init };
+                    static const bool mipCheck = getenv("SCDA_MIP_CHECK") != nullptr;
+                    for (uint32_t level = 1; level < levels; level++)
+                    {
+                        const TextureFetch m = TextureMipLevel(t, level);
+                        const uint8_t* g = PhysicalPtr(m.physical);
+                        if (isFloat)
+                            mipFloats[level] = ConvertTextureFloat(m, g);
+                        else
+                            mipTexels[level] = ConvertTexture(m, g);
+                        mipInit.push_back({ isFloat ? (const void*)mipFloats[level].data() : mipTexels[level].data(), m.width * (isFloat ? 16 : 4), 0 });
+                        // SCDA_MIP_CHECK: mean |authored - 2x2 box of the level above| per channel (0-255);
+                        // a wrong layout reads unrelated bytes and scores far above a real downsample.
+                        const std::vector<uint32_t>& up = level == 1 ? texels : mipTexels[level - 1];
+                        const uint32_t uw = std::max(t.width >> (level - 1), 1u), uh = std::max(t.height >> (level - 1), 1u);
+                        if (mipCheck && !isFloat && up.size() == size_t(uw) * uh)
+                        {
+                            uint64_t sum = 0, alphaSum = 0;
+                            for (uint32_t y = 0; y < m.height; y++)
+                                for (uint32_t x = 0; x < m.width; x++)
+                                    for (uint32_t c = 0; c < 32; c += 8)
+                                    {
+                                        uint32_t box = 0;
+                                        for (uint32_t k = 0; k < 4; k++)
+                                            box += (up[size_t(std::min(y * 2 + k / 2, uh - 1)) * uw + std::min(x * 2 + k % 2, uw - 1)] >> c) & 0xFF;
+                                        const uint32_t d = uint32_t(std::abs(int((mipTexels[level][size_t(y) * m.width + x] >> c) & 0xFF) - int(box / 4)));
+                                        sum += d;
+                                        alphaSum += c == 24 ? d : 0;
+                                    }
+                            RuntimeLog("[mip] %08X fmt %u %ux%u tiled %d packed %d level %u %ux%u at %08X +(%u,%u) diff %.1f alpha %.1f\n", t.physical,
+                                t.format, t.width, t.height, t.tiled, t.packedMips, level, m.width, m.height, m.physical, m.offsetX, m.offsetY,
+                                double(sum) / (m.width * m.height * 4.0), double(alphaSum) / (m.width * m.height));
+                        }
+                    }
+                    td.MipLevels = levels;
+                    if (SUCCEEDED(m_device->CreateTexture2D(&td, mipInit.data(), &tex)))
+                        m_device->CreateShaderResourceView(tex.Get(), nullptr, &srv);
+                }
+                else if (levels > 1)
+                {
+                    td.MipLevels = levels;
+                    td.Usage = D3D11_USAGE_DEFAULT;
+                    td.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+                    td.MiscFlags = D3D11_RESOURCE_MISC_GENERATE_MIPS;
+                    if (SUCCEEDED(m_device->CreateTexture2D(&td, nullptr, &tex)) && SUCCEEDED(m_device->CreateShaderResourceView(tex.Get(), nullptr, &srv)))
+                    {
+                        m_context->UpdateSubresource(tex.Get(), 0, nullptr, data, rowPitch, 0);
+                        m_context->GenerateMips(srv.Get());
+                    }
+                    else
+                    {
+                        tex.Reset();
+                        srv.Reset();
+                    }
+                }
+                if (!srv)
+                {
+                    td.MipLevels = 1;
+                    td.Usage = D3D11_USAGE_IMMUTABLE;
+                    td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+                    td.MiscFlags = 0;
+                    if (SUCCEEDED(m_device->CreateTexture2D(&td, &init, &tex)))
+                        m_device->CreateShaderResourceView(tex.Get(), nullptr, &srv);
+                }
+                cached.srv = srv;
+                cached.hash = hash;
+            }
+            it = r.textures.emplace(key, srv).first;
+        }
+        if (it->second)
+            srvs[slot] = it->second.Get();
+    }
+    // b2 only when the final payload differs from the last upload (SCDA_NO_CB_SKIP=1: always).
+    static const bool noCbSkip = getenv("SCDA_NO_CB_SKIP") != nullptr;
+    g_cbStats.sharedBinds++;
+    if (noCbSkip || !r.sharedValid || memcmp(&shared, &r.lastShared, sizeof shared) != 0)
+    {
+        m_context->UpdateSubresource(r.constants[2].Get(), 0, nullptr, &shared, 0, 0);
+        r.lastShared = shared;
+        r.sharedValid = true;
+        g_cbStats.sharedUploads++;
+    }
+    // Only the changed range per stage (6 x 32-slot binds per draw were ~a third of the driver time
+    // on newyork_02). SCDA_NO_SRV_SHADOW=1: always rebind all 96.
+    static const bool noSrvShadow = getenv("SCDA_NO_SRV_SHADOW") != nullptr;
+    ID3D11ShaderResourceView* want[96];
+    std::copy(srvs, srvs + 32, want);
+    std::copy(volumeSrvs, volumeSrvs + 32, want + 32);
+    std::copy(cubeSrvs, cubeSrvs + 32, want + 64);
+    static constexpr void (STDMETHODCALLTYPE ID3D11DeviceContext::*kSet[2])(UINT, UINT, ID3D11ShaderResourceView* const*) = {
+        &ID3D11DeviceContext::VSSetShaderResources, &ID3D11DeviceContext::PSSetShaderResources };
+    for (uint32_t stage = 0; stage < 2; stage++)
+    {
+        ID3D11ShaderResourceView** have = r.boundSrv[stage];
+        uint32_t first = 0, last = 96;
+        if (r.srvShadow && !noSrvShadow)
+        {
+            while (first < 96 && have[first] == want[first])
+                first++;
+            while (last > first && have[last - 1] == want[last - 1])
+                last--;
+        }
+        if (first < last)
+            (m_context->*kSet[stage])(kHlslTex2DSlot + first, last - first, want + first);
+        std::copy(want, want + 96, have);
+    }
+    r.srvShadow = true;
+
+    // Samplers s0-s15 from fetch constants 0-15 (the translator indexes samplers by fetch slot & 15).
+    ID3D11SamplerState* samplers[16];
+    for (uint32_t slot = 0; slot < 16; slot++)
+    {
+        samplers[slot] = r.sampler.Get();
+        if (!((texSlots | texSlots >> 16) >> slot & 1)) // sampler = fetch slot & 15
+            continue;
+        HostSampler hs = DecodeSampler(regs, slot);
+        // Anisotropy: the guest's, raised to the settings minimum when min and mag are linear (with
+        // linear or point mips: floor and wall materials often use point mips and blurred at grazing
+        // angles without it). Screen-aligned passes have an isotropic footprint, so AF leaves them.
+        // SCDA_AF_TRILINEAR_ONLY=1: only fully linear filtering (old behaviour, A/B).
+        static const bool afTrilinearOnly = getenv("SCDA_AF_TRILINEAR_ONLY") != nullptr;
+        const bool afEligible = afTrilinearOnly ? hs.filter == 0x15 : (hs.filter & 0x14) == 0x14;
+        const uint32_t aniso = std::max(hs.anisotropy, afEligible ? r.anisotropy : 1u);
+        auto& state = r.samplers[(uint64_t(hs.filter) << 24) | (hs.addressU << 16) | (hs.addressV << 8) | hs.addressW |
+            (uint64_t(hs.minLod) << 32) | (uint64_t(hs.maxLod) << 36) | (uint64_t(aniso) << 40) | (uint64_t(hs.border == 1) << 48)];
+        if (!state)
+        {
+            D3D11_SAMPLER_DESC sd{};
+            sd.Filter = aniso > 1 ? D3D11_FILTER_ANISOTROPIC : D3D11_FILTER(hs.filter);
+            sd.MaxAnisotropy = aniso;
+            sd.AddressU = D3D11_TEXTURE_ADDRESS_MODE(hs.addressU);
+            sd.AddressV = D3D11_TEXTURE_ADDRESS_MODE(hs.addressV);
+            sd.AddressW = D3D11_TEXTURE_ADDRESS_MODE(hs.addressW);
+            sd.MinLOD = float(hs.minLod);
+            sd.MaxLOD = float(hs.maxLod);
+            if (hs.border == 1)
+                sd.BorderColor[0] = sd.BorderColor[1] = sd.BorderColor[2] = sd.BorderColor[3] = 1.0f;
+            m_device->CreateSamplerState(&sd, &state);
+        }
+        samplers[slot] = state ? state.Get() : r.sampler.Get();
+    }
+    m_context->VSSetSamplers(0, 16, samplers);
+    m_context->PSSetSamplers(0, 16, samplers);
+}
+
+void D3D11Renderer::ExecuteDraw(const DrawCall& d, const Frame& frame)
+{
+    DrawResources& r = *m_draw;
+    ApplyRegisterWrites(frame, d.regWritesEnd);
+    if (RegDedupCheck() && ConstantsHash(r.regs) != d.constantsHash)
+    {
+        static uint32_t mismatches;
+        if (++mismatches <= 20 || mismatches % 1000 == 0)
+            RuntimeLog("[dedup] MISMATCH %u: present %llu draw %u\n", mismatches, m_presented, m_lastDrawn + m_lastSkipped);
+    }
+    uint32_t topology = HostTopology(d.primType);
+    const bool rectList = d.primType == 8;
+    // Point lists draw as points expanded to sprites by pointListGs. SCDA_NO_POINT_SPRITES=1 skips them.
+    static const bool noPoints = getenv("SCDA_NO_POINT_SPRITES") != nullptr;
+    const bool pointList = d.primType == 1 && r.pointListGs && !noPoints;
+    if (pointList)
+        topology = 1; // D3D11_PRIMITIVE_TOPOLOGY_POINTLIST
+    // SCDA_SKIP_SHADER=<hex hash>[,..]: skip draws using that VS or PS (finding which draw makes a glitch
+    // when draw order varies between runs).
+    static const std::vector<uint64_t> skipShaders = []
+    {
+        std::vector<uint64_t> v;
+        for (const char* p = getenv("SCDA_SKIP_SHADER"); p && *p; p += strcspn(p, ",") + (p[strcspn(p, ",")] ? 1 : 0))
+            v.push_back(strtoull(p, nullptr, 16));
+        return v;
+    }();
+    // Goggle vision modes (SC:DA shaders, found by tracing night vision / thermal / EMF frames
+    // against goggles-off ones): after each mode's composite a full-screen quad (VS b1b1d377, PS
+    // e48aa6f4 = texture x c0) lays a 128x128 DXT1 scanline texture over the screen; goggles-off
+    // frames use that VS with another PS only. Thermal and EMF also run PS 40f6f3d3, and EMF's
+    // composite PS e8999e85, which offset the scene UV by a noise texture (slot 0, unsigned) times
+    // PS c20 (2x2). The VS (f7f281d7, VS c20.zw) pre-subtracts the noise mean: EMF VS c20 =
+    // (1, -1, -0.1, 1.1) with PS c20 = (0.2, 0, 0, -0.2), so zeroing PS c20 shifted the whole image
+    // by 0.1 and the clamped edge smeared into bands. Thermal's palette pass (PS 7439e53c)
+    // multiplies the palette colour by a screen-tiled noise texture (fetch slot 1, no mips).
+    // CleanGoggles skips the overlay and gives each noise fetch a 1x1 texture of the noise's
+    // average colour: the displacement becomes its mean (cancelled by the VS), the palette keeps
+    // its brightness, no grain. EMF also adds (ONE/ONE) a 128x128 DXT1 marble texture through VS
+    // ee247e0c + the overlay PS: it gets the average too (keeps the blue tint, no blotches).
+    // SCDA_CLEAN_GOGGLES=1 forces it on.
+    constexpr uint64_t kGoggleOverlayVs = 0xb1b1d377476e298bull, kGoggleOverlayPs = 0xe48aa6f498700bf1ull;
+    constexpr uint64_t kGoggleNoisePs = 0x40f6f3d3c2f9b7e6ull, kEmfCompositePs = 0xe8999e85bde3f239ull;
+    constexpr uint64_t kThermalPalettePs = 0x7439e53c553bfde7ull, kEmfOverlayVs = 0xee247e0c1b3eb19cull;
+    static const bool cleanEnv = getenv("SCDA_CLEAN_GOGGLES") != nullptr;
+    const bool clean = m_cleanGoggles || cleanEnv;
+    // Sniper scope: the last post pass (PS 3a7a1a91) blends the 640x360 light mask over the bottom
+    // fifth of the screen with alpha a * 2 * (5y - 4). The mask's aliased depth-1 clear reads (0,1,1,1)
+    // here, which is what lights the ground in normal frames, so the pass laid a cyan band under the
+    // scope; the 360 shows nothing there (360 playthrough, Kinshasa scope shots). shortcut: the pass is
+    // skipped instead of finding why its input is transparent on the console. SCDA_SCOPE_BAND=1 draws it.
+    constexpr uint64_t kScopeBandPs = 0x3a7a1a91e12b339aull;
+    static const bool keepScopeBand = getenv("SCDA_SCOPE_BAND") != nullptr;
+    // SCDA_SKIP_IB=<ib hex>[/<vs hash hex>][,..]: skip draws with that index base (and VS if given), e.g.
+    // one mesh in one pass (debug: is this caster supposed to be in the shadow map?).
+    static const std::vector<std::pair<uint32_t, uint64_t>> skipIbs = []
+    {
+        std::vector<std::pair<uint32_t, uint64_t>> v;
+        for (const char* p = getenv("SCDA_SKIP_IB"); p && *p; p += strcspn(p, ",") + (p[strcspn(p, ",")] ? 1 : 0))
+        {
+            char* e = nullptr;
+            const uint32_t ib = uint32_t(strtoul(p, &e, 16));
+            v.push_back({ ib, *e == '/' ? strtoull(e + 1, nullptr, 16) : 0 });
+        }
+        return v;
+    }();
+    const bool skipIb = std::any_of(skipIbs.begin(), skipIbs.end(),
+        [&](const auto& s) { return s.first == d.indexBase && (!s.second || (d.vs && d.vs->hash == s.second)); });
+    const bool skipped = skipIb || (d.ps && d.ps->hash == kScopeBandPs && !keepScopeBand) || (d.vs && d.ps &&
+        std::find_if(skipShaders.begin(), skipShaders.end(), [&](uint64_t h) { return h == d.vs->hash || h == d.ps->hash; }) != skipShaders.end()) ||
+        (clean && d.vs && d.ps && d.vs->hash == kGoggleOverlayVs && d.ps->hash == kGoggleOverlayPs);
+    // Fetch slot to replace by its 1x1 average, -1 = none.
+    int averageSlot = -1;
+    if (clean && d.ps && (d.ps->hash == kGoggleNoisePs || d.ps->hash == kEmfCompositePs ||
+        (d.vs && d.vs->hash == kEmfOverlayVs && d.ps->hash == kGoggleOverlayPs)))
+        averageSlot = 0;
+    else if (clean && d.ps && d.ps->hash == kThermalPalettePs)
+        averageSlot = 1;
+    if (skipped || !topology || !d.vs || !d.ps || d.source == IndexSource::Immediate || (rectList && !r.rectListGs))
+    {
+        // SCDA_TRACE_SKIP=1: each distinct (reason, primitive, source, shaders) skip once.
+        static const bool traceSkip = getenv("SCDA_TRACE_SKIP") != nullptr;
+        static std::unordered_set<uint64_t> skipSeen;
+        if (traceSkip && skipSeen.size() < 2000 &&
+            skipSeen.insert((uint64_t(d.primType) << 56) ^ (uint64_t(d.source) << 48) ^ (d.vs ? d.vs->hash : 1) ^ (d.ps ? d.ps->hash * 3 : 2) ^ (uint64_t(r.regs[kRegRbColorInfo]) << 20) ^ r.regs[0x2280] ^ (uint64_t(r.regs[0x2200]) << 30)).second)
+            RuntimeLog("[skip] frame %llu prim %u topology %u source %u vs %016llx ps %016llx n %u forced %d ptsize %08X minmax %08X rt %08X/%08X z %08X/%08X mask %08X vte %08X\n", m_presented, d.primType, topology,
+                uint32_t(d.source), d.vs ? (unsigned long long)d.vs->hash : 0ull, d.ps ? (unsigned long long)d.ps->hash : 0ull, d.indexCount, skipped ? 1 : 0, r.regs[0x2280], r.regs[0x2281],
+                r.regs[kRegRbSurfaceInfo], r.regs[kRegRbColorInfo], r.regs[0x2200], r.regs[kRegRbDepthInfo], r.regs[0x2104], r.regs[0x2206]);
+        m_lastSkipped++;
+        return;
+    }
+    // SCDA_WATCH_DRAW=<vs hash hex>: one cheap line per draw with that VS, every frame (timing-sensitive glitches).
+    static const std::vector<uint64_t> watchVs = []
+    {
+        std::vector<uint64_t> v;
+        for (const char* p = getenv("SCDA_WATCH_DRAW"); p && *p; p += strcspn(p, ",") + (p[strcspn(p, ",")] ? 1 : 0))
+            v.push_back(strtoull(p, nullptr, 16));
+        return v;
+    }();
+    if (std::find(watchVs.begin(), watchVs.end(), d.vs->hash) != watchVs.end())
+    {
+        uint64_t ch = 1469598103934665603ull;
+        for (uint32_t i = 0; i < 256 * 4; i++)
+            ch = (ch ^ r.regs[kRegAluConstants + i]) * 1099511628211ull;
+        std::string s;
+        char buf[160];
+        for (uint32_t c = 8; c < 14; c++)
+        {
+            snprintf(buf, sizeof(buf), " c%u(%.9g %.9g %.9g %.9g)", c, std::bit_cast<float>(r.regs[kRegAluConstants + c * 4]), std::bit_cast<float>(r.regs[kRegAluConstants + c * 4 + 1]),
+                std::bit_cast<float>(r.regs[kRegAluConstants + c * 4 + 2]), std::bit_cast<float>(r.regs[kRegAluConstants + c * 4 + 3]));
+            s += buf;
+        }
+        for (uint32_t mi : d.memory)
+            if (mi < frame.memory.size())
+            {
+                const auto& snap = frame.memory[mi];
+                uint64_t h = 1469598103934665603ull;
+                for (uint8_t b : snap.Bytes())
+                    h = (h ^ b) * 1099511628211ull;
+                snprintf(buf, sizeof(buf), " snap %08X+%u h%016llx", uint32_t(snap.key >> 32), uint32_t(snap.key), (unsigned long long)h);
+                s += buf;
+                // SCDA_WATCH_DUMP=1: also write each distinct snapshot (+ index buffer) to watch_<addr>_<hash>.bin/.idx.
+                static const bool watchDump = getenv("SCDA_WATCH_DUMP") != nullptr;
+                static std::unordered_set<uint64_t> dumpedSnaps;
+                if (watchDump && dumpedSnaps.insert(h).second && dumpedSnaps.size() < 16)
+                {
+                    char name[64];
+                    snprintf(name, sizeof(name), "watch_%08X_%016llx.bin", uint32_t(snap.key >> 32), (unsigned long long)h);
+                    if (FILE* f = fopen(name, "wb"))
+                    {
+                        fwrite(snap.Bytes().data(), 1, snap.Bytes().size(), f);
+                        fclose(f);
+                    }
+                    if (d.indexSnapshot >= 0 && size_t(d.indexSnapshot) < frame.memory.size())
+                    {
+                        snprintf(name, sizeof(name), "watch_%08X_%016llx.idx", uint32_t(snap.key >> 32), (unsigned long long)h);
+                        if (FILE* f = fopen(name, "wb"))
+                        {
+                            fwrite(frame.memory[d.indexSnapshot].Bytes().data(), 1, frame.memory[d.indexSnapshot].Bytes().size(), f);
+                            fclose(f);
+                        }
+                    }
+                }
+                if (d.indexCount == 4)
+                    for (uint32_t v = 0; (v + 1) * 28 <= snap.Bytes().size() && v < 4; v++)
+                    {
+                        float xyz[3];
+                        for (uint32_t k = 0; k < 3; k++)
+                        {
+                            uint32_t w;
+                            memcpy(&w, &snap.Bytes()[v * 28 + k * 4], 4);
+                            xyz[k] = std::bit_cast<float>(_byteswap_ulong(w));
+                        }
+                        snprintf(buf, sizeof(buf), " v(%.9g %.9g %.9g)", xyz[0], xyz[1], xyz[2]);
+                        s += buf;
+                    }
+            }
+        for (uint32_t t = 0; t < 8; t++)
+        {
+            snprintf(buf, sizeof(buf), " t%u %08X/%08X", t, r.regs[kRegFetchConstants + t * 6 + 1], r.regs[kRegFetchConstants + t * 6 + 2]);
+            s += buf;
+        }
+        snprintf(buf, sizeof(buf), " vs %08llx z %08X wo %08X sc %08X/%08X part %d ps0 %g %g %g %g", (unsigned long long)(d.vs->hash >> 32), r.regs[0x2200], r.regs[0x2080], r.regs[0x2081], r.regs[0x2082], int(frame.partial),std::bit_cast<float>(r.regs[kRegAluConstants + 1024]), std::bit_cast<float>(r.regs[kRegAluConstants + 1025]), std::bit_cast<float>(r.regs[kRegAluConstants + 1026]), std::bit_cast<float>(r.regs[kRegAluConstants + 1027]));
+        RuntimeLog("[watch] frame %llu present %llu draw %u n %u ib %08X consts %016llx%s%s\n", (unsigned long long)frame.stats.frame, m_presented,m_lastDrawn + m_lastSkipped, d.indexCount, d.indexBase, (unsigned long long)ch, s.c_str(), buf);
+    }
+    if (TraceResolveFrame(m_presented))
+    {
+        // Texture slots the PS samples: s<n>_Texture*DescriptorIndex uses outside the #define header.
+        std::string used;
+        const std::string hlsl = TranslateShader(*d.ps).hlsl;
+        for (uint32_t n = 0; n < 32; n++)
+        {
+            const std::string name = "s" + std::to_string(n) + "_Texture";
+            size_t count = 0;
+            for (size_t at = hlsl.find(name); at != std::string::npos; at = hlsl.find(name, at + 1))
+                count++;
+            if (count > 3)
+                used += " " + std::to_string(n);
+        }
+        RuntimeLog("[rtrace] draw %u vs %016llx ps %016llx rt %08X/%08X blend %08X mask %08X zctl %08X zinfo %08X vte %08X zs %08X zo %08X wo %08X sc %08X clip %08X cc %08X aref %08X ib %08X n %u samples%s\n",
+            m_lastDrawn + m_lastSkipped, (unsigned long long)d.vs->hash, (unsigned long long)d.ps->hash, r.regs[kRegRbSurfaceInfo],
+            r.regs[kRegRbColorInfo], r.regs[0x2201], r.regs[0x2104], r.regs[0x2200], r.regs[kRegRbDepthInfo], r.regs[0x2206], r.regs[0x2113],
+            r.regs[0x2114], r.regs[0x2080], r.regs[0x2205], r.regs[0x2204], r.regs[0x2202], r.regs[0x210E], d.indexBase, d.indexCount, used.c_str());
+        for (uint32_t i = 0; i < 6; i++) // PA_CL_UCP_i_X..W (0x2388 + 4i) of each enabled user clip plane
+            if ((r.regs[0x2204] >> i) & 1)
+                RuntimeLog("[rtrace]   ucp%u %g %g %g %g\n", i, std::bit_cast<float>(r.regs[0x2388 + i * 4]), std::bit_cast<float>(r.regs[0x2389 + i * 4]),
+                    std::bit_cast<float>(r.regs[0x238A + i * 4]), std::bit_cast<float>(r.regs[0x238B + i * 4]));
+        if (r.regs[0x2205] & 0x3800) // PA_SU_SC_MODE_CNTL poly offset enables: PA_SU_POLY_OFFSET_FRONT/BACK_SCALE/OFFSET
+            RuntimeLog("[rtrace]   polyoffset front %g %g back %g %g\n", std::bit_cast<float>(r.regs[0x2380]), std::bit_cast<float>(r.regs[0x2381]),
+                std::bit_cast<float>(r.regs[0x2382]), std::bit_cast<float>(r.regs[0x2383]));
+        // SCDA_TRACE_VSC=<vs hash hex>[,..]: draws with one of those VS also log VS c8-c17 (transforms).
+        static const std::vector<uint64_t> traceVscList = []
+        {
+            std::vector<uint64_t> v;
+            for (const char* p = getenv("SCDA_TRACE_VSC"); p && *p; p += strcspn(p, ",") + (p[strcspn(p, ",")] ? 1 : 0))
+                v.push_back(strtoull(p, nullptr, 16));
+            return v;
+        }();
+        // (SCDA_TRACE_VSC=0: every VS.)
+        if (std::find(traceVscList.begin(), traceVscList.end(), d.vs->hash) != traceVscList.end() ||
+            (traceVscList.size() == 1 && traceVscList[0] == 0))
+            for (uint32_t c = 8; c < 18; c++)
+                RuntimeLog("[rtrace]   vc%u %g %g %g %g (%08X %08X %08X %08X)\n", c, std::bit_cast<float>(r.regs[kRegAluConstants + c * 4]),
+                    std::bit_cast<float>(r.regs[kRegAluConstants + c * 4 + 1]), std::bit_cast<float>(r.regs[kRegAluConstants + c * 4 + 2]),
+                    std::bit_cast<float>(r.regs[kRegAluConstants + c * 4 + 3]), r.regs[kRegAluConstants + c * 4], r.regs[kRegAluConstants + c * 4 + 1],
+                    r.regs[kRegAluConstants + c * 4 + 2], r.regs[kRegAluConstants + c * 4 + 3]);
+        // SCDA_TRACE_PS=<ps hash hex>[,..]: draws with one of those PS also log PS c0-c7 and blend control.
+        static const std::vector<uint64_t> tracePsList = []
+        {
+            std::vector<uint64_t> v;
+            for (const char* p = getenv("SCDA_TRACE_PS"); p && *p; p += strcspn(p, ",") + (p[strcspn(p, ",")] ? 1 : 0))
+                v.push_back(strtoull(p, nullptr, 16));
+            return v;
+        }();
+        const bool tracePs = std::find(tracePsList.begin(), tracePsList.end(), d.ps->hash) != tracePsList.end();
+        if (tracePs)
+            for (uint32_t c : { 0u, 1u, 2u, 3u, 4u, 5u, 6u, 7u, 8u, 9u, 10u, 11u, 12u, 15u, 16u, 20u, 21u, 22u, 23u, 220u, 225u, 229u, 230u, 231u, 232u, 245u, 246u, 247u, 248u, 249u, 250u, 253u, 254u })
+            {
+                auto f = [&](uint32_t i) { return std::bit_cast<float>(r.regs[kRegAluConstants + 1024 + c * 4 + i]); };
+                RuntimeLog("[rtrace]   ps c%u %g %g %g %g blend %08X\n", c, f(0), f(1), f(2), f(3), r.regs[0x2201]);
+            }
+        // SCDA_TRACE_PS also logs PS c255, VS c0-c31 and the 6 fetch dwords of each texture slot.
+        if (tracePs)
+        {
+            auto pf = [&](uint32_t i) { return std::bit_cast<float>(r.regs[kRegAluConstants + 1024 + 255 * 4 + i]); };
+            RuntimeLog("[rtrace]   ps c255 %g %g %g %g loops 28-31 %08X %08X %08X %08X\n", pf(0), pf(1), pf(2), pf(3),
+                r.regs[kRegLoopConstants + 28], r.regs[kRegLoopConstants + 29], r.regs[kRegLoopConstants + 30], r.regs[kRegLoopConstants + 31]);
+            RuntimeLog("[rtrace]   bools %08X %08X %08X %08X %08X %08X %08X %08X\n", r.regs[kRegBoolConstants], r.regs[kRegBoolConstants + 1],
+                r.regs[kRegBoolConstants + 2], r.regs[kRegBoolConstants + 3], r.regs[kRegBoolConstants + 4], r.regs[kRegBoolConstants + 5],
+                r.regs[kRegBoolConstants + 6], r.regs[kRegBoolConstants + 7]);
+            for (uint32_t c = 0; c < 256; c = c == 31 ? 224 : c == 243 ? 255 : c + 1) // c0-c31, c224-c243, c255
+            {
+                auto f = [&](uint32_t i) { return std::bit_cast<float>(r.regs[kRegAluConstants + c * 4 + i]); };
+                RuntimeLog("[rtrace]   vs c%u %g %g %g %g\n", c, f(0), f(1), f(2), f(3));
+            }
+            // Vertex fetch slot 95 (the usual position stream): first 8 vertices as float3 at stride
+            // 28 bytes (big-endian), to identify the mesh.
+            {
+                const uint32_t f0 = r.regs[kRegFetchConstants + 95 * 2], f1 = r.regs[kRegFetchConstants + 95 * 2 + 1];
+                const uint8_t* vb = (f0 & 3) == 3 ? PhysicalPtr(f0 & 0x1FFFFFFC) : nullptr;
+                RuntimeLog("[rtrace]   vfetch95 %08X %08X ib %08X n %u\n", f0, f1, d.indexBase, d.indexCount);
+                std::string idx;
+                if (d.source == IndexSource::Dma && d.indexSnapshot >= 0 && size_t(d.indexSnapshot) < frame.memory.size())
+                {
+                    const std::vector<uint8_t>& b = frame.memory[d.indexSnapshot].Bytes();
+                    for (uint32_t k = 0; k < std::min<uint32_t>(d.indexCount, 12); k++)
+                    {
+                        uint32_t v = 0;
+                        if (d.index32 && (k + 1) * 4 <= b.size())
+                            v = _byteswap_ulong(*(const uint32_t*)&b[k * 4]);
+                        else if (!d.index32 && (k + 1) * 2 <= b.size())
+                            v = _byteswap_ushort(*(const uint16_t*)&b[k * 2]);
+                        idx += " " + std::to_string(v);
+                    }
+                }
+                RuntimeLog("[rtrace]   prim %u source %u index32 %d endian %u offset %u indices:%s\n", d.primType, unsigned(d.source), int(d.index32), d.indexEndian, r.regs[0x2102] & 0xFFFFFF, idx.c_str());
+                // The draw's vertex snapshots (what the GPU reads): key and first 4 float3s at stride 28.
+                for (uint32_t mi : d.memory)
+                {
+                    if (mi >= frame.memory.size())
+                        continue;
+                    const auto& snap = frame.memory[mi];
+                    std::string vs;
+                    for (uint32_t v = 0; (v + 1) * 28 <= snap.Bytes().size() && v < 4; v++)
+                    {
+                        char buf[96];
+                        float xyz[3];
+                        for (uint32_t k = 0; k < 3; k++)
+                        {
+                            uint32_t w;
+                            memcpy(&w, &snap.Bytes()[v * 28 + k * 4], 4);
+                            w = _byteswap_ulong(w);
+                            memcpy(&xyz[k], &w, 4);
+                        }
+                        snprintf(buf, sizeof(buf), " (%g %g %g)", xyz[0], xyz[1], xyz[2]);
+                        vs += buf;
+                    }
+                    RuntimeLog("[rtrace]   snapshot %08X +%u B:%s\n", uint32_t(snap.key >> 32), uint32_t(snap.key), vs.c_str());
+                }
+                // Vertex fetch slot 0 too (clears and HUD quads): first 4 vertices as float3, stride 28.
+                {
+                    const uint32_t s0 = r.regs[kRegFetchConstants], s1 = r.regs[kRegFetchConstants + 1];
+                    const uint8_t* vb0 = (s0 & 3) == 3 ? PhysicalPtr(s0 & 0x1FFFFFFC) : nullptr;
+                    RuntimeLog("[rtrace]   vfetch0 %08X %08X\n", s0, s1);
+                    for (uint32_t v = 0; vb0 && GuestRangeReadable(vb0, 4 * 28) && v < 4; v++)
+                    {
+                        float xyz[3];
+                        for (uint32_t k = 0; k < 3; k++)
+                        {
+                            uint32_t w;
+                            memcpy(&w, vb0 + v * 28 + k * 4, 4);
+                            w = _byteswap_ulong(w);
+                            memcpy(&xyz[k], &w, 4);
+                        }
+                        RuntimeLog("[rtrace]   s0v%u %g %g %g\n", v, xyz[0], xyz[1], xyz[2]);
+                    }
+                }
+                // The vertices the first indices reference (or 0-7 for auto-indexed draws).
+                std::vector<uint32_t> first;
+                for (const char* q = idx.c_str(); *q; )
+                {
+                    const uint32_t v = strtoul(q, (char**)&q, 10);
+                    if (v != 0xFFFF && v != 0xFFFFFFFF && first.size() < 8)
+                        first.push_back(v);
+                    while (*q == ' ') q++;
+                }
+                for (uint32_t v = 0; first.empty() && v < 8; v++)
+                    first.push_back(v);
+                for (uint32_t v : first)
+                {
+                    if (!vb || !GuestRangeReadable(vb + v * 28, 20))
+                        break;
+                    float xyz[5]; // dwords 0-4 as floats (28-byte stride assumed: only v0 is exact otherwise)
+                    for (uint32_t k = 0; k < 5; k++)
+                    {
+                        uint32_t w;
+                        memcpy(&w, vb + v * 28 + k * 4, 4);
+                        w = _byteswap_ulong(w);
+                        memcpy(&xyz[k], &w, 4);
+                    }
+                    RuntimeLog("[rtrace]   v%u %g %g %g | %g %g\n", v, xyz[0], xyz[1], xyz[2], xyz[3], xyz[4]);
+                }
+            }
+            for (uint32_t slot = 0; slot < 16; slot++)
+                if (r.regs[kRegFetchConstants + slot * 6] & 3)
+                    RuntimeLog("[rtrace]   fetch %u: %08X %08X %08X %08X %08X %08X\n", slot, r.regs[kRegFetchConstants + slot * 6],
+                        r.regs[kRegFetchConstants + slot * 6 + 1], r.regs[kRegFetchConstants + slot * 6 + 2], r.regs[kRegFetchConstants + slot * 6 + 3],
+                        r.regs[kRegFetchConstants + slot * 6 + 4], r.regs[kRegFetchConstants + slot * 6 + 5]);
+            // First 16 bytes at each texture slot's base (tiny default textures: their texel value).
+            for (uint32_t slot = 0; slot < 16; slot++)
+                if ((r.regs[kRegFetchConstants + slot * 6] & 3) == 2)
+                {
+                    const uint8_t* tb = PhysicalPtr(r.regs[kRegFetchConstants + slot * 6 + 1] & 0x1FFFF000);
+                    if (tb && GuestRangeReadable(tb, 16))
+                        RuntimeLog("[rtrace]   texel %u: %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X\n", slot,
+                            tb[0], tb[1], tb[2], tb[3], tb[4], tb[5], tb[6], tb[7], tb[8], tb[9], tb[10], tb[11], tb[12], tb[13], tb[14], tb[15]);
+                }
+        }
+        // SCDA_TRACE_CONSTS=<index base hex>: draws with that index base also log their vertex/index
+        // snapshot hashes, draw state, PS c0, bool and vertex fetch constants and VS c0-c255.
+        static const uint32_t constsIb = getenv("SCDA_TRACE_CONSTS") ? strtoul(getenv("SCDA_TRACE_CONSTS"), nullptr, 16) : 0;
+        if (constsIb && d.indexBase == constsIb)
+        {
+            auto hash = [&](int32_t m)
+            {
+                uint64_t h = 1469598103934665603ull;
+                if (m >= 0 && size_t(m) < frame.memory.size())
+                    for (uint8_t b : frame.memory[m].Bytes())
+                        h = (h ^ b) * 1099511628211ull;
+                return (unsigned long long)h;
+            };
+            for (uint32_t m : d.memory)
+                RuntimeLog("[rtrace]   snap %u key %016llx size %zu hash %016llx\n", m, (unsigned long long)frame.memory[m].key,
+                    frame.memory[m].Bytes().size(), hash(int32_t(m)));
+            RuntimeLog("[rtrace]   idx %d hash %016llx prim %u src %d i32 %d endian %u vgt %08X %08X %08X %08X colorctl %08X aref %08X mode %08X\n",
+                d.indexSnapshot, hash(d.indexSnapshot), d.primType, int(d.source), int(d.index32), d.indexEndian, r.regs[0x2100],
+                r.regs[0x2101], r.regs[0x2102], r.regs[0x2103], r.regs[0x2202], r.regs[0x210E], r.regs[kRegRbModeControl]);
+            RuntimeLog("[rtrace]   psc0 %08X %08X %08X %08X psc255 %08X bool %08X %08X\n", r.regs[kRegAluConstants + 1024],
+                r.regs[kRegAluConstants + 1025], r.regs[kRegAluConstants + 1026], r.regs[kRegAluConstants + 1027],
+                r.regs[kRegAluConstants + 1024 + 255 * 4], r.regs[kRegBoolConstants], r.regs[kRegBoolConstants + 4]);
+            for (uint32_t c = 0; c < 192; c += 6)
+                if ((r.regs[kRegFetchConstants + c] & 3) == 3 || (r.regs[kRegFetchConstants + c + 2] & 3) == 3 || (r.regs[kRegFetchConstants + c + 4] & 3) == 3)
+                    RuntimeLog("[rtrace]   fetch%u %08X %08X %08X %08X %08X %08X\n", c / 6, r.regs[kRegFetchConstants + c],
+                        r.regs[kRegFetchConstants + c + 1], r.regs[kRegFetchConstants + c + 2], r.regs[kRegFetchConstants + c + 3],
+                        r.regs[kRegFetchConstants + c + 4], r.regs[kRegFetchConstants + c + 5]);
+            for (uint32_t c = 0; c < 256; c++)
+                RuntimeLog("[rtrace]   c%u %08X %08X %08X %08X\n", c, r.regs[kRegAluConstants + c * 4], r.regs[kRegAluConstants + c * 4 + 1],
+                    r.regs[kRegAluConstants + c * 4 + 2], r.regs[kRegAluConstants + c * 4 + 3]);
+        }
+    }
+    static const std::filesystem::path cacheDir = DefaultShaderCacheDir();
+    auto& vs = r.vs[d.vs->hash];
+    if (!vs)
+    {
+        const CompiledShader& c = GetCompiledShader(*d.vs, cacheDir);
+        if (c.ok)
+            m_device->CreateVertexShader(c.bytecode.data(), c.bytecode.size(), nullptr, &vs);
+    }
+    auto& ps = r.ps[d.ps->hash];
+    if (!ps)
+    {
+        const CompiledShader& c = GetCompiledShader(*d.ps, cacheDir);
+        if (c.ok)
+            m_device->CreatePixelShader(c.bytecode.data(), c.bytecode.size(), nullptr, &ps);
+    }
+    if (!vs || !ps)
+    {
+        static const bool traceSkip = getenv("SCDA_TRACE_SKIP") != nullptr;
+        static std::unordered_set<uint64_t> failSeen;
+        if (traceSkip && failSeen.insert(d.vs->hash ^ d.ps->hash * 3).second)
+            RuntimeLog("[skip] frame %llu shader failed: vs %016llx %s ps %016llx %s\n", m_presented, (unsigned long long)d.vs->hash, vs ? "ok" : "FAILED",
+                (unsigned long long)d.ps->hash, ps ? "ok" : "FAILED");
+        m_lastSkipped++;
+        return;
+    }
+    const uint32_t texSlots = ShaderTextureFetchSlots(*d.vs) | ShaderTextureFetchSlots(*d.ps);
+    static const bool traceClearQuads = getenv("SCDA_TRACE_DEPTH_ALIAS") != nullptr;
+    if (traceClearQuads && d.vs->hash == 0x10e10ea90b97dff6ull) // D3D clear quads: vertex 0 z + colour
+        RuntimeLog("[zalias] frame %llu clear quad color %08X mode %u z %g colour %g %g %g %g\n", m_presented, r.regs[kRegRbColorInfo],
+            r.regs[kRegRbModeControl] & 7, double(SnapshotVertexDword(d, frame, r.regs, 2)), double(SnapshotVertexDword(d, frame, r.regs, 3)),
+            double(SnapshotVertexDword(d, frame, r.regs, 4)), double(SnapshotVertexDword(d, frame, r.regs, 5)), double(SnapshotVertexDword(d, frame, r.regs, 6)));
+    if (traceClearQuads && d.vs->hash == 0x10e10ea90b97dff6ull) // and the quad's extent (vertices 0-2 xy)
+        RuntimeLog("[zalias] quad xy %g %g / %g %g / %g %g wo %08X sc %08X %08X\n", double(SnapshotVertexDword(d, frame, r.regs, 0)), double(SnapshotVertexDword(d, frame, r.regs, 1)),
+            double(SnapshotVertexDword(d, frame, r.regs, 7)), double(SnapshotVertexDword(d, frame, r.regs, 8)), double(SnapshotVertexDword(d, frame, r.regs, 14)), double(SnapshotVertexDword(d, frame, r.regs, 15)),
+            r.regs[0x2080], r.regs[0x2081], r.regs[0x2082]);
+    if (r.stateDirty || (texSlots & ~r.lastTexSlots))
+    {
+        r.lastTexSlots = r.stateDirty ? texSlots : r.lastTexSlots | texSlots;
+        BindRegisterState(r.regs, r.lastTexSlots);
+        r.stateDirty = false;
+    }
+    // Okhotsk_02 surfacing (docs/remaining_bugs.md): the lens-drop pass (PS 7c17e516, additive into RT0
+    // base 0 + RT1 base 0xB8) follows aliased depth-only clears of both, which AliasedClearColor makes
+    // (0, 1, 1, 1); RT1 is resolved and added to the screen = full-screen cyan. The 360 shows none, but
+    // Kinshasa's light mask needs that same clear value, so this is a per-shader workaround: targets
+    // last written by an aliased clear start black for this pass. SCDA_NO_LENS_DROP_FIX=1: off.
+    static constexpr uint64_t kLensDropPs = 0x7c17e51684622942ull;
+    static const bool noLensDropFix = getenv("SCDA_NO_LENS_DROP_FIX") != nullptr;
+    const bool aliasClearDraw = DepthOnlyOverwritesColor(r.regs);
+    for (ColorTarget* t : r.boundTargets)
+    {
+        if (!t)
+            continue;
+        if (!noLensDropFix && !aliasClearDraw && t->aliasCleared && d.ps->hash == kLensDropPs)
+        {
+            static const float black[4] = {};
+            m_context->ClearRenderTargetView(t->rtv.Get(), black);
+        }
+        t->aliasCleared = aliasClearDraw;
+    }
+    if (averageSlot >= 0)
+    {
+        const TextureFetch t = DecodeTextureFetch(r.regs, uint32_t(averageSlot));
+        auto& avg = r.averageTextures[t.physical | uint64_t(t.format) << 32];
+        if (!avg && t.valid && TextureElementBytes(t.format))
+        {
+            const uint8_t* guest = PhysicalPtr(t.physical);
+            uint64_t sum[4] = {};
+            uint32_t mean = 0;
+            bool have = false;
+            if (GuestRangeReadable(guest, TextureGuestBytes(t)))
+            {
+                const std::vector<uint32_t> texels = ConvertTexture(t, guest);
+                for (uint32_t v : texels)
+                    for (uint32_t c = 0; c < 4; c++)
+                        sum[c] += (v >> (8 * c)) & 0xFF;
+                if (!texels.empty())
+                {
+                    have = true;
+                    for (uint32_t c = 0; c < 4; c++)
+                        mean |= uint32_t((sum[c] + texels.size() / 2) / texels.size()) << (8 * c);
+                }
+            }
+            D3D11_TEXTURE2D_DESC td{};
+            td.Width = td.Height = td.MipLevels = td.ArraySize = 1;
+            td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            td.SampleDesc.Count = 1;
+            td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            D3D11_SUBRESOURCE_DATA init{ &mean, 4, 4 };
+            ComPtr<ID3D11Texture2D> tex;
+            // Unreadable noise: keep the title's texture (an opaque white mean would shift the image).
+            if (have && SUCCEEDED(m_device->CreateTexture2D(&td, &init, &tex)))
+                m_device->CreateShaderResourceView(tex.Get(), nullptr, &avg);
+        }
+        if (avg)
+        {
+            ID3D11ShaderResourceView* srv = avg.Get();
+            m_context->PSSetShaderResources(kHlslTex2DSlot + averageSlot, 1, &srv);
+            r.srvShadow = false;
+            r.stateDirty = true; // the next draw rebinds the guest textures
+        }
+    }
+    // SCDA_TEX_FLAT=<ps hash hex>:<slot>:<RRGGBBAA hex>[,..]: draws with that PS sample a 1x1 texture of
+    // that colour in that slot (A/B which input of a material is wrong).
+    {
+        struct Flat { uint64_t ps; uint32_t slot, rgba; ComPtr<ID3D11ShaderResourceView> srv; };
+        static std::vector<Flat> flats = []
+        {
+            std::vector<Flat> v;
+            for (const char* p = getenv("SCDA_TEX_FLAT"); p && *p; p += strcspn(p, ",") + (p[strcspn(p, ",")] ? 1 : 0))
+            {
+                char* e = nullptr;
+                Flat f{ strtoull(p, &e, 16), 0, 0, nullptr };
+                if (*e == ':')
+                    f.slot = uint32_t(strtoul(e + 1, &e, 10));
+                if (*e == ':')
+                    f.rgba = _byteswap_ulong(uint32_t(strtoul(e + 1, &e, 16))); // RRGGBBAA -> R8G8B8A8 memory order
+                if (f.slot < 32 || (f.slot >= 64 && f.slot < 96)) // 64+n: cube slot n
+                    v.push_back(f);
+            }
+            return v;
+        }();
+        for (Flat& f : flats)
+        {
+            if (f.ps != d.ps->hash)
+                continue;
+            if (!f.srv)
+            {
+                D3D11_TEXTURE2D_DESC td{};
+                const bool cube = f.slot >= 64;
+                td.Width = td.Height = td.MipLevels = 1;
+                td.ArraySize = cube ? 6 : 1;
+                td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+                td.SampleDesc.Count = 1;
+                td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+                td.MiscFlags = cube ? D3D11_RESOURCE_MISC_TEXTURECUBE : 0;
+                D3D11_SUBRESOURCE_DATA init[6];
+                for (auto& i : init)
+                    i = { &f.rgba, 4, 4 };
+                D3D11_SHADER_RESOURCE_VIEW_DESC sd{};
+                sd.Format = td.Format;
+                sd.ViewDimension = cube ? D3D11_SRV_DIMENSION_TEXTURECUBE : D3D11_SRV_DIMENSION_TEXTURE2D;
+                sd.Texture2D.MipLevels = 1; // TextureCube.MipLevels shares the offset
+                ComPtr<ID3D11Texture2D> tex;
+                if (SUCCEEDED(m_device->CreateTexture2D(&td, init, &tex)))
+                    m_device->CreateShaderResourceView(tex.Get(), &sd, &f.srv);
+            }
+            ID3D11ShaderResourceView* srv = f.srv.Get();
+            m_context->PSSetShaderResources(kHlslTex2DSlot + f.slot, 1, &srv);
+            r.srvShadow = false;
+            r.stateDirty = true;
+        }
+    }
+    UploadVertexMemory(d, frame);
+    m_context->VSSetShader(vs.Get(), nullptr, 0);
+    // RB_MODECONTROL 5 (depth only): the pixel shader does not run, so its kills (a masked prepass
+    // PS left bound with another draw's texture) must not drop depth (Xenia xenos::ModeControl).
+    // SCDA_DEPTH_ONLY_PS=1 runs it anyway (A/B).
+    static const bool depthOnlyPs = getenv("SCDA_DEPTH_ONLY_PS") != nullptr;
+    // Aliased depth-only clears (DepthOnlyOverwritesColor) write their colour through a PS that never
+    // kills: the title's PS left bound from an earlier draw dropped pixels of the depth/stencil clear
+    // (Kinshasa ground stayed in shadow). SCDA_ALIAS_TITLE_PS=1 runs the title's PS instead (A/B).
+    static const bool aliasTitlePs = getenv("SCDA_ALIAS_TITLE_PS") != nullptr;
+    const bool aliasClear = DepthOnlyOverwritesColor(r.regs);
+    const bool depthOnly = (r.regs[kRegRbModeControl] & 7) == 5 && !depthOnlyPs && !aliasClear;
+    m_context->PSSetShader(depthOnly ? nullptr : aliasClear && r.zeroPs && !aliasTitlePs ? r.zeroPs.Get() : ps.Get(), nullptr, 0);
+    // SCDA_FACE_DRAW=<present>,<draw>: that draw shows its facing instead (red front, green back), unculled
+    // and unblended (with SCDA_DUMP_DRAWS: which triangles the rasterizer would cull).
+    static unsigned long long facePresent = 0;
+    static unsigned faceDrawIndex = 0;
+    static const bool faceDraw = getenv("SCDA_FACE_DRAW") && sscanf(getenv("SCDA_FACE_DRAW"), "%llu,%u", &facePresent, &faceDrawIndex) == 2;
+    // SCDA_FACE_VS=<vs hash hex>: every draw with that vertex shader, in every frame.
+    static const uint64_t faceVs = getenv("SCDA_FACE_VS") ? strtoull(getenv("SCDA_FACE_VS"), nullptr, 16) : 0;
+    static const uint64_t facePsHash = getenv("SCDA_FACE_PS") ? strtoull(getenv("SCDA_FACE_PS"), nullptr, 16) : 0;
+    const bool faceThis = (faceDraw && m_presented == facePresent && m_lastDrawn + m_lastSkipped == faceDrawIndex) || (faceVs && d.vs->hash == faceVs) ||
+                          (facePsHash && d.ps->hash == facePsHash);
+    if (faceThis)
+    {
+        static ComPtr<ID3D11PixelShader> facePs;
+        static ComPtr<ID3D11RasterizerState> noCull;
+        if (!facePs)
+        {
+            static const char kFacePs[] = "void main(bool f : SV_IsFrontFace, out float4 o0 : SV_Target0, out float4 o1 : SV_Target1,"
+                " out float4 o2 : SV_Target2, out float4 o3 : SV_Target3) { o0 = f ? float4(1, 0, 0, 1) : float4(0, 1, 0, 1); o1 = o2 = o3 = o0; }";
+            std::string error;
+            auto code = CompileHlsl(kFacePs, true, &error);
+            if (code.empty() || FAILED(m_device->CreatePixelShader(code.data(), code.size(), nullptr, &facePs)))
+                RuntimeLog("[face] shader: %s\n", error.c_str());
+            D3D11_RASTERIZER_DESC rd{};
+            rd.FillMode = D3D11_FILL_SOLID;
+            rd.CullMode = D3D11_CULL_NONE;
+            rd.DepthClipEnable = TRUE;
+            m_device->CreateRasterizerState(&rd, &noCull);
+        }
+        m_context->PSSetShader(facePs.Get(), nullptr, 0);
+        // The draw's own front face (red = front by the title's PA_SU_SC_MODE_CNTL), culling off.
+        static ComPtr<ID3D11RasterizerState> noCullBy[2];
+        const bool ccwFront = HostFrontCounterClockwise(r.regs);
+        if (!noCullBy[ccwFront])
+        {
+            D3D11_RASTERIZER_DESC rd{};
+            rd.FillMode = D3D11_FILL_SOLID;
+            rd.CullMode = D3D11_CULL_NONE;
+            rd.FrontCounterClockwise = ccwFront;
+            rd.DepthClipEnable = TRUE;
+            m_device->CreateRasterizerState(&rd, &noCullBy[ccwFront]);
+        }
+        m_context->RSSetState(noCullBy[ccwFront].Get());
+        (void)noCull;
+        m_context->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
+        if (!faceVs && !facePsHash) RuntimeLog("[face] present %llu draw %u vs %016llx: facing shader\n", m_presented, faceDrawIndex, (unsigned long long)d.vs->hash);
+    }
+    m_context->GSSetShader(rectList ? r.rectListGs.Get() : pointList ? r.pointListGs.Get() : nullptr, nullptr, 0);
+    m_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY(topology));
+    const bool expand = NeedsTriangleListExpansion(d.primType);
+    // VGT_INDX_OFFSET (0x2102) applies to auto-generated indices too: JBA HQ draws its BSP polygons as
+    // auto-indexed fans (offsets 6000-8000 into one shared buffer); without it every fan used the
+    // buffer's first vertices (big dark wedges over walls). SCDA_NO_INDEX_OFFSET=1: old behaviour.
+    static const bool noIndexOffset = getenv("SCDA_NO_INDEX_OFFSET") != nullptr;
+    const uint32_t autoOffset = !noIndexOffset && d.source != IndexSource::Dma ? r.regs[0x2102] & 0xFFFFFF : 0;
+    if (d.source == IndexSource::Dma || expand)
+    {
+        std::vector<uint8_t>& indices = r.indexScratch;
+        indices.clear();
+        uint32_t count = d.indexCount;
+        bool wide = d.index32;
+        if (d.source == IndexSource::Dma)
+        {
+            if (d.indexSnapshot < 0 || size_t(d.indexSnapshot) >= frame.memory.size())
+            {
+                static const bool traceSkip = getenv("SCDA_TRACE_SKIP") != nullptr;
+                if (traceSkip)
+                    RuntimeLog("[skip] frame %llu no index snapshot (ib %08X n %u)\n", m_presented, d.indexBase, d.indexCount);
+                m_lastSkipped++;
+                return;
+            }
+            indices.resize(d.indexBytes);
+            SwapIndices(frame.memory[d.indexSnapshot].Bytes().data(), d.indexBytes, d.indexEndian, indices.data());
+            count = std::min(d.indexCount, d.indexBytes / (d.index32 ? 4 : 2));
+            // SCDA_DUMP_STRIPS=<dir>,<present>: every DMA triangle strip with primitive reset in that present,
+            // as <dir>/d<draw>_<vs>.idx (u32 indices, reset value as is), for offline winding analysis.
+            static unsigned long long dsPresent = 0;
+            static const std::string dsDir = [&]
+            {
+                const char* e = getenv("SCDA_DUMP_STRIPS");
+                if (!e || !strchr(e, ','))
+                    return std::string();
+                dsPresent = strtoull(strchr(e, ',') + 1, nullptr, 10);
+                return std::string(e, strchr(e, ',') - e);
+            }();
+            if (!dsDir.empty() && m_presented == dsPresent && d.primType == 6 && (r.regs[0x2205] & (1u << 21)))
+            {
+                char name[128];
+                snprintf(name, sizeof(name), "/d%05u_%016llx_%08X.idx", m_lastDrawn + m_lastSkipped, (unsigned long long)d.vs->hash, r.regs[0x2205]);
+                if (FILE* f = fopen((dsDir + name).c_str(), "wb"))
+                {
+                    for (uint32_t i = 0; i < count; i++)
+                    {
+                        const uint32_t v = d.index32 ? indices[i * 4] | (indices[i * 4 + 1] << 8) | (indices[i * 4 + 2] << 16) | (uint32_t(indices[i * 4 + 3]) << 24)
+                                                     : uint32_t(indices[i * 2] | (indices[i * 2 + 1] << 8));
+                        fwrite(&v, 4, 1, f);
+                    }
+                    fclose(f);
+                }
+            }
+            // SCDA_TRACE_DRAW=<present>,<draw>: that draw's primitive, restart state and first indices.
+            static unsigned long long tdPresent = 0;
+            static unsigned tdDraw = 0;
+            static const bool td = getenv("SCDA_TRACE_DRAW") && sscanf(getenv("SCDA_TRACE_DRAW"), "%llu,%u", &tdPresent, &tdDraw) == 2;
+            if (td && m_presented == tdPresent && m_lastDrawn + m_lastSkipped == tdDraw)
+            {
+                std::string first;
+                uint32_t resets = 0, maxv = 0;
+                const uint32_t reset = r.regs[0x2103];
+                for (uint32_t i = 0; i < count; i++)
+                {
+                    const uint32_t v = d.index32 ? indices[i * 4] | (indices[i * 4 + 1] << 8) | (indices[i * 4 + 2] << 16) | (uint32_t(indices[i * 4 + 3]) << 24)
+                                                 : uint32_t(indices[i * 2] | (indices[i * 2 + 1] << 8));
+                    resets += v == (d.index32 ? reset : reset & 0xFFFF) || v == (d.index32 ? 0xFFFFFFFFu : 0xFFFFu);
+                    maxv = std::max(maxv, v);
+                    if (i < 32)
+                        first += " " + std::to_string(v);
+                }
+                RuntimeLog("[draw] present %llu draw %u prim %u idx32 %d endian %u n %u reset %08X (%u hits) max %u mode %08X:%s\n", m_presented, tdDraw,
+                    d.primType, int(d.index32), d.indexEndian, count, reset, resets, maxv, r.regs[0x2205], first.c_str());
+            }
+        }
+        // VGT_INDX_OFFSET (0x2102, 24 bits) is added to every fetched index. Cozumel's far ocean plane
+        // indexes the last 8 vertices of the ocean grid's buffer with offset 4604; without it the
+        // horizon drew 8 grid vertices instead (black band). Reset indices stay strip cuts.
+        // SCDA_NO_INDEX_OFFSET=1: old behaviour (A/B).
+        if (const uint32_t indexOffset = r.regs[0x2102] & 0xFFFFFF; indexOffset && !indices.empty() && !noIndexOffset)
+        {
+            const bool resetOn = (r.regs[0x2205] >> 21) & 1;
+            const uint32_t reset = r.regs[0x2103];
+            std::vector<uint8_t> out(size_t(count) * 4);
+            for (uint32_t i = 0; i < count; i++)
+            {
+                uint32_t v;
+                if (wide)
+                    memcpy(&v, &indices[i * 4], 4);
+                else
+                    v = uint16_t(indices[i * 2] | (indices[i * 2 + 1] << 8));
+                const bool cut = v == (wide ? 0xFFFFFFFFu : 0xFFFFu) || (resetOn && v == (wide ? reset : reset & 0xFFFF));
+                v = cut ? 0xFFFFFFFFu : v + indexOffset;
+                memcpy(&out[i * 4], &v, 4);
+            }
+            indices.swap(out);
+            wide = true;
+        }
+        if (expand)
+        {
+            std::vector<uint32_t> list(count);
+            for (uint32_t i = 0; i < count; i++)
+                if (indices.empty())
+                    list[i] = i + autoOffset;
+                else if (wide)
+                    memcpy(&list[i], &indices[i * 4], 4);
+                else
+                    list[i] = uint16_t(indices[i * 2] | (indices[i * 2 + 1] << 8));
+            list = ExpandToTriangleList(d.primType, list);
+            count = uint32_t(list.size());
+            indices.resize(list.size() * 4);
+            memcpy(indices.data(), list.data(), indices.size());
+            wide = true;
+        }
+        if (!count)
+        {
+            static const bool traceSkip = getenv("SCDA_TRACE_SKIP") != nullptr;
+            static std::unordered_set<uint64_t> emptySeen;
+            if (traceSkip && emptySeen.insert((uint64_t(d.primType) << 32) | d.indexCount).second)
+                RuntimeLog("[skip] frame %llu no indices after expansion: prim %u n %u source %u\n", m_presented, d.primType, d.indexCount, uint32_t(d.source));
+            m_lastSkipped++;
+            return;
+        }
+        const uint32_t bytes = (uint32_t(indices.size()) + 3) & ~3u;
+        if (!r.indexRing)
+        {
+            D3D11_BUFFER_DESC bd{};
+            bd.ByteWidth = 16u << 20;
+            bd.Usage = D3D11_USAGE_DYNAMIC;
+            bd.BindFlags = D3D11_BIND_INDEX_BUFFER;
+            bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+            if (SUCCEEDED(m_device->CreateBuffer(&bd, nullptr, &r.indexRing)))
+                r.indexRingBytes = bd.ByteWidth;
+        }
+        if (bytes <= r.indexRingBytes)
+        {
+            const bool wrap = r.indexRingPos + bytes > r.indexRingBytes;
+            D3D11_MAPPED_SUBRESOURCE map;
+            if (FAILED(m_context->Map(r.indexRing.Get(), 0, wrap ? D3D11_MAP_WRITE_DISCARD : D3D11_MAP_WRITE_NO_OVERWRITE, 0, &map)))
+            {
+                m_lastSkipped++;
+                return;
+            }
+            const uint32_t offset = wrap ? 0 : r.indexRingPos;
+            memcpy(static_cast<uint8_t*>(map.pData) + offset, indices.data(), indices.size());
+            m_context->Unmap(r.indexRing.Get(), 0);
+            r.indexRingPos = offset + bytes;
+            m_context->IASetIndexBuffer(r.indexRing.Get(), wide ? DXGI_FORMAT_R32_UINT : DXGI_FORMAT_R16_UINT, offset);
+        }
+        else
+        {
+            // Larger than the ring: one immutable buffer for this draw.
+            D3D11_BUFFER_DESC bd{};
+            bd.ByteWidth = uint32_t(indices.size());
+            bd.Usage = D3D11_USAGE_IMMUTABLE;
+            bd.BindFlags = D3D11_BIND_INDEX_BUFFER;
+            D3D11_SUBRESOURCE_DATA init{ indices.data(), 0, 0 };
+            ComPtr<ID3D11Buffer> ib;
+            if (FAILED(m_device->CreateBuffer(&bd, &init, &ib)))
+            {
+                m_lastSkipped++;
+                return;
+            }
+            m_context->IASetIndexBuffer(ib.Get(), wide ? DXGI_FORMAT_R32_UINT : DXGI_FORMAT_R16_UINT, 0);
+        }
+        m_context->DrawIndexed(count, 0, 0);
+    }
+    else
+        m_context->Draw(d.indexCount, autoOffset);
+    m_lastDrawn++;
+    // SCDA_PIXEL_WATCH=<frame>,<x>,<y>: in that presented frame, after every draw, read RT0 at guest
+    // window pixel (x, y) (window offset and MSAA/scale applied) and log the draw when it changed.
+    static const char* watch = getenv("SCDA_PIXEL_WATCH");
+    static unsigned long long watchFrame = 0;
+    static int watchX = 0, watchY = 0;
+    static const bool watchParsed = watch && sscanf(watch, "%llu,%d,%d", &watchFrame, &watchX, &watchY) == 3;
+    if (watchParsed && m_presented == watchFrame && r.last && r.last->texture)
+    {
+        const uint32_t wo = r.regs[kRegPaScWindowOffset];
+        const bool useOffset = (r.regs[0x2205] >> 16) & 1;
+        const int ox = useOffset ? int32_t(wo << 17) >> 17 : 0, oy = useOffset ? int32_t(wo << 1) >> 17 : 0;
+        const uint32_t watchScale = TargetScale(r, r.lastLayout.samplePitch);
+        const int hx = (watchX + ox) * int(r.lastLayout.samplesX * watchScale), hy = (watchY + oy) * int(r.lastLayout.samplesY * watchScale);
+        D3D11_TEXTURE2D_DESC td;
+        r.last->texture->GetDesc(&td);
+        static std::unordered_map<uint32_t, ComPtr<ID3D11Texture2D>> staging;
+        static uint64_t lastValue = ~0ull;
+        if (hx >= 0 && hy >= 0 && uint32_t(hx) < td.Width && uint32_t(hy) < td.Height)
+        {
+            auto& st = staging[td.Format];
+            if (!st)
+            {
+                D3D11_TEXTURE2D_DESC sd{};
+                sd.Width = sd.Height = sd.MipLevels = sd.ArraySize = 1;
+                sd.Format = td.Format;
+                sd.SampleDesc.Count = 1;
+                sd.Usage = D3D11_USAGE_STAGING;
+                sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+                m_device->CreateTexture2D(&sd, nullptr, &st);
+            }
+            D3D11_BOX box{ UINT(hx), UINT(hy), 0, UINT(hx + 1), UINT(hy + 1), 1 };
+            D3D11_MAPPED_SUBRESOURCE map;
+            if (st)
+            {
+                m_context->CopySubresourceRegion(st.Get(), 0, 0, 0, 0, r.last->texture.Get(), 0, &box);
+                if (SUCCEEDED(m_context->Map(st.Get(), 0, D3D11_MAP_READ, 0, &map)))
+                {
+                    uint64_t v = 0;
+                    memcpy(&v, map.pData, td.Format == DXGI_FORMAT_R16G16B16A16_FLOAT ? 8 : 4);
+                    m_context->Unmap(st.Get(), 0);
+                    if (v != lastValue)
+                    {
+                        float c[4] = {};
+                        if (td.Format == DXGI_FORMAT_R16G16B16A16_FLOAT)
+                            for (int i = 0; i < 4; i++)
+                                c[i] = HalfToFloat(uint32_t(v >> (16 * i)) & 0xFFFF);
+                        else
+                            for (int i = 0; i < 4; i++)
+                                c[i] = float((v >> (8 * i)) & 0xFF) / 255.0f;
+                        RuntimeLog("[pixel] draw %u vs %016llx ps %016llx rt %08X/%08X blend %08X fmt %u -> %.3f %.3f %.3f %.3f\n",
+                            m_lastDrawn + m_lastSkipped - 1, (unsigned long long)d.vs->hash, (unsigned long long)d.ps->hash, r.regs[kRegRbSurfaceInfo],
+                            r.regs[kRegRbColorInfo], r.regs[0x2201], uint32_t(td.Format), c[0], c[1], c[2], c[3]);
+                        RuntimeLog("[pixel]   cull %08X (mode %u ccw %u) vport xs %.3f ys %.3f vte %08X\n", r.regs[0x2205], HostCullMode(r.regs),
+                            uint32_t(HostFrontCounterClockwise(r.regs)), std::bit_cast<float>(r.regs[0x210F]), std::bit_cast<float>(r.regs[0x2111]), r.regs[0x2206]);
+                        RuntimeLog("[pixel]   psbools %08X %08X %08X %08X loops %08X %08X\n", r.regs[kRegBoolConstants + 4], r.regs[kRegBoolConstants + 5],
+                            r.regs[kRegBoolConstants + 6], r.regs[kRegBoolConstants + 7], r.regs[kRegLoopConstants + 16], r.regs[kRegLoopConstants + 31]);
+                        lastValue = v;
+                    }
+                }
+            }
+            // SCDA_PIXEL_WATCH_DEPTH=1: also the bound depth at that texel (whole-resource copy, slow).
+            static const bool watchDepth = getenv("SCDA_PIXEL_WATCH_DEPTH") != nullptr;
+            auto z = r.bound ? r.depthTargets.find(r.boundKeys[4]) : r.depthTargets.end();
+            static float lastDepth = -1.0f;
+            if (watchDepth && z != r.depthTargets.end())
+            {
+                ComPtr<ID3D11Resource> res;
+                ComPtr<ID3D11Texture2D> tex;
+                z->second->GetResource(&res);
+                D3D11_TEXTURE2D_DESC zd;
+                if (SUCCEEDED(res.As(&tex)) && (tex->GetDesc(&zd), uint32_t(hx) < zd.Width && uint32_t(hy) < zd.Height))
+                {
+                    static ComPtr<ID3D11Texture2D> zst;
+                    static uint32_t zw = 0, zh = 0;
+                    if (!zst || zw != zd.Width || zh != zd.Height)
+                    {
+                        D3D11_TEXTURE2D_DESC sd = zd;
+                        sd.Usage = D3D11_USAGE_STAGING;
+                        sd.BindFlags = 0;
+                        sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+                        zst.Reset();
+                        m_device->CreateTexture2D(&sd, nullptr, &zst);
+                        zw = zd.Width, zh = zd.Height;
+                    }
+                    D3D11_MAPPED_SUBRESOURCE zm;
+                    if (zst)
+                    {
+                        m_context->CopyResource(zst.Get(), tex.Get());
+                        if (SUCCEEDED(m_context->Map(zst.Get(), 0, D3D11_MAP_READ, 0, &zm)))
+                        {
+                            float depth;
+                            memcpy(&depth, (const uint8_t*)zm.pData + size_t(hy) * zm.RowPitch + size_t(hx) * 8, 4);
+                            m_context->Unmap(zst.Get(), 0);
+                            if (depth != lastDepth)
+                                RuntimeLog("[pixel] draw %u vs %016llx ps %016llx depth %.9g zctl %08X ib %08X n %u\n", m_lastDrawn + m_lastSkipped - 1,
+                                    (unsigned long long)d.vs->hash, (unsigned long long)d.ps->hash, depth, r.regs[0x2200], d.indexBase, d.indexCount);
+                            lastDepth = depth;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// EDRAM resolve: copy the source surface to the host texture for the destination, then clear it.
+// EVENT_WRITE_ZPD begin/end: a host occlusion query around the draws in between. Ends queue the
+// query for PollQueries; a begin while one is active drops the active one. An end without a begin
+// (the begin's frame was dropped) gets the fallback at once: the title polls the block.
+void D3D11Renderer::ExecuteQuery(const OcclusionQuery& q)
+{
+    DrawResources& r = *m_draw;
+    static const bool trace = getenv("SCDA_TRACE_QUERY") != nullptr;
+    if (trace)
+        RuntimeLog("[query] present %llu %s %08X gen %u (active %d, pending %zu)\n", (unsigned long long)m_presented, q.end ? "end" : "begin",
+            q.address, q.generation, r.activeQuery ? 1 : 0, r.pendingQueries.size());
+    if (r.activeQuery)
+    {
+        m_context->End(r.activeQuery.Get());
+        if (q.end)
+        {
+            const SurfaceLayout l = EdramSurfaceLayout(r.regs[kRegRbSurfaceInfo]);
+            const uint32_t qs = TargetScale(r, l.samplePitch);
+            r.pendingQueries.push_back({ r.activeQuery, q.address, q.generation, GetTickCount64(), qs * qs * l.samplesX * l.samplesY, r.querySeq++ });
+        }
+        r.activeQuery.Reset();
+    }
+    else if (q.end)
+    {
+        const bool written = Frames().VisibleWrite([&] { return WriteOcclusionResult(q.address, q.generation, kOcclusionFallbackSamples); });
+        Frames().QueryAnswered();
+        if (trace)
+            RuntimeLog("[query] end %08X without a begin: fallback %s\n", q.address, written ? "written" : "dropped (older generation)");
+    }
+    if (q.end)
+        return;
+    D3D11_QUERY_DESC qd{ D3D11_QUERY_OCCLUSION, 0 };
+    if (SUCCEEDED(m_device->CreateQuery(&qd, &r.activeQuery)))
+        m_context->Begin(r.activeQuery.Get());
+}
+
+// EVENT_WRITE_SHD: written now unless a query ended before it is still pending (then with its
+// answer, WritePendingFences). The title reads query counts behind a passed fence.
+void D3D11Renderer::ExecuteFence(const Fence& f)
+{
+    DrawResources& r = *m_draw;
+    if (r.pendingQueries.empty() && r.pendingFences.empty())
+    {
+        Frames().VisibleWrite([&] { WriteFence(f); return true; });
+        return;
+    }
+    r.pendingFences.push_back({ f, r.querySeq });
+}
+
+void D3D11Renderer::WritePendingFences()
+{
+    DrawResources& r = *m_draw;
+    size_t n = 0;
+    for (; n < r.pendingFences.size(); n++)
+    {
+        const uint64_t seq = r.pendingFences[n].seq;
+        if (std::any_of(r.pendingQueries.begin(), r.pendingQueries.end(), [&](const DrawResources::PendingQuery& q) { return q.seq < seq; }))
+            break;
+    }
+    if (n)
+    {
+        Frames().VisibleWrite([&]
+        {
+            for (size_t i = 0; i < n; i++)
+                WriteFence(r.pendingFences[i].fence);
+            return true;
+        });
+        r.pendingFences.erase(r.pendingFences.begin(), r.pendingFences.begin() + n);
+    }
+}
+
+// Completed host queries -> the guest block (WriteOcclusionResult; host samples / samplesPerPixel =
+// guest pixels). Never waits; a query still pending after 2 s, or failed, gets the fallback (a
+// title that polls the marker must never wait forever). Runs at every present and while no frame
+// is queued (the title blocks on a result before swapping: the Jail map does after ~3 frames), so
+// GetData may flush. SCDA_TRACE_QUERY=1 logs results.
+void D3D11Renderer::PollQueries()
+{
+    if (!m_draw)
+        return;
+    DrawResources& r = *m_draw;
+    static const bool trace = getenv("SCDA_TRACE_QUERY") != nullptr;
+    // SCDA_QUERY_LAG=<ms>: results are not read before this long after the end (simulates a loaded
+    // GPU, e.g. a desktop recorder: with results reported at the end event this made meshes flicker).
+    static const uint64_t lag = getenv("SCDA_QUERY_LAG") ? strtoull(getenv("SCDA_QUERY_LAG"), nullptr, 10) : 0;
+    const uint64_t now = GetTickCount64();
+    std::erase_if(r.pendingQueries, [&](DrawResources::PendingQuery& p)
+    {
+        if (now - p.ended < lag)
+            return false;
+        UINT64 samples = 0;
+        const HRESULT hr = m_context->GetData(p.query.Get(), &samples, sizeof(samples), 0);
+        const bool lost = hr != S_OK && (hr != S_FALSE || now - p.ended > lag + 2000);
+        if (hr != S_OK && !lost)
+            return false;
+        static const bool allVisible = getenv("SCDA_QUERY_ALL_VISIBLE") != nullptr; // A/B: every query fully visible
+        const uint32_t guest = lost || allVisible || g_debugQueriesVisible ? kOcclusionFallbackSamples : uint32_t(std::min<UINT64>(samples / std::max(p.samplesPerPixel, 1u), 0x7FFFFFFF));
+        const bool written = Frames().VisibleWrite([&] { return WriteOcclusionResult(p.address, p.generation, guest); });
+        Frames().QueryAnswered();
+        if (trace)
+            RuntimeLog("[query] present %llu block %08X gen %u: %llu host samples -> %u%s%s\n", (unsigned long long)m_presented, p.address,
+                p.generation, (unsigned long long)samples, guest, lost ? " (lost: fallback)" : "", written ? "" : " (older generation: dropped)");
+        return true;
+    });
+    WritePendingFences();
+}
+
+void D3D11Renderer::ExecuteResolve(const Resolve& res)
+{
+    DrawResources& r = *m_draw;
+    ColorTarget* source = ColorTargetFor(m_device, m_context, r, EdramColorKey(res.colorInfo, res.surfaceInfo));
+    if (TraceResolveFrame(m_presented))
+        RuntimeLog("[rtrace] resolve @draw %u ctrl %08X src %08X surf %08X -> dest %08X fmt %u %ux%u rect %d %d %d %d info %08X\n", res.drawIndex, res.copyControl,
+            res.colorInfo, res.surfaceInfo, res.destBase, (res.destInfo >> 7) & 0x3F, ResolveWidth(res), ResolveHeight(res), res.rect[0], res.rect[1],
+            res.rect[2], res.rect[3], res.destInfo);
+    // shortcut: depth-source resolves copy nothing (the destination keeps its last copy, if any).
+    if (ResolveCopies(res) && source && !ResolveFromDepth(res))
+    {
+        // The resolve rect goes to the same position in the destination. A destination inside an
+        // earlier resolve's texture (predicated tiling: one 32-row-aligned base per screen tile)
+        // is written into that texture at the row the base advanced to.
+        // shortcut: the destination keeps the surface's host format; rows only, no x offset in the base.
+        // shortcut: resolved entries are never invalidated, so a stale texture can capture a later base.
+        D3D11_TEXTURE2D_DESC sd;
+        source->texture->GetDesc(&sd);
+        const uint32_t base = res.destBase & 0x1FFFF000;
+        const uint32_t srcScale = TargetScale(r, EdramSurfaceLayout(res.surfaceInfo).samplePitch);
+        if ((res.destBase & 0xFFF) && TraceResolveOnce((3ull << 60) | res.destBase))
+            RuntimeLog("[resolve] dest %08X has sub-page offset %03X (dropped)\n", res.destBase, res.destBase & 0xFFF);
+        if (TraceResolveOnce((4ull << 60) | res.colorInfo | (uint64_t(res.surfaceInfo & 0x3FFF) << 32)))
+            RuntimeLog("[resolve] source info %08X surf %08X from_depth %d -> dest %08X info %08X fmt %u %ux%u\n", res.colorInfo, res.surfaceInfo,
+                ResolveFromDepth(res), res.destBase, res.destInfo, (res.destInfo >> 7) & 0x3F, ResolveWidth(res), ResolveHeight(res));
+        // The most recently copied containing texture wins (tile 0's, just before): entries are never
+        // invalidated, so an older texture can also span this base, and the map's iteration order
+        // changes as it rehashes (Scale 2 Intro: screen tiles 1-2 went into a stale texture and the
+        // presented rows 256+ froze).
+        uint32_t dy = 0;
+        auto dstIt = r.resolved.end();
+        for (auto it = r.resolved.begin(); it != r.resolved.end(); ++it)
+            if (it->first < base && it->second.rowBytes && it->second.format == sd.Format && it->second.width == ResolveWidth(res) &&
+                (base - it->first) % it->second.rowBytes == 0 && (base - it->first) / it->second.rowBytes < it->second.height)
+            {
+                if (dstIt == r.resolved.end() || it->second.lastCopy > dstIt->second.lastCopy)
+                {
+                    dstIt = it;
+                    dy = (base - it->first) / it->second.rowBytes;
+                }
+            }
+            else if (it->first < base && base < it->first + it->second.rowBytes * it->second.height &&
+                TraceResolveOnce((5ull << 60) | (uint64_t(base) << 20) | ((it->first >> 12) & 0xFFFFF)))
+                RuntimeLog("[resolve] dest %08X fmt %u w %u inside resolve %08X fmt %u w %u rowBytes %u (+%u B) rejected: new texture\n", base,
+                    (res.destInfo >> 7) & 0x3F, ResolveWidth(res), it->first, it->second.destFormat, it->second.width, it->second.rowBytes, base - it->first);
+        // A texture made at another scale (TargetScale of a different source) is not reused: this base
+        // gets its own texture at the source's scale.
+        if (dstIt != r.resolved.end() && dstIt->second.scale != srcScale)
+        {
+            dstIt = r.resolved.end();
+            dy = 0;
+        }
+        if (dstIt == r.resolved.end())
+        {
+            uint32_t w = std::min(ResolveWidth(res), kTargetWidth), h = std::min(ResolveHeight(res), kTargetHeight);
+            auto& dst = r.resolved[base];
+            if (w && h && (dst.width != w || dst.height != h || dst.format != sd.Format || dst.scale != srcScale))
+            {
+                D3D11_TEXTURE2D_DESC td{};
+                td.Width = w * srcScale;
+                td.Height = h * srcScale;
+                td.MipLevels = td.ArraySize = 1;
+                td.Format = sd.Format;
+                td.SampleDesc.Count = 1;
+                // A UAV for the resolve shader (saturation, MSAA sample averaging) where the format allows.
+                UINT support = 0;
+                const bool uav = SUCCEEDED(m_device->CheckFormatSupport(sd.Format, &support)) && (support & D3D11_FORMAT_SUPPORT_TYPED_UNORDERED_ACCESS_VIEW);
+                td.BindFlags = D3D11_BIND_SHADER_RESOURCE | (uav ? D3D11_BIND_UNORDERED_ACCESS : 0);
+                dst = {};
+                if (SUCCEEDED(m_device->CreateTexture2D(&td, nullptr, &dst.texture)) &&
+                    SUCCEEDED(m_device->CreateShaderResourceView(dst.texture.Get(), nullptr, &dst.srv)) &&
+                    (!uav || SUCCEEDED(m_device->CreateUnorderedAccessView(dst.texture.Get(), nullptr, &dst.uav))))
+                {
+                    dst.width = w;
+                    dst.height = h;
+                    dst.format = sd.Format;
+                    dst.scale = srcScale;
+                }
+            }
+            dst.rowBytes = w * TextureElementBytes((res.destInfo >> 7) & 0x3F);
+            dst.destFormat = (res.destInfo >> 7) & 0x3F;
+            dst.destSwap = (res.destInfo >> 24) & 1;
+            dstIt = r.resolved.find(base);
+        }
+        auto& dst = dstIt->second;
+        if (!dst.srv)
+            r.resolved.erase(dstIt);
+        else
+        {
+            // Source rect: the resolve draw's, else the whole destination from the surface origin.
+            int32_t x0 = 0, y0 = 0, x1 = int32_t(dst.width), y1 = int32_t(dst.height - dy);
+            if (res.hasRect)
+            {
+                x0 = std::max(res.rect[0], 0);
+                y0 = std::max(res.rect[1], 0);
+                x1 = std::min(res.rect[2], x1);
+                y1 = std::min(res.rect[3], y1);
+            }
+            x1 = std::min(x1, int32_t(kTargetWidth));
+            y1 = std::min(y1, int32_t(kTargetHeight));
+            if (x1 > x0 && y1 > y0)
+            {
+                // Destination host texels from here on (scale per guest pixel); the source also has the
+                // surface's MSAA samples per pixel, averaged when copy_sample_select (RB_COPY_CONTROL bits
+                // 4-6) is 4+ (0-3 = that sample: sample 0 here).
+                const int32_t s = int32_t(srcScale);
+                x0 *= s, y0 *= s, x1 *= s, y1 *= s;
+                const uint32_t hostDy = dy * srcScale;
+                const uint32_t destFormat = (res.destInfo >> 7) & 0x3F;
+                const SurfaceLayout layout = EdramSurfaceLayout(res.surfaceInfo);
+                const bool multisampled = layout.samplesX * layout.samplesY > 1;
+                const bool saturate = !IsFloatTextureFormat(destFormat);
+                if (dst.uav && r.saturateCs && (saturate || multisampled))
+                {
+                    // The source is bound as a render target: unbind it before reading it.
+                    m_context->OMSetRenderTargets(0, nullptr, nullptr);
+                    r.bound = false; r.srvShadow = false;
+                    const int32_t rect[8] = { x0, y0, x1, y1, int32_t(hostDy), int32_t(layout.samplesX), int32_t(layout.samplesY),
+                        (((res.copyControl >> 4) & 7) >= 4 ? 1 : 0) | (saturate ? 2 : 0) };
+                    m_context->UpdateSubresource(r.saturateRect.Get(), 0, nullptr, rect, 0, 0);
+                    ID3D11ShaderResourceView* srv = source->srv.Get();
+                    ID3D11UnorderedAccessView* uav = dst.uav.Get();
+                    m_context->CSSetShader(r.saturateCs.Get(), nullptr, 0);
+                    m_context->CSSetConstantBuffers(0, 1, r.saturateRect.GetAddressOf());
+                    m_context->CSSetShaderResources(0, 1, &srv);
+                    m_context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
+                    m_context->Dispatch(UINT(x1 - x0 + 7) / 8, UINT(y1 - y0 + 7) / 8, 1);
+                    srv = nullptr;
+                    uav = nullptr;
+                    m_context->CSSetShaderResources(0, 1, &srv);
+                    m_context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
+                }
+                else
+                {
+                    D3D11_BOX box{ UINT(x0), UINT(y0), 0, UINT(x1), UINT(y1), 1 };
+                    m_context->CopySubresourceRegion(dst.texture.Get(), 0, UINT(x0), UINT(y0) + hostDy, 0, source->texture.Get(), 0, &box);
+                }
+                m_lastResolved++;
+                dst.version++;
+                dst.lastCopy = ++r.resolveSerial;
+                static const bool traceStale = getenv("SCDA_TRACE_STALE") != nullptr;
+                if (traceStale)
+                {
+                    const uint8_t* guest = PhysicalPtr(dstIt->first);
+                    const size_t n = size_t(dst.rowBytes) * dst.height;
+                    dst.guestHash = GuestRangeReadable(guest, n) ? HashBytes(guest, n) : 0;
+                    if (dst.staleSince)
+                        RuntimeLog("[stale] frame %llu resolve %08X refreshes copy stale since frame %llu\n", m_presented, dstIt->first, dst.staleSince - 1);
+                    dst.staleSince = 0;
+                }
+                // SCDA_DUMP_RESOLVES=<dir>: on a SCDA_DUMP_FRAME frame, each resolve's destination after the copy.
+                static const char* dumpResolves = getenv("SCDA_DUMP_RESOLVES");
+                if (dumpResolves && !m_dumpPath.empty())
+                {
+                    char name[96];
+                    snprintf(name, sizeof(name), "/p%llu_res_%02u_%08X_y%u.bmp", (unsigned long long)m_presented, m_lastResolved, base, dy);
+                    RuntimeLog("[resolve] dump #%u src fmt %u dest fmt %u host rect %d %d %d %d dy %u rect %d %d %d %d has %d\n", m_lastResolved, (res.colorInfo >> 16) & 0xF, (res.destInfo >> 7) & 0x3F, x0, y0, x1, y1, hostDy, res.rect[0], res.rect[1], res.rect[2], res.rect[3], int(res.hasRect));
+                    Dump(std::string(dumpResolves) + name, dst.texture.Get());
+                }
+            }
+        }
+    }
+    if (source)
+        r.last = source;
+    if (ResolveClearsColor(res) && source)
+    {
+        const uint32_t c = res.colorClear;
+        if (TraceResolveOnce((5ull << 60) | res.colorInfo | (uint64_t(c) << 20)))
+            RuntimeLog("[resolve] clear src %08X surf %08X value %08X\n", res.colorInfo, res.surfaceInfo, c);
+        float color[4];
+        ColorClearValue((res.colorInfo >> 16) & 0xF, c, res.colorClearLo, color);
+        m_context->ClearRenderTargetView(source->rtv.Get(), color);
+    }
+    if (ResolveClearsDepth(res))
+        if (ID3D11DepthStencilView* dsv = DepthTargetFor(m_device, m_context, r, EdramDepthKey(res.depthInfo, res.surfaceInfo)))
+            m_context->ClearDepthStencilView(dsv, D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, ResolveDepthClearValue(res), UINT8(res.depthClear & 0xFF));
+    r.stateDirty = true; // texture bindings may now point at a new resolve
+}
+
+void D3D11Renderer::Blit(ID3D11ShaderResourceView* source)
+{
+    DrawResources& r = *m_draw;
+    // SCDA_NO_GAMMA_RAMP=1: identity ramp (A/B against the title's display gamma ramp).
+    static const bool noRamp = getenv("SCDA_NO_GAMMA_RAMP") != nullptr;
+    const uint32_t version = noRamp ? 0 : DisplayGammaRamp().version.load();
+    if (version != r.gammaRampVersion)
+    {
+        r.gammaRampVersion = version;
+        std::array<uint32_t, 256> entries = noRamp ? GammaRamp().entries : DisplayGammaRamp().Copy();
+        for (auto& e : entries)
+            e |= 3u << 30;
+        m_context->UpdateSubresource(r.gammaRamp.Get(), 0, nullptr, entries.data(), sizeof(entries), 0);
+    }
+    if (r.postPs && (m_postFx.fxaa || m_postFx.upscale || m_postFx.sharpness > 0.0f))
+    {
+        BlitPost(source);
+        return;
+    }
+    ID3D11ShaderResourceView* none = nullptr;
+    m_context->PSSetShaderResources(0, 1, &none);
+    m_context->OMSetRenderTargets(1, &m_backBuffer, nullptr);
+    r.bound = false; r.srvShadow = false;
+    D3D11_VIEWPORT vp{ 0, 0, float(m_width), float(m_height), 0, 1 };
+    m_context->RSSetViewports(1, &vp);
+    m_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    m_context->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
+    m_context->RSSetState(r.rasterizer.Get());
+    m_context->VSSetShader(r.blitVs.Get(), nullptr, 0);
+    m_context->GSSetShader(nullptr, nullptr, 0);
+    m_context->PSSetShader(r.blitPs.Get(), nullptr, 0);
+    ID3D11ShaderResourceView* srvs[2] = { source, r.gammaRampSrv.Get() };
+    m_context->PSSetShaderResources(0, 2, srvs);
+    ID3D11SamplerState* s = r.sampler.Get();
+    m_context->PSSetSamplers(0, 1, &s);
+    m_context->Draw(3, 0);
+    ID3D11ShaderResourceView* nones[2] = {};
+    m_context->PSSetShaderResources(0, 2, nones);
+}
+
+// One kPostPs pass of source into target (width x height).
+void D3D11Renderer::PostPass(ID3D11ShaderResourceView* source, ID3D11RenderTargetView* target, uint32_t width, uint32_t height, int mode, bool ramp)
+{
+    DrawResources& r = *m_draw;
+    ID3D11ShaderResourceView* nones[2] = {};
+    m_context->PSSetShaderResources(0, 2, nones);
+    m_context->OMSetRenderTargets(1, &target, nullptr);
+    r.bound = false; r.srvShadow = false;
+    D3D11_VIEWPORT vp{ 0, 0, float(width), float(height), 0, 1 };
+    m_context->RSSetViewports(1, &vp);
+    m_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    m_context->IASetInputLayout(nullptr);
+    m_context->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
+    m_context->OMSetDepthStencilState(nullptr, 0);
+    m_context->RSSetState(r.rasterizer.Get());
+    m_context->VSSetShader(r.blitVs.Get(), nullptr, 0);
+    m_context->GSSetShader(nullptr, nullptr, 0);
+    m_context->PSSetShader(r.postPs.Get(), nullptr, 0);
+    const struct { int32_t mode, ramp; float sharpness, pad; } constants{ mode, ramp ? 1 : 0, std::clamp(m_postFx.sharpness, 0.0f, 1.0f), 0.0f };
+    m_context->UpdateSubresource(r.postConstants.Get(), 0, nullptr, &constants, 0, 0);
+    m_context->PSSetConstantBuffers(0, 1, r.postConstants.GetAddressOf());
+    ID3D11ShaderResourceView* srvs[2] = { source, r.gammaRampSrv.Get() };
+    m_context->PSSetShaderResources(0, 2, srvs);
+    ID3D11SamplerState* s = r.sampler.Get();
+    m_context->PSSetSamplers(0, 1, &s);
+    m_context->Draw(3, 0);
+    m_context->PSSetShaderResources(0, 2, nones);
+    // The draws bind their own constant buffers per frame (Present), slot 0 included.
+}
+
+// FXAA at the source size, then scaling to the window (box filter down, Lanczos up when enabled,
+// else bilinear), then CAS + gamma ramp into the back buffer. Each pass after the first reads the
+// previous one's intermediate target (FP16, so the ramp still sees the unclamped values).
+void D3D11Renderer::BlitPost(ID3D11ShaderResourceView* source)
+{
+    DrawResources& r = *m_draw;
+    auto target = [&](int i, uint32_t w, uint32_t h) -> DrawResources::PostTarget&
+    {
+        auto& t = r.post[i];
+        if (t.width != w || t.height != h || !t.rtv)
+        {
+            t = {};
+            D3D11_TEXTURE2D_DESC td{};
+            td.Width = w;
+            td.Height = h;
+            td.MipLevels = td.ArraySize = 1;
+            td.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+            td.SampleDesc.Count = 1;
+            td.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+            if (SUCCEEDED(m_device->CreateTexture2D(&td, nullptr, &t.texture)) &&
+                SUCCEEDED(m_device->CreateShaderResourceView(t.texture.Get(), nullptr, &t.srv)) &&
+                SUCCEEDED(m_device->CreateRenderTargetView(t.texture.Get(), nullptr, &t.rtv)))
+                t.width = w, t.height = h;
+            else
+                t = {};
+        }
+        return t;
+    };
+    ComPtr<ID3D11Resource> res;
+    source->GetResource(&res);
+    D3D11_TEXTURE2D_DESC sd{};
+    if (ComPtr<ID3D11Texture2D> tex; SUCCEEDED(res.As(&tex)))
+        tex->GetDesc(&sd);
+    ID3D11ShaderResourceView* cur = source;
+    if (m_postFx.fxaa && sd.Width && sd.Height)
+        if (auto& t = target(0, sd.Width, sd.Height); t.rtv)
+        {
+            PostPass(cur, t.rtv.Get(), t.width, t.height, 2, false);
+            cur = t.srv.Get();
+        }
+    const int scaleMode = m_postFx.upscale && sd.Width && sd.Width < m_width ? 1 : 0;
+    if (m_postFx.sharpness > 0.0f)
+        if (auto& t = target(1, m_width, m_height); t.rtv)
+        {
+            PostPass(cur, t.rtv.Get(), m_width, m_height, scaleMode, false);
+            PostPass(t.srv.Get(), m_backBuffer, m_width, m_height, 3, true);
+            return;
+        }
+    PostPass(cur, m_backBuffer, m_width, m_height, scaleMode, true);
+}
+
+void D3D11Renderer::SetAnisotropy(uint32_t anisotropy)
+{
+    m_anisotropy = std::clamp<uint32_t>(anisotropy, 1, 16);
+    if (m_draw)
+        m_draw->anisotropy = m_anisotropy; // the sampler cache key holds the level
+}
+
+// A new internal resolution between guest frames: every resolve copy is stretched into a texture of
+// the new size (render-to-texture results made once, e.g. at load, survive); EDRAM targets are made
+// again at the new size by the next bind (the title clears or redraws them each frame).
+void D3D11Renderer::ApplyScale(uint32_t scale)
+{
+    DrawResources& r = *m_draw;
+    scale = std::clamp<uint32_t>(scale, 1, 4);
+    if (scale == r.scale)
+        return;
+    m_context->OMSetRenderTargets(0, nullptr, nullptr);
+    for (auto it = r.resolved.begin(); it != r.resolved.end();)
+    {
+        auto& old = it->second;
+        D3D11_TEXTURE2D_DESC td{};
+        old.texture->GetDesc(&td);
+        td.Width = old.width * scale;
+        td.Height = old.height * scale;
+        UINT support = 0;
+        const bool rtv = SUCCEEDED(m_device->CheckFormatSupport(td.Format, &support)) && (support & D3D11_FORMAT_SUPPORT_RENDER_TARGET);
+        td.BindFlags |= rtv ? D3D11_BIND_RENDER_TARGET : 0;
+        ComPtr<ID3D11Texture2D> tex;
+        ComPtr<ID3D11ShaderResourceView> srv;
+        ComPtr<ID3D11UnorderedAccessView> uav;
+        ComPtr<ID3D11RenderTargetView> view;
+        if (!rtv || !r.postPs || FAILED(m_device->CreateTexture2D(&td, nullptr, &tex)) ||
+            FAILED(m_device->CreateShaderResourceView(tex.Get(), nullptr, &srv)) ||
+            ((td.BindFlags & D3D11_BIND_UNORDERED_ACCESS) && FAILED(m_device->CreateUnorderedAccessView(tex.Get(), nullptr, &uav))) ||
+            FAILED(m_device->CreateRenderTargetView(tex.Get(), nullptr, &view)))
+        {
+            it = r.resolved.erase(it); // the next resolve to this base makes it again
+            continue;
+        }
+        PostPass(old.srv.Get(), view.Get(), td.Width, td.Height, 4, false);
+        // The texture is now scale x its guest size: record it, so a later resolve from a native-size
+        // source (TargetScale 1: glow/bloom chain) remakes it instead of copying its 1x rect into the
+        // top-left corner (users: bloom box / shrunk ghost image top-left after a live Scale change).
+        old.scale = scale;
+        old.texture = tex;
+        old.srv = srv;
+        old.uav = uav;
+        old.crops.clear();
+        old.version++;
+        ++it;
+    }
+    m_context->OMSetRenderTargets(0, nullptr, nullptr);
+    r.colorTargets.clear();
+    r.depthTargets.clear();
+    r.last = nullptr;
+    std::fill(r.boundTargets, r.boundTargets + 4, nullptr);
+    r.bound = false; r.srvShadow = false;
+    r.stateDirty = true;
+    r.scale = m_scale = scale;
+    RuntimeLog("[d3d11] internal resolution %ux%u (scale %u)\n", kTargetWidth * m_scale, 720 * m_scale, m_scale);
+}
+
+static std::vector<uint32_t> ReadTarget(ID3D11Device* device, ID3D11DeviceContext* context, ID3D11Texture2D* target);
+
+void D3D11Renderer::Present(const Frame& frame)
+{
+    // Lost back buffer (failed resize) or device: rebuild everything for the current size.
+    if (!m_backBuffer)
+    {
+        ReleaseAll();
+        if (!m_hwnd || !Init(m_hwnd, m_width, m_height, m_vsync, m_scale, m_anisotropy))
+            return;
+    }
+    // Counters cover the whole guest frame: its partial Frames plus the rest.
+    // (A partial whose rest was dropped starts a new count: the next Frame has another number.)
+    static uint64_t countedFrame = ~0ull;
+    if (frame.stats.frame != countedFrame)
+    {
+        m_lastDrawn = m_lastSkipped = m_lastResolved = 0;
+        g_frameDrawBase = 0;
+    }
+    countedFrame = frame.stats.frame;
+    m_lastFrontbuffer = false;
+    static const bool traceDumped = getenv("SCDA_TRACE_DUMPED") != nullptr;
+    g_tracingDump = traceDumped && !m_dumpPath.empty();
+    if (TraceResolveFrame(m_presented))
+        RuntimeLog("[rtrace] present #%llu guest frame %llu\n", (unsigned long long)m_presented, (unsigned long long)frame.stats.frame);
+    // No draws: a dark colour that pulses with the frame number, so a running game is visibly
+    // distinct from a hung one.
+    float pulse = float(frame.stats.frame % 120) / 120.0f;
+    const float idle[4] = { 0.02f, 0.05f + 0.10f * pulse, 0.02f, 1.0f };
+    if (!m_draw)
+    {
+        m_context->OMSetRenderTargets(1, &m_backBuffer, nullptr);
+        m_context->ClearRenderTargetView(m_backBuffer, idle);
+    }
+    else
+    {
+        DrawResources& r = *m_draw;
+        if (g_resetRequested.exchange(false))
+        {
+            m_context->ClearState();
+            r.colorTargets.clear();
+            r.depthTargets.clear();
+            r.resolved.clear();
+            r.textureCache.clear();
+            r.last = nullptr;
+            std::fill(r.boundTargets, r.boundTargets + 4, nullptr);
+            r.stateDirty = true;
+            r.aluDirty[0] = r.aluDirty[1] = true;
+            r.sharedValid = false;
+            r.activeQuery.Reset(); // results would land in the relaunched title's memory
+            for (size_t i = 0; i < r.pendingQueries.size(); i++)
+                Frames().QueryAnswered();
+            r.pendingQueries.clear();
+            r.pendingFences.clear();
+        }
+        // A new internal resolution (F1 menu) starts with a guest frame, never between its partials.
+        if (const uint32_t scale = m_pendingScale; scale && !m_midGuestFrame)
+        {
+            m_pendingScale = 0;
+            ApplyScale(scale);
+        }
+        m_midGuestFrame = frame.partial;
+        // EDRAM surfaces persist across frames; only guest clears (resolves) clear them.
+        r.bound = false; r.srvShadow = false; // the first bind sets the targets and their viewport
+        m_context->RSSetState(r.rasterizer.Get());
+        m_context->IASetInputLayout(nullptr);
+        ID3D11SamplerState* samplers[16];
+        for (auto& s : samplers)
+            s = r.sampler.Get();
+        m_context->VSSetSamplers(0, 16, samplers);
+        m_context->PSSetSamplers(0, 16, samplers);
+        ID3D11Buffer* cbs[3] = { r.constants[0].Get(), r.constants[1].Get(), r.constants[2].Get() };
+        m_context->VSSetConstantBuffers(0, 3, cbs);
+        m_context->PSSetConstantBuffers(0, 3, cbs);
+        m_context->GSSetConstantBuffers(0, 3, cbs); // pointListGs reads b2
+        r.stateDirty = true;
+        r.applied = 0;
+        // Draws and resolves in stream order: resolve k runs before draw resolves[k].drawIndex.
+        // SCDA_DRAW_LIMIT=<n>: run only draws [0, n) (and the resolves before them), then show the
+        // last RT0 instead of the frontbuffer (bisecting which pass draws what).
+        static const size_t drawLimit = getenv("SCDA_DRAW_LIMIT") ? size_t(atoll(getenv("SCDA_DRAW_LIMIT"))) : SIZE_MAX;
+        PollQueries();
+        // New shaders of this frame compile in parallel up front (a cold cache after an install or a
+        // translator bump hitched once per shader, serially, mid-frame: users' random fps drops).
+        {
+            static const std::filesystem::path cacheDir = DefaultShaderCacheDir();
+            std::vector<const ShaderBlob*> blobs;
+            for (const auto& d : frame.draws)
+            {
+                if (d.vs && !r.vs.count(d.vs->hash))
+                    blobs.push_back(d.vs);
+                if (d.ps && !r.ps.count(d.ps->hash))
+                    blobs.push_back(d.ps);
+            }
+            if (blobs.size() > 1)
+                PrecompileShaders(blobs, cacheDir);
+        }
+        size_t next = 0, nextQuery = 0, nextFence = 0;
+        for (size_t i = 0; i <= std::min(frame.draws.size(), drawLimit); i++)
+        {
+            for (; next < frame.resolves.size() && frame.resolves[next].drawIndex <= i; next++)
+            {
+                // SCDA_TRACE_FB=1: every 1280-wide fmt-6 resolve (frontbuffer tiles) with its Frame.
+                static const bool traceFb = getenv("SCDA_TRACE_FB") != nullptr;
+                if (traceFb && ResolveWidth(frame.resolves[next]) == 1280)
+                    RuntimeLog("[fb] present %llu frame %llu%s resolve dest %08X h %u draw %u/%zu\n", (unsigned long long)m_presented,
+                        (unsigned long long)frame.stats.frame, frame.partial ? " partial" : "", frame.resolves[next].destBase,
+                        ResolveHeight(frame.resolves[next]), frame.resolves[next].drawIndex, frame.draws.size());
+                ExecuteResolve(frame.resolves[next]);
+            }
+            for (; nextQuery < frame.queries.size() && frame.queries[nextQuery].drawIndex <= i; nextQuery++)
+                ExecuteQuery(frame.queries[nextQuery]);
+            for (; nextFence < frame.fences.size() && frame.fences[nextFence].drawIndex <= i; nextFence++)
+                ExecuteFence(frame.fences[nextFence]);
+            if (i < std::min(frame.draws.size(), drawLimit))
+                ExecuteDraw(frame.draws[i], frame);
+            // SCDA_DUMP_DRAWS=<dir>,<step>[,<first>,<last>]: on a SCDA_DUMP_FRAME frame, RT0 after every
+            // step-th draw in [first, last] (bisecting which draw writes what in one run).
+            static const char* dumpDraws = getenv("SCDA_DUMP_DRAWS");
+            static size_t step = 1, first = 0, last = SIZE_MAX;
+            static const bool parsed = [&]
+            {
+                if (const char* c = dumpDraws ? strchr(dumpDraws, ',') : nullptr)
+                    sscanf(c + 1, "%zu,%zu,%zu", &step, &first, &last);
+                step = std::max<size_t>(step, 1);
+                return true;
+            }();
+            (void)parsed;
+            if (dumpDraws && !m_dumpPath.empty() && r.last && (g_frameDrawBase + i) % step == 0 && g_frameDrawBase + i >= first && g_frameDrawBase + i <= last)
+            {
+                char name[96];
+                snprintf(name, sizeof(name), "/p%llu_d%05zu.bmp", (unsigned long long)m_presented, g_frameDrawBase + i); // guest-frame draw number (partials continue it)
+                Dump(std::string(dumpDraws, strcspn(dumpDraws, ",")) + name, r.last->texture.Get());
+                // SCDA_DUMP_DEPTH=1: also the bound depth target (z_<n>.bmp, see TexelToRgba8).
+                static const bool dumpDepth = getenv("SCDA_DUMP_DEPTH") != nullptr;
+                auto z = r.bound ? r.depthTargets.find(r.boundKeys[4]) : r.depthTargets.end();
+                if (dumpDepth && z != r.depthTargets.end())
+                {
+                    ComPtr<ID3D11Resource> res;
+                    ComPtr<ID3D11Texture2D> tex;
+                    z->second->GetResource(&res);
+                    if (SUCCEEDED(res.As(&tex)))
+                    {
+                        snprintf(name, sizeof(name), "/p%llu_z%05zu.bmp", (unsigned long long)m_presented, g_frameDrawBase + i);
+                        Dump(std::string(dumpDraws, strcspn(dumpDraws, ",")) + name, tex.Get());
+                    }
+                }
+            }
+        }
+        ApplyRegisterWrites(frame, frame.regWrites.size()); // draws past SCDA_DRAW_LIMIT still wrote registers
+        for (; nextFence < frame.fences.size(); nextFence++) // past SCDA_DRAW_LIMIT
+            ExecuteFence(frame.fences[nextFence]);
+        if (r.activeQuery && !frame.partial) // begun but never ended this frame: drop it
+        {
+            m_context->End(r.activeQuery.Get());
+            r.activeQuery.Reset();
+        }
+        static const bool noPersist = getenv("SCDA_NO_SNAP_PERSIST") != nullptr;
+        if (noPersist) // old behaviour: every frame uploads its ranges again
+        {
+            r.uploaded.clear();
+            r.uploadedSpans.clear();
+        }
+        if (frame.partial) // the guest frame continues in the next Frame: no present
+        {
+            g_frameDrawBase += frame.draws.size();
+            m_context->Flush(); // the title waits for the host queries ended above
+            return;
+        }
+        // SCDA_TRACE_TEXHASH=1: texture checks and fully hashed guest bytes, every 100 presents.
+        static const bool traceTexHash = getenv("SCDA_TRACE_TEXHASH") != nullptr;
+        if (traceTexHash && m_presented % 100 == 0)
+            RuntimeLog("[texhash] present %llu: %u checks, %u probe-only, %.1f MB hashed\n", m_presented, g_texHash.probes, g_texHash.skips, g_texHash.bytes / 1048576.0);
+        g_texHash = {};
+        r.textures.clear();
+        if (m_presented % 60 == 0) // drop textures unused for ~10 s
+            std::erase_if(r.textureCache, [&](auto& e) { return e.second.lastUsed + 600 < m_presented; });
+        ID3D11ShaderResourceView* none[32] = {};
+        m_context->VSSetShaderResources(0, 32, none);
+        m_context->PSSetShaderResources(0, 32, none);
+        r.srvShadow = false;
+        auto front = frame.frontbuffer ? r.resolved.find(frame.frontbuffer & 0x1FFFF000) : r.resolved.end();
+        m_lastFrontbuffer = front != r.resolved.end() && drawLimit == SIZE_MAX;
+        // No frontbuffer resolve: the last RT0 (or the idle colour when nothing was drawn yet).
+        ID3D11Texture2D* shown = m_lastFrontbuffer ? front->second.texture.Get() : r.last ? r.last->texture.Get() : nullptr;
+        ID3D11ShaderResourceView* shownSrv = m_lastFrontbuffer ? front->second.srv.Get() : r.last ? r.last->srv.Get() : nullptr;
+        if (!m_dumpPath.empty() && shown)
+        {
+            Dump(m_dumpPath, shown, true);
+            m_dumpPath.clear();
+        }
+        // SCDA_DUMP_ON_BLACK=<from>:<to>[:<count>]: in guest frames [from, to], when the presented
+        // image's middle rows are all black, dump the next frame (as if it were a SCDA_DUMP_FRAME).
+        static const char* dumpOnBlack = getenv("SCDA_DUMP_ON_BLACK");
+        static uint64_t blackFrom = 0, blackTo = 0, blackCount = 1, blackArmed = 0;
+        static const bool blackParsed = dumpOnBlack && sscanf(dumpOnBlack, "%llu:%llu:%llu", &blackFrom, &blackTo, &blackCount) >= 2;
+        if (blackParsed && shown && m_dumpPath.empty() && blackArmed < blackCount && frame.stats.frame >= blackFrom && frame.stats.frame <= blackTo)
+        {
+            D3D11_TEXTURE2D_DESC td;
+            shown->GetDesc(&td);
+            std::vector<uint32_t> texels = ReadTarget(m_device, m_context, shown);
+            uint32_t mx = 0;
+            for (uint32_t y = td.Height / 8; y < td.Height * 7 / 8; y += 4)
+                for (uint32_t x = 0; x < td.Width; x += 4)
+                    mx |= texels[size_t(y) * td.Width + x] & 0xFFFFFF;
+            if (mx == 0)
+            {
+                blackArmed++;
+                m_dumpPath = "scda_frame_" + std::to_string(frame.stats.frame + 1) + ".bmp";
+                RuntimeLog("[dump] present #%llu guest frame %llu black: dumping the next frame\n", (unsigned long long)m_presented, (unsigned long long)frame.stats.frame);
+            }
+        }
+        // SCDA_DUMP_ON_JUMP=<diff>[:<count>[:<from>]]: from guest frame <from>, when the presented image's mean luma difference from the
+        // previous present (1/8 samples) exceeds <diff> (0-255), dump this frame and the next, and
+        // trace the next two presents like SCDA_TRACE_RESOLVE (flicker / alternating-frame hunting).
+        static const char* dumpOnJump = getenv("SCDA_DUMP_ON_JUMP");
+        static double jumpThreshold = 0;
+        static uint64_t jumpCount = 1, jumpArmed = 0, jumpFrom = 0;
+        static const bool jumpParsed = dumpOnJump && sscanf(dumpOnJump, "%lf:%llu:%llu", &jumpThreshold, &jumpCount, &jumpFrom) >= 1;
+        static std::vector<uint8_t> lastLuma;
+        if (jumpParsed && shown && frame.stats.frame >= jumpFrom)
+        {
+            D3D11_TEXTURE2D_DESC td;
+            shown->GetDesc(&td);
+            std::vector<uint32_t> texels = ReadTarget(m_device, m_context, shown);
+            std::vector<uint8_t> luma;
+            luma.reserve(size_t(td.Width / 8 + 1) * (td.Height / 8 + 1));
+            for (uint32_t y = 0; y < td.Height; y += 8)
+                for (uint32_t x = 0; x < td.Width; x += 8)
+                {
+                    const uint32_t c = texels[size_t(y) * td.Width + x];
+                    luma.push_back(uint8_t((((c >> 16) & 0xFF) * 77 + ((c >> 8) & 0xFF) * 151 + (c & 0xFF) * 28) >> 8));
+                }
+            if (luma.size() == lastLuma.size() && !luma.empty())
+            {
+                uint64_t sum = 0;
+                for (size_t i = 0; i < luma.size(); i++)
+                    sum += uint64_t(std::abs(int(luma[i]) - int(lastLuma[i])));
+                const double diff = double(sum) / double(luma.size());
+                if (diff > jumpThreshold && jumpArmed < jumpCount && m_dumpPath.empty())
+                {
+                    jumpArmed++;
+                    RuntimeLog("[jump] present #%llu guest frame %llu: luma diff %.1f from the previous present (fb %08X %s): dumping this + next frame, tracing 2\n",
+                        (unsigned long long)m_presented, (unsigned long long)frame.stats.frame, diff, frame.frontbuffer, m_lastFrontbuffer ? "frontbuffer" : "target");
+                    Dump("scda_frame_" + std::to_string(frame.stats.frame) + ".bmp", shown, true);
+                    m_dumpPath = "scda_frame_" + std::to_string(frame.stats.frame + 1) + ".bmp";
+                    g_traceJumpPresents = 2;
+                }
+            }
+            lastLuma = std::move(luma);
+        }
+        if (shownSrv)
+            Blit(shownSrv);
+        else
+        {
+            m_context->OMSetRenderTargets(1, &m_backBuffer, nullptr);
+            m_context->ClearRenderTargetView(m_backBuffer, idle);
+        }
+    }
+    if (m_overlay && m_backBuffer)
+    {
+        m_context->OMSetRenderTargets(1, &m_backBuffer, nullptr);
+        if (m_draw)
+            m_draw->bound = false; m_draw->srvShadow = false;
+        m_overlay();
+    }
+    if (!m_backDumpPath.empty() && m_backBuffer)
+    {
+        ComPtr<ID3D11Resource> res;
+        m_backBuffer->GetResource(&res);
+        if (ComPtr<ID3D11Texture2D> tex; SUCCEEDED(res.As(&tex)))
+            Dump(m_backDumpPath, tex.Get());
+        m_backDumpPath.clear();
+    }
+    HRESULT hr = m_swapChain->Present(m_vsync ? 1 : 0, 0);
+    if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET)
+    {
+        printf("[d3d11] device lost (0x%08lX, reason 0x%08lX): recreating\n", (unsigned long)hr, (unsigned long)m_device->GetDeviceRemovedReason());
+        Release(m_backBuffer); // next Present rebuilds the device
+        return;
+    }
+    m_presented++;
+    // SCDA_CB_STATS=<n>: every n presents, constant buffer binds vs uploads since the last report.
+    static const unsigned cbStatsEvery = getenv("SCDA_CB_STATS") ? unsigned(atoi(getenv("SCDA_CB_STATS"))) : 0;
+    if (cbStatsEvery && m_presented % cbStatsEvery == 0)
+    {
+        const CbStats& c = g_cbStats;
+        RuntimeLog("[cb] present %llu: vs %llu/%llu ps %llu/%llu shared %llu/%llu (uploads/binds)\n", m_presented,
+            c.aluUploads[0], c.aluBinds[0], c.aluUploads[1], c.aluBinds[1], c.sharedUploads, c.sharedBinds);
+        g_cbStats = {};
+    }
+    if (g_traceJumpPresents > 0)
+        g_traceJumpPresents--;
+    ComPtr<ID3D11InfoQueue> queue;
+    if (getenv("SCDA_D3D_DEBUG") && SUCCEEDED(m_device->QueryInterface(IID_PPV_ARGS(&queue))))
+    {
+        for (UINT64 i = 0, n = queue->GetNumStoredMessages(); i < n && i < 16; i++)
+        {
+            SIZE_T size = 0;
+            queue->GetMessage(i, nullptr, &size);
+            std::vector<uint8_t> buf(size);
+            auto* msg = (D3D11_MESSAGE*)buf.data();
+            if (SUCCEEDED(queue->GetMessage(i, msg, &size)))
+                RuntimeLog("[d3d11] debug: %.*s\n", int(msg->DescriptionByteLength), msg->pDescription);
+        }
+        queue->ClearStoredMessages();
+    }
+}
+
+// One host texel as RGBA8 (float formats clamped to [0, 1]; R32 / R32G32 as grey / red-green).
+static uint32_t TexelToRgba8(DXGI_FORMAT format, const uint8_t* p)
+{
+    float c[4] = { 0, 0, 0, 1 };
+    if (format == DXGI_FORMAT_D32_FLOAT_S8X24_UINT) // depth dumps: unorm24 depth in RGB (R high), stencil in A
+    {
+        float z;
+        memcpy(&z, p, 4);
+        const uint32_t d = uint32_t(std::clamp(z, 0.0f, 1.0f) * 16777215.0f + 0.5f);
+        return (d >> 16) | (d & 0xFF00) | ((d & 0xFF) << 16) | (uint32_t(p[4]) << 24);
+    }
+    switch (format)
+    {
+    case DXGI_FORMAT_R16G16B16A16_FLOAT:
+        for (int i = 0; i < 4; i++)
+        {
+            uint16_t h;
+            memcpy(&h, p + 2 * i, 2);
+            c[i] = HalfToFloat(h);
+        }
+        break;
+    case DXGI_FORMAT_R32_FLOAT:
+        memcpy(c, p, 4);
+        c[1] = c[2] = c[0];
+        break;
+    case DXGI_FORMAT_R32G32_FLOAT:
+        memcpy(c, p, 8);
+        break;
+    case DXGI_FORMAT_R10G10B10A2_UNORM:
+    {
+        uint32_t t;
+        memcpy(&t, p, 4);
+        for (int i = 0; i < 3; i++)
+            c[i] = ((t >> (10 * i)) & 0x3FF) / 1023.0f;
+        c[3] = (t >> 30) / 3.0f;
+        break;
+    }
+    default: // RGBA8
+    {
+        uint32_t t;
+        memcpy(&t, p, 4);
+        return t;
+    }
+    }
+    return ToUnorm8(c[0]) | (ToUnorm8(c[1]) << 8) | (ToUnorm8(c[2]) << 16) | (ToUnorm8(c[3]) << 24);
+}
+
+// Copies the render target to a CPU-readable texture; texels row by row (RGBA8).
+static std::vector<uint32_t> ReadTarget(ID3D11Device* device, ID3D11DeviceContext* context, ID3D11Texture2D* target)
+{
+    D3D11_TEXTURE2D_DESC td;
+    target->GetDesc(&td);
+    td.Usage = D3D11_USAGE_STAGING;
+    td.BindFlags = 0;
+    td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    ComPtr<ID3D11Texture2D> staging;
+    std::vector<uint32_t> out;
+    if (FAILED(device->CreateTexture2D(&td, nullptr, &staging)))
+        return out;
+    context->CopyResource(staging.Get(), target);
+    D3D11_MAPPED_SUBRESOURCE m;
+    if (FAILED(context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &m)))
+        return out;
+    const uint32_t bpp = td.Format == DXGI_FORMAT_R16G16B16A16_FLOAT || td.Format == DXGI_FORMAT_R32G32_FLOAT ||
+        td.Format == DXGI_FORMAT_D32_FLOAT_S8X24_UINT ? 8 : 4;
+    out.resize(size_t(td.Width) * td.Height);
+    // SCDA_RT_STATS=1: log the FP16 maxima (rgb, alpha) of each target read back (dumps squash to 8-bit).
+    static const bool stats = getenv("SCDA_RT_STATS") != nullptr;
+    if (stats && td.Format == DXGI_FORMAT_R16G16B16A16_FLOAT)
+    {
+        float maxRgb = 0, maxA = 0;
+        for (uint32_t y = 0; y < td.Height; y++)
+            for (uint32_t x = 0; x < td.Width * 4; x++)
+            {
+                uint16_t h;
+                memcpy(&h, (uint8_t*)m.pData + size_t(y) * m.RowPitch + size_t(x) * 2, 2);
+                float& mx = (x & 3) == 3 ? maxA : maxRgb;
+                mx = std::max(mx, HalfToFloat(h));
+            }
+        RuntimeLog("[rtstats] %ux%u fp16 max rgb %.3f alpha %.3f\n", td.Width, td.Height, maxRgb, maxA);
+    }
+    for (uint32_t y = 0; y < td.Height; y++)
+        for (uint32_t x = 0; x < td.Width; x++)
+            out[size_t(y) * td.Width + x] = TexelToRgba8(td.Format, (uint8_t*)m.pData + size_t(y) * m.RowPitch + size_t(x) * bpp);
+    context->Unmap(staging.Get(), 0);
+    return out;
+}
+
+uint32_t D3D11Renderer::ReadTargetTexel(uint32_t x, uint32_t y)
+{
+    if (!m_draw || !m_draw->last || x >= kTargetWidth || y >= kTargetHeight)
+        return 0;
+    std::vector<uint32_t> texels = ReadTarget(m_device, m_context, m_draw->last->texture.Get());
+    const ColorTarget& t = *m_draw->last;
+    const uint32_t sx = m_draw->scale * m_draw->lastLayout.samplesX, sy = m_draw->scale * m_draw->lastLayout.samplesY;
+    if (texels.empty() || x * sx >= t.width || y * sy >= t.height)
+        return 0;
+    return texels[size_t(y * sy) * t.width + x * sx];
+}
+
+void D3D11Renderer::Dump(const std::string& path, ID3D11Texture2D* source, bool ramp)
+{
+    D3D11_TEXTURE2D_DESC td;
+    source->GetDesc(&td);
+    std::vector<uint32_t> texels = ReadTarget(m_device, m_context, source);
+    static const bool noRamp = getenv("SCDA_NO_GAMMA_RAMP") != nullptr;
+    if (ramp && !noRamp)
+    {
+        // Same lookup as the blit (nearest entry; the blit interpolates between entries).
+        const auto entries = DisplayGammaRamp().Copy();
+        for (auto& t : texels)
+        {
+            uint32_t out = t & 0xFF000000;
+            for (uint32_t c = 0; c < 3; c++)
+                out |= ((((entries[(t >> (8 * c)) & 0xFF] >> (10 * c)) & 0x3FF) * 255 + 511) / 1023) << (8 * c);
+            t = out;
+        }
+    }
+    if (WriteBmp(path, std::move(texels), td.Width, td.Height))
+        printf("[d3d11] frame dumped to %s\n", path.c_str());
+}

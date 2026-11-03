@@ -1,0 +1,25 @@
+base=0x82000000 size=0x18C0000 entry=0x82F5B700 version=0.0.0.8
+section .rdata   0x82000600 size=0x413E64 flags=0
+section .pdata   0x82414600 size=0x922D8 flags=0
+section BINKCONS 0x824A6A00 size=0x2920 flags=0
+section .text    0x824B0000 size=0x10CD568 flags=2
+section BINK     0x8357D600 size=0xF920 flags=2
+section BINKBSS  0x83590000 size=0x2B8 flags=0
+section .data    0x83590400 size=0x28D368 flags=0
+section .XBMOVIE 0x8381D800 size=0x8 flags=0
+section .tls     0x8381DA00 size=0x129 flags=0
+section BINKDATA 0x8381DC00 size=0x834C flags=0
+section .XEXID   0x83826000 size=0x4 flags=0
+section .edata   0x83830000 size=0x1A35 flags=0
+section .idata   0x83840000 size=0x536 flags=0
+section .XBLD    0x83850000 size=0xF0 flags=0
+section .reloc   0x83850200 size=0x1DD494 flags=0
+restgprlr_14_address = 0x82F35610
+savegprlr_14_address = 0x82F355C0
+restfpr_14_address = 0x82F3587C
+savefpr_14_address = 0x82F35830
+restvmx_14_address = 0x82F3B628
+savevmx_14_address = 0x82F3B390
+restvmx_64_address = 0x82F3B6BC
+savevmx_64_address = 0x82F3B424
+sha256=5945a60c755f6b47cd8047abf99bba5b1b8566f268e5f9f155456676f0bb549c

@@ -1,0 +1,398 @@
+// tcscc.exe: hosts the statically recompiled Splinter Cell Conviction default.xex.
+// Boot: reserve guest memory, fill the function table, load the image,
+// fill data imports, build the main thread's PCR/TLS/TEB/stack, call _xstart.
+#include <windows.h>
+#include <dbghelp.h>
+#include <psapi.h>
+#include <cstdarg>
+#include <cstdlib>
+#include <cstring>
+#include <mutex>
+#include <string>
+#include <vector>
+#include <alloc_tracker.h>
+#include <command_processor.h>
+#include <gpu/d3d11_renderer.h>
+#include <gpu/draw_state.h>
+#include <gpu/frame_queue.h>
+#include <guest_heap.h>
+#include <host_window.h>
+#include <image_loader.h>
+#include <module.h>
+#include <fstream>
+#include <interrupts.h>
+#include <launch.h>
+#include <runtime.h>
+#include <thread_context.h>
+#include <title.h>
+#include <watchdog.h>
+
+uint8_t* g_base;
+
+void InitDataImports();
+extern std::string g_gameDir;
+extern std::string g_contentDir;
+extern std::string g_profileDir;
+
+static FILE* g_log;
+
+void RuntimeLog(const char* fmt, ...)
+{
+    static std::mutex m;
+    std::lock_guard lock(m);
+    va_list args;
+    va_start(args, fmt);
+    vfprintf(stderr, fmt, args);
+    va_end(args);
+    if (g_log)
+    {
+        va_start(args, fmt);
+        vfprintf(g_log, fmt, args);
+        va_end(args);
+        fflush(g_log);
+    }
+}
+
+static uint32_t TitleHeapAlloc(GuestHeap& heap, uint32_t size, uint32_t align)
+{
+    if (align < 16)
+        align = 16;
+    // Zero-size requests still take space: two allocations never share a base.
+    uint32_t addr = heap.Alloc(size ? size : 16, align);
+    if (!addr)
+    {
+        RuntimeLog("[mem] out of guest memory (size 0x%X)\n", size);
+        return 0;
+    }
+    memset(g_base + addr, 0, size);
+    GuestAllocations().Add(addr, size);
+    return addr;
+}
+
+static GuestHeap g_virtualHeap(0x40000000, 0x7F000000);
+static GuestHeap g_physicalHeap(0xA0000000, 0xC0000000);
+// Stops below the GPU register block at 0x7FC80000 (kGpuRegBase).
+static GuestHeap g_serviceHeap(0x7F000000, 0x7FC00000);
+
+uint32_t GuestAllocVirtual(uint32_t size, uint32_t align) { return TitleHeapAlloc(g_virtualHeap, size, align); }
+uint32_t GuestAllocPhysical(uint32_t size, uint32_t align) { return TitleHeapAlloc(g_physicalHeap, size, align); }
+uint32_t GuestAllocService(uint32_t size, uint32_t align) { return TitleHeapAlloc(g_serviceHeap, size, align); }
+void GuestFreeVirtual(uint32_t base, uint32_t size) { g_virtualHeap.Free(base, size ? size : 16); }
+void GuestFreePhysical(uint32_t base, uint32_t size) { g_physicalHeap.Free(base, size ? size : 16); }
+uint32_t GuestTitleAllocatedBytes()
+{
+    return uint32_t(GuestAllocations().BytesIn(0x40000000, 0x7F000000) + GuestAllocations().BytesIn(0xA0000000, 0xC0000000));
+}
+
+// Every function-table slot without a recompiled function lands here.
+static PPC_FUNC(UnmappedCall)
+{
+    RuntimeLog("[fatal] indirect call to unmapped guest address ctr=0x%08X lr=0x%08X\n", ctx.ctr.u32, uint32_t(ctx.lr));
+    std::_Exit(3);
+}
+
+// Physical memory (512 MB) appears twice in guest space: 0xA0000000 (64 KB pages, where the
+// physical allocator hands it out) and 0xC0000000 (16 MB pages; D3D reads shader microcode
+// there). Both are views of one pagefile section; the rest of the 4 GB is plain memory.
+// shortcut: the 0xE0000000 (4 KB page) alias is not mirrored yet; SCDA_TRAP_ALIAS=1 traps it.
+static constexpr uint64_t kPhysicalViews[] = { 0xA0000000ull, 0xC0000000ull };
+static constexpr uint64_t kPhysicalSize = 0x20000000ull;
+
+static uint8_t* ReserveMirroredMemory(uint8_t* want)
+{
+    using VirtualAlloc2Fn = PVOID(WINAPI*)(HANDLE, PVOID, SIZE_T, ULONG, ULONG, MEM_EXTENDED_PARAMETER*, ULONG);
+    using MapViewOfFile3Fn = PVOID(WINAPI*)(HANDLE, HANDLE, PVOID, ULONG64, SIZE_T, ULONG, ULONG, MEM_EXTENDED_PARAMETER*, ULONG);
+    HMODULE kb = GetModuleHandleW(L"kernelbase.dll");
+    auto alloc2 = kb ? (VirtualAlloc2Fn)GetProcAddress(kb, "VirtualAlloc2") : nullptr;
+    auto map3 = kb ? (MapViewOfFile3Fn)GetProcAddress(kb, "MapViewOfFile3") : nullptr;
+    if (!alloc2 || !map3)
+        return nullptr;
+    HANDLE section = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, DWORD(kPhysicalSize), nullptr);
+    if (!section)
+        return nullptr;
+    auto* base = (uint8_t*)alloc2(nullptr, want, PPC_MEMORY_SIZE, MEM_RESERVE | MEM_RESERVE_PLACEHOLDER, PAGE_NOACCESS, nullptr, 0);
+    if (!base)
+    {
+        CloseHandle(section);
+        return nullptr;
+    }
+    // Split the placeholder at the view boundaries, then fill each piece.
+    for (uint64_t view : kPhysicalViews)
+        VirtualFree(base + view, kPhysicalSize, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER);
+    bool ok = true;
+    for (uint64_t view : kPhysicalViews)
+        ok &= map3(section, GetCurrentProcess(), base + view, 0, kPhysicalSize, MEM_REPLACE_PLACEHOLDER, PAGE_READWRITE, nullptr, 0) != nullptr;
+    // Plain memory below the first view and above the last (views are contiguous).
+    uint64_t lo = kPhysicalViews[0], hi = kPhysicalViews[std::size(kPhysicalViews) - 1] + kPhysicalSize;
+    ok &= alloc2(nullptr, base, lo, MEM_RESERVE | MEM_COMMIT | MEM_REPLACE_PLACEHOLDER, PAGE_READWRITE, nullptr, 0) != nullptr;
+    ok &= alloc2(nullptr, base + hi, PPC_MEMORY_SIZE - hi, MEM_RESERVE | MEM_COMMIT | MEM_REPLACE_PLACEHOLDER, PAGE_READWRITE, nullptr, 0) != nullptr;
+    CloseHandle(section); // the views keep it alive
+    if (!ok)
+        RuntimeLog("[mem] mirrored physical memory setup failed\n");
+    return ok ? base : nullptr; // shortcut: a failed setup leaks its reservation; the process exits anyway
+}
+
+static bool InitMemory()
+{
+    // Prefer 0x100000000 like UnleashedRecomp so host pointers never alias low guest addresses.
+    g_base = ReserveMirroredMemory((uint8_t*)0x100000000ull);
+    if (!g_base)
+        g_base = ReserveMirroredMemory(nullptr);
+    if (!g_base)
+        return false;
+    g_physicalViewsCommitted = true; // ReserveMirroredMemory maps one committed section per view
+
+    // Null guest page traps.
+    DWORD old;
+    VirtualProtect(g_base, 4096, PAGE_NOACCESS, &old);
+    if (getenv("SCDA_TRAP_ALIAS"))
+        VirtualProtect(g_base + 0xE0000000ull, 0x20000000, PAGE_NOACCESS, &old);
+
+    for (uint64_t guest = PPC_CODE_BASE; guest < PPC_CODE_BASE + PPC_CODE_SIZE; guest += 4)
+        PPC_LOOKUP_FUNC(g_base, guest) = UnmappedCall;
+    size_t count = 0;
+    for (size_t i = 0; PPCFuncMappings[i].guest != 0; i++)
+    {
+        if (PPCFuncMappings[i].host)
+        {
+            PPC_LOOKUP_FUNC(g_base, PPCFuncMappings[i].guest) = PPCFuncMappings[i].host;
+            count++;
+        }
+    }
+    RuntimeLog("[mem] base=%p, %zu functions mapped\n", g_base, count);
+    return true;
+}
+
+void FsVerifyReads();
+
+// Layout follows UnleashedRecomp's GuestThreadContext.
+static LONG WINAPI CrashHandler(EXCEPTION_POINTERS* e)
+{
+    // A fault inside the handler (e.g. while walking stacks) must not re-enter it.
+    static thread_local bool inHandler;
+    if (inHandler)
+        return EXCEPTION_CONTINUE_SEARCH;
+    auto* r = e->ExceptionRecord;
+    // First-chance handler: ignore benign/handled exceptions (thread naming, C++ throws, ...).
+    switch (r->ExceptionCode)
+    {
+    case EXCEPTION_ACCESS_VIOLATION: case EXCEPTION_STACK_OVERFLOW: case EXCEPTION_ILLEGAL_INSTRUCTION:
+    case EXCEPTION_INT_DIVIDE_BY_ZERO: case EXCEPTION_PRIV_INSTRUCTION: case EXCEPTION_IN_PAGE_ERROR:
+        break;
+    default:
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    inHandler = true;
+    struct Reset { ~Reset() { inHandler = false; } } reset;
+    uintptr_t fault = r->NumberParameters >= 2 ? r->ExceptionInformation[1] : 0;
+    RuntimeLog("[fatal] exception 0x%08lX at host %p, fault addr %p (guest 0x%08llX)\n",
+        r->ExceptionCode, r->ExceptionAddress, (void*)fault,
+        (unsigned long long)(fault - (uintptr_t)g_base));
+    // Host fault -> recompiled function and generated line (needs scda.pdb next to the exe).
+    {
+        static std::once_flag symInit;
+        std::call_once(symInit, [] { SymSetOptions(SYMOPT_LOAD_LINES | SYMOPT_UNDNAME); SymInitialize(GetCurrentProcess(), nullptr, TRUE); });
+        alignas(SYMBOL_INFO) char buf[sizeof(SYMBOL_INFO) + 256] = {};
+        auto* sym = (SYMBOL_INFO*)buf;
+        sym->SizeOfStruct = sizeof(SYMBOL_INFO);
+        sym->MaxNameLen = 255;
+        DWORD64 disp = 0;
+        DWORD lineDisp = 0;
+        IMAGEHLP_LINE64 line{ sizeof(line) };
+        DWORD64 pc = (DWORD64)r->ExceptionAddress;
+        bool haveSym = SymFromAddr(GetCurrentProcess(), pc, &disp, sym);
+        bool haveLine = SymGetLineFromAddr64(GetCurrentProcess(), pc, &lineDisp, &line);
+        RuntimeLog("[fatal] at %s %s:%lu\n", haveSym ? sym->Name : "?", haveLine ? line.FileName : "?", haveLine ? line.LineNumber : 0);
+    }
+    if (PPCContext* c = WatchdogCurrentContext())
+        RuntimeLog("[fatal] r3=%08X r4=%08X r5=%08X r6=%08X r7=%08X r8=%08X r9=%08X r10=%08X r11=%08X r12=%08X r29=%08X r30=%08X r31=%08X r1=%08X lr=%08X\n",
+            c->r3.u32, c->r4.u32, c->r5.u32, c->r6.u32, c->r7.u32, c->r8.u32, c->r9.u32, c->r10.u32, c->r11.u32, c->r12.u32,
+            c->r29.u32, c->r30.u32, c->r31.u32, c->r1.u32, uint32_t(c->lr));
+    // Guest stacks of every thread: the faulting one shows the guest call chain.
+    if (r->ExceptionCode == EXCEPTION_ACCESS_VIOLATION)
+        RuntimeLog("%s", WatchdogReport(g_base).c_str());
+    FsVerifyReads();
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+void ProfilerStart();
+void WatchStart();
+void TimelineStart();
+void KernelReset();
+void FsReset();
+void TlsReset();
+void XamReset();
+void AudioReset();
+void XmaReset();
+void VideoReset();
+
+// Between title instances (no title thread running): guest memory and every HLE module back to
+// boot state. Kept: service-region contexts, host windows/devices, compiled shaders, launch data.
+
+static bool ResetTitle(const char* imagePath)
+{
+    VideoReset(); // ring first: the command processor goes idle
+    CommandProcessorResetForRelaunch();
+    D3D11Renderer::RequestReset();
+    AudioReset();
+    XmaReset();
+    KernelReset();
+    FsReset();
+    TlsReset();
+    XamReset();
+    // Title heaps: stack guard pages back to read/write (TitleHeapAlloc zeroes what it hands out).
+    DWORD old;
+    VirtualProtect(g_base + 0x40000000u, g_virtualHeap.Top() - 0x40000000u, PAGE_READWRITE, &old);
+    GuestAllocations().RemoveRange(0x40000000u, 0x7F000000u);
+    GuestAllocations().RemoveRange(0xA0000000u, 0xC0000000u);
+    g_virtualHeap.Reset();
+    g_physicalHeap.Reset();
+    g_xexHeader = 0;
+    // Code is never written; this restores .data and zeroes .bss.
+    std::string sha;
+    ImageLoadResult loaded = LoadFlatImage(imagePath, g_base, &sha);
+    if (loaded != ImageLoadResult::Ok)
+        RuntimeLog("[fatal] relaunch: reloading %s: %s\n", imagePath, ImageLoadResultName(loaded));
+    return loaded == ImageLoadResult::Ok;
+}
+
+// One title instance: XEX header, data imports, main thread context, _xstart. Every guest
+// allocation of the instance starts here, so each boot lays out guest memory the same way.
+static DWORD WINAPI TitleThread(void*)
+{
+    // XEX header (installer/xex_dump --out-header) for the module entry and RtlImageXexHeaderField.
+    std::ifstream hdr(g_gameDir + "/default.xexhdr", std::ios::binary | std::ios::ate);
+    if (hdr)
+    {
+        uint32_t size = uint32_t(hdr.tellg());
+        g_xexHeader = GuestAllocVirtual(size, 0x1000);
+        hdr.seekg(0);
+        hdr.read((char*)GuestPtr(g_xexHeader), size);
+        RuntimeLog("[loader] XEX header 0x%X bytes at 0x%08X\n", size, g_xexHeader);
+    }
+    else
+        RuntimeLog("[loader] WARNING: default.xexhdr missing next to the image\n");
+    InitDataImports();
+
+    auto* ctx = new PPCContext{};
+    // Main thread stack: XEX_HEADER_DEFAULT_STACK_SIZE (0x20200), 2 MB for this title.
+    uint32_t mainStack = 0x200000;
+    if (g_xexHeader)
+    {
+        PPCContext q{};
+        q.r3.u64 = g_xexHeader;
+        q.r4.u64 = 0x00020200;
+        __imp__RtlImageXexHeaderField(q, g_base);
+        if (q.r3.u32)
+            mainStack = q.r3.u32;
+    }
+    InitThreadContext(*ctx, 0, 1, mainStack);
+    WatchdogRegisterThread(1, ctx);
+    TitleThreadRegister(1);
+    RuntimeLog("[thread] 1 (main) host %lu\n", GetCurrentThreadId());
+    RuntimeLog("[boot] calling _xstart (r1=0x%08X r13=0x%08X)\n", ctx->r1.u32, ctx->r13.u32);
+    _xstart(*ctx, g_base);
+    RuntimeLog("[boot] _xstart returned r3=0x%08X\n", ctx->r3.u32);
+    WatchdogUnregisterThread(1);
+    TitleThreadUnregister();
+    return 0;
+}
+
+// SCDA_FORCE_RELAUNCH=<frame>[,<frame>...] (ascending): request a relaunch at each frame, as
+// XamLoaderLaunchTitle would (tests the stop/reset path without driving the menus).
+static DWORD WINAPI ForceRelaunchThread(void* list)
+{
+    for (const char* p = (const char*)list; *p; p += strcspn(p, ",") + (p[strcspn(p, ",")] ? 1 : 0))
+    {
+        uint64_t frame = strtoull(p, nullptr, 10);
+        while (Frames().FramesEnded() < frame)
+            Sleep(10);
+        RuntimeLog("[title] SCDA_FORCE_RELAUNCH at frame %llu\n", (unsigned long long)frame);
+        TitleForceRelaunch();
+        while (TitleStopping())
+            Sleep(10);
+    }
+    return 0;
+}
+
+int main(int argc, char** argv)
+{
+    // Installer layout: <dir>\scda.exe + <dir>\game\ (extracted disc).
+    char exeDir[MAX_PATH];
+    GetModuleFileNameA(nullptr, exeDir, MAX_PATH);
+    *strrchr(exeDir, '\\') = 0;
+    std::string defaultImage = std::string(exeDir) + "\\game\\default.img";
+    const char* imagePath = argc > 1 ? argv[1] : defaultImage.c_str();
+    g_gameDir = std::string(imagePath).substr(0, std::string(imagePath).find_last_of("\\/"));
+    // Saves: %LOCALAPPDATA%\TCSCCRecomp\content (falls back to <exe dir>\content).
+    const char* localAppData = getenv("LOCALAPPDATA");
+    g_contentDir = (localAppData ? std::string(localAppData) + "\\TCSCCRecomp" : std::string(exeDir)) + "\\content";
+    g_profileDir = (localAppData ? std::string(localAppData) + "\\TCSCCRecomp" : std::string(exeDir)) + "\\profile";
+    g_log = fopen((std::string(exeDir) + "\\scda.log").c_str(), "w");
+    AddVectoredExceptionHandler(1, CrashHandler);
+
+    if (!InitMemory())
+    {
+        RuntimeLog("[fatal] cannot reserve 4 GB guest memory\n");
+        return 1;
+    }
+
+    std::string sha;
+    ImageLoadResult loaded = LoadFlatImage(imagePath, g_base, &sha);
+    if (loaded != ImageLoadResult::Ok)
+    {
+        char msg[512];
+        snprintf(msg, sizeof(msg), "default.img: %s, expected sha256 %s, got %s",
+            ImageLoadResultName(loaded), SCDA_EXPECTED_IMAGE_SHA256, sha.empty() ? "-" : sha.c_str());
+        RuntimeLog("[fatal] %s (%s)\n", msg, imagePath);
+        MessageBoxA(nullptr, msg, "Splinter Cell: Double Agent Recomp", MB_ICONERROR);
+        return 2;
+    }
+    RuntimeLog("[loader] %s: sha256 %s\n", imagePath, sha.c_str());
+
+    CommandProcessorStart();
+    if (!getenv("SCDA_HEADLESS"))
+        HostWindowStart(LoadDisplaySettings(SettingsPath()));
+    ProfilerStart();
+    WatchStart();
+    TimelineStart();
+    if (const char* w = getenv("SCDA_WATCHDOG"))
+        WatchdogStart((unsigned)atoi(w));
+    // SCDA_LAUNCH_DATA=<file>: boot as if relaunched with that launch data (see SCDA_LAUNCH_DATA_OUT).
+    if (const char* path = getenv("SCDA_LAUNCH_DATA"))
+        if (FILE* f = fopen(path, "rb"))
+        {
+            std::vector<uint8_t> data(0x10000);
+            data.resize(fread(data.data(), 1, data.size(), f));
+            fclose(f);
+            LaunchDataSet(data.data(), uint32_t(data.size()));
+            RuntimeLog("[boot] launch data: %zu bytes from %s\n", data.size(), path);
+        }
+
+    if (const char* force = getenv("SCDA_FORCE_RELAUNCH"))
+        CloseHandle(CreateThread(nullptr, 0, ForceRelaunchThread, (void*)force, 0, nullptr));
+
+    // The title runs on its own host thread (64 MB like /STACK: the main guest thread recurses
+    // deeply on the host stack); this one waits for it to return or to request a relaunch.
+    for (uint32_t instance = 1;; instance++)
+    {
+        InterruptsStart();
+        HANDLE title = CreateThread(nullptr, 64 * 1024 * 1024, TitleThread, nullptr, STACK_SIZE_PARAM_IS_A_RESERVATION, nullptr);
+        HANDLE waits[2] = { TitleRelaunchEvent(), title }; // a relaunch wins over the exit it causes
+        DWORD r = WaitForMultipleObjects(2, waits, FALSE, INFINITE);
+        CloseHandle(title);
+        if (r != WAIT_OBJECT_0)
+            return 0;
+        RuntimeLog("[title] relaunch: stopping instance %u\n", instance);
+        TitleStopAll();
+        if (!ResetTitle(imagePath))
+            return 2;
+        LaunchDataNewInstance();
+        TitleRestarted();
+        PROCESS_MEMORY_COUNTERS_EX pm{ sizeof(pm) };
+        K32GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pm, sizeof(pm));
+        DWORD handles = 0;
+        GetProcessHandleCount(GetCurrentProcess(), &handles);
+        RuntimeLog("[title] instance %u starting (private %zu MB, %lu host handles)\n", instance + 1, pm.PrivateUsage >> 20, handles);
+    }
+}

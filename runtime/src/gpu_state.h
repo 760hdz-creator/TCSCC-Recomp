@@ -1,0 +1,36 @@
+// What the game told the (emulated) Xenos GPU through the Vd* kernel calls.
+#pragma once
+#include <atomic>
+#include <cstdint>
+
+struct GpuState
+{
+    std::atomic<uint32_t> ringBase{ 0 };      // guest virtual (0xA0000000 + physical); 0 = not initialized
+    std::atomic<uint32_t> ringSize{ 0 };      // bytes
+    std::atomic<uint32_t> rptrWriteback{ 0 }; // guest virtual; 0 = none
+    std::atomic<uint32_t> sysCmdBuf{ 0 };     // guest virtual of the VdSetSystemCommandBufferGpuIdentifierAddress arg
+    std::atomic<uint32_t> interruptCallback{ 0 }, interruptContext{ 0 };
+    std::atomic<uint32_t> pendingSwaps{ 0 };
+    std::atomic<uint32_t> swapCounter{ 0 };  // swaps the CP processed (EVENT_WRITE_SHD bit 31) // swaps the CP reached, not yet completed by a vsync
+    std::atomic<uint64_t> swapsSubmitted{ 0 }, swapsSeen{ 0 }, vsyncs{ 0 }; // diagnostics (SCDA_TRACE_CP)
+};
+
+GpuState& Gpu();
+
+// Physical address -> the runtime's physical mapping (MmAllocatePhysicalMemoryEx range).
+constexpr uint32_t GuestPhysical(uint32_t p) { return 0xA0000000u + (p & 0x1FFFFFFFu); }
+
+// GPU register block (big-endian dwords at 0x7FC80000 + index * 4).
+constexpr uint32_t kGpuRegBase = 0x7FC80000u;
+constexpr uint32_t kRegCpRbWptr = 0x01C5u;
+constexpr uint32_t kRegScratchUmsk = 0x01DCu;
+constexpr uint32_t kRegScratchAddr = 0x01DDu;
+constexpr uint32_t kRegScratch0 = 0x0578u;
+
+// Interrupt status (reg 0x1951; bit 0 = vblank, set during each vblank callback), and the marker
+// VdSwap leaves in the ring so the command processor counts swaps in stream order.
+constexpr uint32_t kSwapPendingReg = 0x7FC86544u;
+constexpr uint32_t kSwapMarker = 0x53574150u; // 'SWAP'
+
+inline uint32_t PendingSwaps() { return Gpu().pendingSwaps.load(); }
+inline uint32_t SwapCounter() { return Gpu().swapCounter.load(); }

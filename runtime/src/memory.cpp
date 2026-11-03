@@ -1,0 +1,143 @@
+// Virtual and physical memory kernel HLE over the runtime's guest bump allocators.
+#include <windows.h>
+#include <cstdlib>
+#include <cstring>
+#include <alloc_tracker.h>
+#include <runtime.h>
+
+// ---- Memory ----
+
+constexpr uint32_t kMemDecommit = 0x4000, kMemRelease = 0x8000, kMemLargePages = 0x20000000;
+constexpr uint32_t kStatusNoMemory = 0xC0000017, kStatusConflictingAddresses = 0xC0000018;
+
+// NtAllocateVirtualMemory(u32* BaseAddress, u32* RegionSize, AllocationType, Protect, ...)
+// Guest memory is committed host-side up front, so reserve/commit only differ in bookkeeping.
+SCDA_IMPORT(NtAllocateVirtualMemory)
+{
+    uint32_t pBase = ctx.r3.u32, pSize = ctx.r4.u32;
+    // MEM_LARGE_PAGES allocations use 64 KB pages; sizes and bases round to the page size.
+    uint32_t page = (ctx.r5.u32 & kMemLargePages) ? 0x10000 : 0x1000;
+    uint32_t want = GuestLoad32(pBase), size = (GuestLoad32(pSize) + page - 1) & ~(page - 1);
+    uint32_t addr;
+    if (want)
+    {
+        // Commit inside an existing reservation. Anywhere else would overlap other allocations.
+        addr = want & ~(page - 1);
+        if (!GuestAllocations().SizeOf(addr))
+        {
+            ctx.r3.u64 = kStatusConflictingAddresses;
+            return;
+        }
+    }
+    else if (!(addr = GuestAllocVirtual(size, 0x10000)))
+    {
+        ctx.r3.u64 = kStatusNoMemory;
+        return;
+    }
+    GuestStore32(pBase, addr);
+    GuestStore32(pSize, size);
+    if (getenv("SCDA_TRACE_MEM"))
+        RuntimeLog("[mem] alloc want 0x%08X size 0x%X type 0x%X -> 0x%08X\n", want, size, ctx.r5.u32, addr);
+    ctx.r3.u64 = 0;
+}
+
+// Back to the heap the range came from (service allocations are never freed).
+static void FreeGuestRange(uint32_t base, uint32_t size)
+{
+    if (base >= 0x40000000 && base < 0x7F000000)
+        GuestFreeVirtual(base, size);
+    else if (base >= 0xA0000000 && base < 0xC0000000)
+        GuestFreePhysical(base, size);
+}
+
+// NtFreeVirtualMemory(u32* BaseAddress, u32* RegionSize, FreeType). Freed and decommitted pages
+// are zeroed now: the next commit must return zero-filled memory (the game's heap relies on it).
+SCDA_IMPORT(NtFreeVirtualMemory)
+{
+    uint32_t start = GuestLoad32(ctx.r3.u32), size = GuestLoad32(ctx.r4.u32), type = ctx.r5.u32;
+    uint32_t allocBase = GuestAllocations().BaseOf(start), allocSize = GuestAllocations().SizeOf(start);
+    if (!allocBase)
+    {
+        ctx.r3.u64 = 0xC000009F; // STATUS_FREE_VM_NOT_AT_BASE (not inside any allocation)
+        return;
+    }
+    uint32_t region = start & ~0xFFFu, end;
+    if (type & kMemRelease)
+    {
+        if (start != allocBase)
+        {
+            ctx.r3.u64 = 0xC000009F; // STATUS_FREE_VM_NOT_AT_BASE
+            return;
+        }
+        end = allocBase + allocSize;
+        GuestAllocations().Remove(allocBase);
+    }
+    else
+    {
+        // Size 0 = to the end of the allocation; never past it.
+        uint64_t want = size ? (uint64_t(start) + size + 0xFFF) & ~0xFFFull : uint64_t(allocBase) + allocSize;
+        end = uint32_t(want < uint64_t(allocBase) + allocSize ? want : uint64_t(allocBase) + allocSize);
+    }
+    if (getenv("SCDA_TRACE_MEM"))
+        RuntimeLog("[mem] free 0x%08X-0x%08X type 0x%X\n", region, end, type);
+    if (type & (kMemRelease | kMemDecommit))
+        memset(GuestPtr(region), 0, end - region);
+    if (type & kMemRelease)
+        FreeGuestRange(allocBase, allocSize);
+    GuestStore32(ctx.r3.u32, region);
+    GuestStore32(ctx.r4.u32, end - region);
+    ctx.r3.u64 = 0;
+}
+
+// MmAllocatePhysicalMemoryEx(Flags, Size, Protect, MinAddress, MaxAddress, Alignment)
+SCDA_IMPORT(MmAllocatePhysicalMemoryEx)
+{
+    uint32_t size = ctx.r4.u32, align = ctx.r8.u32 ? ctx.r8.u32 : 0x1000;
+    ctx.r3.u64 = GuestAllocPhysical(size, align);
+}
+
+// MmFreePhysicalMemory(Type, BaseAddress): only an allocation's own base frees it.
+SCDA_IMPORT(MmFreePhysicalMemory)
+{
+    uint32_t addr = ctx.r4.u32;
+    if (GuestAllocations().BaseOf(addr) != addr)
+        return;
+    uint32_t size = GuestAllocations().SizeOf(addr);
+    GuestAllocations().Remove(addr);
+    FreeGuestRange(addr, size);
+}
+
+// MmQueryAllocationSize(BaseAddress): size of the allocation holding the address.
+SCDA_IMPORT(MmQueryAllocationSize) { ctx.r3.u64 = GuestAllocations().SizeOf(ctx.r3.u32); }
+SCDA_IMPORT(MmGetPhysicalAddress) { ctx.r3.u64 = ctx.r3.u32 & 0x1FFFFFFF; }
+SCDA_IMPORT(MmQueryAddressProtect) { ctx.r3.u64 = PAGE_READWRITE; }
+
+// MmQueryStatistics(MM_STATISTICS*): 26 big-endian u32, Length (104) first. The title's
+// GlobalMemoryStatus (821E2DB0) reads total/available physical pages and title virtual bytes.
+SCDA_IMPORT(MmQueryStatistics)
+{
+    uint32_t s = ctx.r3.u32;
+    if (!s || GuestLoad32(s) != 104)
+    {
+        ctx.r3.u64 = 0xC000000D; // STATUS_INVALID_PARAMETER
+        return;
+    }
+    // 512 MB console, 32 MB kept by the kernel; the image and every title allocation count as used.
+    constexpr uint32_t kTotalPages = 0x20000, kKernelPages = 0x2000, kImagePages = 0x1300;
+    uint32_t used = kKernelPages + kImagePages + GuestTitleAllocatedBytes() / 0x1000;
+    uint32_t avail = used < kTotalPages ? kTotalPages - used : 0;
+    for (uint32_t i = 1; i < 26; i++)
+        GuestStore32(s + i * 4, 0);
+    GuestStore32(s + 4, kTotalPages);
+    GuestStore32(s + 8, kKernelPages);
+    GuestStore32(s + 12, avail);
+    GuestStore32(s + 16, 0x2FFE0000);                 // title total virtual bytes (Xenia)
+    GuestStore32(s + 20, GuestTitleAllocatedBytes()); // title reserved virtual bytes
+    GuestStore32(s + 24, kTotalPages - kKernelPages - avail);
+    GuestStore32(s + 36, kImagePages);
+    GuestStore32(s + 100, kTotalPages - 1);           // highest physical page
+    if (getenv("SCDA_TRACE_MEM"))
+        RuntimeLog("[mem] statistics used %u avail %u pages\n", used, avail);
+    ctx.r3.u64 = 0;
+}
+
