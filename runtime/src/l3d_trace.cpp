@@ -158,13 +158,15 @@ uint32_t PzVisFill(uint32_t ptr, uint8_t* base)
     if (off || !g_visDriver || !ptr)
         return 0;
     const uint32_t first = ptr + PPC_LOAD_U32(g_visDriver + 184), n = PPC_LOAD_U32(g_visDriver + 188);
-    static bool logged;
-    if (!logged)
+    static uint32_t lastFirst, lastN;
+    if (first != lastFirst || n != lastN)
     {
-        logged = true;
+        lastFirst = first;
+        lastN = n;
         RuntimeLog("[l3d] visibility bytes 0x%08X x%u = %02X (PS memexport workaround)\n", first, n, fill);
     }
-    for (uint32_t k = 0; k < n && k < 4096; k++)
+    // n bytes from first is exactly the range the driver loop reads.
+    for (uint32_t k = 0; k < n; k++)
         PPC_STORE_U8(first + k, fill);
     return n;
 }

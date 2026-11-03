@@ -89,7 +89,7 @@ static void Compile(const ShaderBlob& blob, CompiledShader& out)
     if (!t.ok)
     {
         g_failedCount++;
-        printf("[shader] %016llx.%s: translate failed: %s\n", (unsigned long long)blob.hash, stage, t.error.c_str());
+        RuntimeLog("[shader] %016llx.%s: translate failed: %s\n", (unsigned long long)blob.hash, stage, t.error.c_str());
         return;
     }
     // SCDA_DUMP_HLSL=<dir>: <hash>.vs.hlsl / <hash>.ps.hlsl for every translated shader.
@@ -107,7 +107,7 @@ static void Compile(const ShaderBlob& blob, CompiledShader& out)
     if (!out.ok)
     {
         g_failedCount++;
-        printf("[shader] %016llx.%s: compile failed: %s\n", (unsigned long long)blob.hash, stage, err.c_str());
+        RuntimeLog("[shader] %016llx.%s: compile failed: %s\n", (unsigned long long)blob.hash, stage, err.c_str());
     }
 }
 
@@ -187,7 +187,7 @@ void PrecompileShaders(const std::vector<const ShaderBlob*>& blobs, const std::f
                 if (!shader->ok)
                 {
                     failed++;
-                    printf("[shader] %016llx.%s: %s failed: %s\n", (unsigned long long)todo[i]->hash, stage, t.ok ? "compile" : "translate",
+                    RuntimeLog("[shader] %016llx.%s: %s failed: %s\n", (unsigned long long)todo[i]->hash, stage, t.ok ? "compile" : "translate",
                         t.ok ? err.c_str() : t.error.c_str());
                 }
                 else

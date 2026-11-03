@@ -26,12 +26,13 @@
 ## Debug switches (fresh)
 - `SCDA_TRACE_GFX=1` (gfx_log.cpp: OpenFile, movie load, UI fns), `SCDA_TRACE_OCCL=<n>`, `SCDA_TRACE_PRED=1`, `SCDA_SCAN=<val>/<mask>` (watchdog RAM scan), `SCDA_DUMP_TEX_AT=<present>`.
 - Existing: `SCDA_TRACE_RESOLVE=<present>` (+`SCDA_TRACE_PS=<hash>`), `SCDA_DUMP_FRAME`+`SCDA_DUMP_BACKBUFFER`, `SCDA_DUMP_DRAWS=<dir>,1`, `SCDA_PROFILE=<start>:<secs>`, `SCDA_TRACE_FS`.
-- Clean shader dump: set LOCALAPPDATA to a temp dir + `SCDA_DUMP_HLSL=<dir>`; raw ucode `SCDA_DUMP_SHADERS=<dir>`. Translate failures print to stdout only.
+- Clean shader dump: set LOCALAPPDATA to a temp dir + `SCDA_DUMP_HLSL=<dir>`; raw ucode `SCDA_DUMP_SHADERS=<dir>`. Translate/compile failures and MEMEXPORT shaders (`[shader] ... uses MEMEXPORT`) go to scda.log.
 - l3d (`l3d_trace.cpp`): `SCDA_TRACE_L3D=<n>`, `SCDA_TRACE_L3D_ITEMS=<n>`, `SCDA_SKIP_L3D_BUCKET=<mask>`, `SCDA_WATCH_L3D=1|2`, `SCDA_TRACE_VISBUF=<n>`. `WatchAdd(addr,max)` (profiler.cpp) arms a hardware write watch at run time.
 ## Xenia reference (`_run\xenia`, copy of SCDA build)
 - Screenshot: focus window, Alt+D then T -> `screenshots\5553080B\`. Keyboard (`--keyboard_mode=1`): START=X, A=';'. After logos stays black even with START: weak reference.
 ## Next
 1. Mission-load crash (HUD_Saving movie object) - now reachable from a visible menu.
-2. Real PS memexport in the translator (UAV write eM0 -> eA, format from stream constant, write-back to guest RAM before the CPU lock); then drop the FF fill. Other PS with alloc memory may exist (scan `SCDA_DUMP_SHADERS` with `cfscan`-style CF parse).
-3. Corrupted save check; Bink colour; review HEURISTIC jump tables.
-4. Gemini bridge returned 503 twice; retry.
+2. Mission: A/B `SCDA_VISBUF_FILL=FF|23|03` (draws, ms, screenshot); if they differ, take bits 2-7 from the per-object input (VS b3b454a30817c947, 48 B/object from sub_82EF5B48) | 0x03.
+3. Real PS memexport in the translator (UAV write eM0 -> eA, format from stream constant, write-back to guest RAM before the CPU lock); then drop the FF fill. Other PS with alloc memory may exist (scan `SCDA_DUMP_SHADERS` with `cfscan`-style CF parse).
+4. Corrupted save check; Bink colour; review HEURISTIC jump tables.
+5. Gemini bridge returned 503 twice; retry.
