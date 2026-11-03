@@ -357,8 +357,10 @@ cbuffer SharedTail : register(b2)
 void main(point V v[1], inout TriangleStream<V> s)
 {
     const uint mm = asuint(scaleAndPoint.w);
-    float size = v[0].psize.x > 0.0 ? v[0].psize.x : scaleAndPoint.z;
-    size = clamp(size, float(mm & 0xFFFF) / 8.0, float(mm >> 16) / 8.0);
+    // PA_SU_POINT_MINMAX limits only a VS-exported size; PA_SU_POINT_SIZE is used as is (Xenia:
+    // point_vertex_diameter_min/max). Clamped, Conviction's 1 px l3d visibility points (min 2 px)
+    // wrote their neighbours' bytes.
+    const float size = v[0].psize.x > 0.0 ? clamp(v[0].psize.x, float(mm & 0xFFFF) / 8.0, float(mm >> 16) / 8.0) : scaleAndPoint.z;
     const float2 h = 0.5 * size * windowToNdc.xy * v[0].pos.w;
     const uint gen = misc.w;
     [unroll] for (int i = 0; i < 4; i++)
@@ -2337,12 +2339,12 @@ void D3D11Renderer::ExecuteDraw(const DrawCall& d, const Frame& frame)
     // (x = 0x40000000 | dword address, y = 2^23, z = 2^23 exponent | format info, w = 2^23 + count).
     // k_8 elements (1 byte) only; 64 KB window. SCDA_NO_MEMEXPORT=1: no window (writes dropped).
     {
-        // Conviction gate: memexport only feeds l3d visibility bytes, which the CPU workaround overwrites
-        // (l3d_trace.cpp PzVisFill) unless SCDA_VISBUF_FILL is off / or<hex>. Overwritten, the write-back
-        // is 3 blocking Maps per frame for nothing and can race the fill.
+        // Conviction gate: memexport only feeds l3d visibility bytes; SCDA_VISBUF_FILL=<hex> overwrites
+        // them on the CPU (l3d_trace.cpp PzVisFill), then the write-back is skipped (3 blocking Maps
+        // per frame for nothing, and it could race the fill). Unset / off / or<hex>: memexport runs.
         static const char* fillEnv = getenv("SCDA_VISBUF_FILL");
         static const bool noMemExport = getenv("SCDA_NO_MEMEXPORT") != nullptr ||
-            !(fillEnv && (!strcmp(fillEnv, "off") || !strncmp(fillEnv, "or", 2)));
+            (fillEnv && strcmp(fillEnv, "off") && strncmp(fillEnv, "or", 2));
         uint32_t base = 0, bytes = 0;
         for (uint32_t c = 0; d.ps->memExport && !noMemExport && c < 256 && !bytes; c++)
         {
@@ -2355,9 +2357,12 @@ void D3D11Renderer::ExecuteDraw(const DrawCall& d, const Frame& frame)
             }
         }
         static uint32_t logged;
-        if (bytes && logged++ < 6)
-            RuntimeLog("[memexport] PS %016llx window phys 0x%08X x%u (point size %08X minmax %08X, %u vertices)\n",
-                (unsigned long long)d.ps->hash, base, bytes, r.regs[0x2280], r.regs[0x2281], d.indexCount);
+        if (bytes && logged++ < 9)
+        {
+            const uint32_t* c0 = r.regs.Data() + kRegAluConstants + 1024;
+            RuntimeLog("[memexport] PS %016llx window phys 0x%08X x%u (%u vertices) c0 %08X %08X %08X %08X c1 %08X %08X %08X %08X\n",
+                (unsigned long long)d.ps->hash, base, bytes, d.indexCount, c0[0], c0[1], c0[2], c0[3], c0[4], c0[5], c0[6], c0[7]);
+        }
         if (base != r.exportBase || bytes != r.exportBytes)
         {
             r.exportBase = base;
@@ -2544,7 +2549,16 @@ void D3D11Renderer::ExecuteDraw(const DrawCall& d, const Frame& frame)
     }
     // PS memexport window: seed it with the guest bytes (elements the draw does not write keep them),
     // bind it as u7 (after the colour targets).
-    const bool memExportDraw = r.exportBytes != 0;
+    // SCDA_MEMEXPORT_DRAWS=<n>: A/B, only the first n memexport draws of each frame write back.
+    static const long memExportMax = getenv("SCDA_MEMEXPORT_DRAWS") ? atol(getenv("SCDA_MEMEXPORT_DRAWS")) : -1;
+    static uint64_t memExportFrame = ~0ull;
+    static long memExportCount = 0;
+    if (r.exportBytes && memExportFrame != m_presented)
+    {
+        memExportFrame = m_presented;
+        memExportCount = 0;
+    }
+    const bool memExportDraw = r.exportBytes != 0 && (memExportMax < 0 || memExportCount++ < memExportMax);
     if (memExportDraw)
     {
         if (!r.exportBuf)
@@ -3110,7 +3124,7 @@ void D3D11Renderer::ExecuteResolve(const Resolve& res)
                                     ones += v >= 1.0f;
                                 }
                             m_context->Unmap(st.Get(), 0);
-                            RuntimeLog("[hiz] %08X %ux%u rect %d,%d block %ux%u: min %g max %g zeros %u ones %u of %u\n", base, w, h,
+                            RuntimeLog("[hiz] %08X %ux%u key %08X rect %d,%d block %ux%u: min %g max %g zeros %u ones %u of %u\n", base, w, h, depthKey,
                                 res.hasRect ? res.rect[0] : -1, res.hasRect ? res.rect[1] : -1, scale * layout.samplesX, scale * layout.samplesY,
                                 lo, hi, zeros, ones, w * h);
                         }

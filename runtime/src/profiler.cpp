@@ -195,7 +195,9 @@ static void WatchThread()
                     for (int i = 0; i < g_watchCount; i++)
                     {
                         *dr[i] = DWORD64(GuestPtr(g_watchAddr[i]));
-                        c.Dr7 |= (1ull << (i * 2)) | (0b1101ull << (16 + i * 4)); // local enable, write, 4 bytes
+                        // local enable, write (SCDA_WATCH_RW=1: read or write), 4 bytes
+                        static const bool rw = getenv("SCDA_WATCH_RW") != nullptr;
+                        c.Dr7 |= (1ull << (i * 2)) | ((rw ? 0b1111ull : 0b1101ull) << (16 + i * 4));
                     }
                     SetThreadContext(h, &c);
                 }

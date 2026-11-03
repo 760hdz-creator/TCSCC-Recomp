@@ -106,6 +106,7 @@ PPC_FUNC(sub_82EF8CA8)
 // sub_82EF9990 (lr 0x82EF99F0) on a per-frame buffer of one byte per object that the GPU writes
 // (byte & 7 != 0 -> object is a candidate). SCDA_TRACE_VISBUF=<n>: dump it for n frames.
 static uint32_t g_visDriver; // V of the last sub_82EF9990 (visibility driver, see below)
+static uint32_t g_lightDriver; // X of the last sub_82EF9100 (light-list reader, see below)
 extern "C" PPC_FUNC(__imp__sub_82511988);
 
 PPC_FUNC(sub_82511988)
@@ -117,6 +118,18 @@ PPC_FUNC(sub_82511988)
     uint32_t PzVisFill(uint32_t ptr, uint8_t* base);
     if (lr == 0x82EF99F0)
         PzVisFill(PPC_LOAD_U32(out + 4), base);
+    // Light list (sub_82EF9100, lr 0x82EF914C): bytes at ptr + X[192], X[196] lights, written by the
+    // 2nd/3rd visibility draws. Lights with bits 0+1 set join light lists X->+80 / +92, and with the
+    // GPU's bytes the menu Sams and the mission go near black (not the shadow maps: same without
+    // depth resolves). Cleared here = what the FF fill gave (it never wrote them): those lights are
+    // not used. SCDA_VISBUF_LIGHTS=gpu: keep the GPU bytes.
+    static const bool gpuLights = getenv("SCDA_VISBUF_LIGHTS") && !strcmp(getenv("SCDA_VISBUF_LIGHTS"), "gpu");
+    if (lr == 0x82EF914C && g_lightDriver && !gpuLights)
+    {
+        const uint32_t first = PPC_LOAD_U32(out + 4) + PPC_LOAD_U32(g_lightDriver + 192), n = PPC_LOAD_U32(g_lightDriver + 196);
+        for (uint32_t k = 0; k < n && k < 65536; k++)
+            PPC_STORE_U8(first + k, 0);
+    }
     if (lr == 0x82EF99F0 && calls < limit)
     {
         calls++;
@@ -150,10 +163,10 @@ PPC_FUNC(sub_82511988)
 // 5-7 view/light list mask. The GPU fills them: VisibilityPass PS f374a14f971cb1bd (draws of
 // sub_82EF7E90, stream constant from sub_82EF5CA8: k_8, one byte per object) tests each object's
 // screen box against a downsampled depth texture and MEMEXPORTs the byte (eA = r32, eM0 = r33).
-// The shader translator has no memexport, so the bytes stay 0 and only the always-visible skybox
-// (sub_82EF8B18) is drawn: black world, no menu planes.
-// Workaround until PS memexport exists: after the lock every object byte = SCDA_VISBUF_FILL (hex,
-// default FF = visible in every list, i.e. no occlusion culling). SCDA_VISBUF_FILL=off: GPU bytes.
+// Without memexport the bytes stayed 0 and only the always-visible skybox (sub_82EF8B18) was
+// drawn. PS memexport (translate.cpp MemExport, renderer u7 window) now writes them: default = the
+// GPU bytes. SCDA_VISBUF_FILL=<hex>: byte = hex after the lock (FF = no culling, the old
+// workaround; the renderer then skips memexport); or<hex>: GPU byte | hex; off: GPU bytes (default).
 extern "C" PPC_FUNC(__imp__sub_82EF9990);
 
 PPC_FUNC(sub_82EF9990)
@@ -162,12 +175,18 @@ PPC_FUNC(sub_82EF9990)
     __imp__sub_82EF9990(ctx, base);
 }
 
+extern "C" PPC_FUNC(__imp__sub_82EF9100);
+PPC_FUNC(sub_82EF9100)
+{
+    g_lightDriver = ctx.r3.u32;
+    __imp__sub_82EF9100(ctx, base);
+}
+
 uint32_t PzVisFill(uint32_t ptr, uint8_t* base)
 {
-    // SCDA_VISBUF_FILL=<hex>: byte = hex; or<hex>: byte |= hex (GPU bytes from PS memexport kept);
-    // off: GPU bytes only. The renderer runs memexport only for off / or<hex>.
+    // SCDA_VISBUF_FILL (see above). Unset = off.
     static const char* env = getenv("SCDA_VISBUF_FILL");
-    static const bool off = env && !strcmp(env, "off");
+    static const bool off = !env || !strcmp(env, "off");
     static const bool orMode = env && !strncmp(env, "or", 2);
     static const uint8_t fill = env && !off ? uint8_t(strtoul(env + (orMode ? 2 : 0), nullptr, 16)) : 0xFF;
     if (off || !g_visDriver || !ptr)
@@ -178,7 +197,7 @@ uint32_t PzVisFill(uint32_t ptr, uint8_t* base)
     {
         lastFirst = first;
         maxN = n;
-        RuntimeLog("[l3d] visibility bytes 0x%08X x%u = %02X (PS memexport workaround)\n", first, n, fill);
+        RuntimeLog("[l3d] visibility bytes 0x%08X x%u = %02X (SCDA_VISBUF_FILL)\n", first, n, fill);
     }
     // n bytes from first is exactly the range the driver loop reads.
     for (uint32_t k = 0; k < n; k++)
