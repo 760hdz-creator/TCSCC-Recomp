@@ -19,7 +19,9 @@
 - XamUserGetSigninInfo (0x28 struct: xuid, state 1 @+0xC, name @+0x18) + XamUserGetName ("Player"): stubs left struct garbage -> crash after START.
 - Blind input works: `SCDA_AUTOPRESS=240:START,270:A,...` passes the invisible menu and loads 01_Market.umd (draws 159 -> 197 -> load).
 - New crash in mission load: sub_83427D78 SetVariable("_root.SavingIcon.txtSavingNormal.txtField.text") on GFx movie with garbage vtable (0xA5FFCFE0).
-- GFx: no logger installed; GFx file open (sub_832FB110) NEVER called, but UI setup fns run (sub_83309A20 fonts, sub_83427FD8 HUD_Saving). Hooks in runtime/src/gfx_log.cpp (`SCDA_TRACE_GFX=1`). Menu frame has zero UI draws.
+- GFx WORKS: OpenFile (sub_83377E98) loads swfs incl. ingameD_MainMenu_1024.swf (hooks in runtime/src/gfx_log.cpp, `SCDA_TRACE_GFX=1`). After START the Scaleform "Corrupted Data - Player" dialog renders (A needs `:20` hold: `240:START,400:A:20`). OK -> main menu = night sky, lower half black.
+- Main menu frame (m900): draws 3-39 = Scaleform menu into RT -> resolved 0C4D5000 (1024x1024) + 01DE5000; NOTHING samples them. Scene = 6 sky meshes only (VS 1B66/4617/5120). 0 skipped draws, all 18 occlusion objects visible (`SCDA_TRACE_OCCL=<n>`). => game never submits world + projected-menu geometry (CPU side).
+- Xenia: screenshot via Alt+D,T works (screenshots/ in _run/xenia), pre-START black too. Desktop capture returns black. Gemini bridge 503 on first try in fresh/.
 - Xenia canary (copied to _run/xenia) sees the same shader set (22 VS/26 PS) in 60 s: likely same stall. Screen capture of its window returns black.
 - Bink red: BT.601 consts + shader verified; G,B ~0 from plane data (unverified if genuine).
 ## Known outer-repo fixes NOT ported (cherry-pick from outer when the symptom shows)
@@ -27,5 +29,6 @@
 - 8cea794: k_16 / k_16*_EXPAND texture formats. b5c9e94..fd81c4d: renderer/CP debug traces (SCDA_TRACE_*, SCDA_DUMP_RAM).
 - Open outer bug: menu shows sky only, no world/UI (occlusion, camera, timebase ruled out). Bink logo red only.
 ## Next
-1. Why GFx movies never load (no sub_832FB110 call): find movie-load path from sub_83427FD8 / UI manager; garbage movie object = load failed.
+1. Xenia main menu ground truth (keyboard_mode=1, START/A, Alt+D,T) + its XexGetProcedureAddress/GetProcAddressByOrdinal args vs ours.
+2. If Xenia shows world/text: audit 26 untested XenonRecomp ops by frequency (update forms, bdzf/bdnzt, addme/subfze, lhau).
 2. Review the 3 HEURISTIC jump tables and the .text tail decode failures.

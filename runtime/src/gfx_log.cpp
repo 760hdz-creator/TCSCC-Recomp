@@ -93,3 +93,82 @@ PZ_TRACE_ONCE(83365C28)
 PZ_TRACE_ONCE(83366338)
 PZ_TRACE_ONCE(82E83DF8)
 PZ_TRACE_ONCE(82E4E6B8)
+
+// FString {char* data, num, max} (narrow on this build). Copy for logs.
+static std::string GuestFString(uint8_t* base, uint32_t fs)
+{
+    std::string out;
+    const uint32_t data = fs ? PPC_LOAD_U32(fs) : 0;
+    for (uint32_t s = data; s && out.size() < 200; s++)
+    {
+        const uint8_t c = PPC_LOAD_U8(s);
+        if (!c)
+            break;
+        out += c < 0x80 ? char(c) : '?';
+    }
+    return out;
+}
+
+// UI movie wrapper load sub_82E6D748(this, FString* path, ...): this+4 = GFx movie after the call.
+extern "C" PPC_FUNC(__imp__sub_82E6D748);
+PPC_FUNC(sub_82E6D748)
+{
+    static const bool trace = getenv("SCDA_TRACE_GFX") != nullptr;
+    const uint32_t self = ctx.r3.u32, lr = uint32_t(ctx.lr);
+    const std::string path = trace ? GuestFString(base, ctx.r4.u32) : std::string();
+    __imp__sub_82E6D748(ctx, base);
+    if (trace)
+    {
+        const uint32_t movie = PPC_LOAD_U32(self + 4), vt = movie ? PPC_LOAD_U32(movie) : 0;
+        RuntimeLog("[gfx] load '%s' this 0x%08X -> movie 0x%08X vt 0x%08X r3 0x%08X (lr 0x%08X)\n", path.c_str(), self, movie, vt,
+            ctx.r3.u32, lr);
+    }
+}
+
+PZ_TRACE_ONCE(8330B5E8)
+PZ_TRACE_ONCE(82D12150)
+PZ_TRACE_ONCE(82DAA0D0)
+
+// GFxLoaderImpl::OpenFile sub_83377E98(this, const char* path, flags) -> GFxFile* or 0.
+extern "C" PPC_FUNC(__imp__sub_83377E98);
+PPC_FUNC(sub_83377E98)
+{
+    static const bool trace = getenv("SCDA_TRACE_GFX") != nullptr;
+    std::string path;
+    for (uint32_t s = ctx.r4.u32; trace && s && PPC_LOAD_U8(s) && path.size() < 260; s++)
+        path += char(PPC_LOAD_U8(s));
+    const uint32_t lr = uint32_t(ctx.lr), flags = ctx.r5.u32;
+    __imp__sub_83377E98(ctx, base);
+    if (trace)
+        RuntimeLog("[gfx] OpenFile '%s' flags 0x%X -> 0x%08X (lr 0x%08X)\n", path.c_str(), flags, ctx.r3.u32, lr);
+}
+
+// Occlusion result pass sub_82EF6278(this): per query entry (this+164, 20 bytes: obj, kind @+4,
+// query @+8, skip @+12) GetData spins; samples 0 -> obj+28 |= 2 (hidden), kind 1 -> obj+896 = samples.
+// SCDA_TRACE_OCCL=<n>: log the entries of every n-th call.
+extern "C" PPC_FUNC(__imp__sub_82EF6278);
+PPC_FUNC(sub_82EF6278)
+{
+    static const int every = getenv("SCDA_TRACE_OCCL") ? atoi(getenv("SCDA_TRACE_OCCL")) : 0;
+    static int calls = 0;
+    const uint32_t self = ctx.r3.u32;
+    __imp__sub_82EF6278(ctx, base);
+    if (!every || (calls++ % every) != 0)
+        return;
+    const uint32_t list = PPC_LOAD_U32(PPC_LOAD_U32(self) + 16);
+    const uint32_t sel = PPC_LOAD_U32(PPC_LOAD_U32(self + 148) + PPC_LOAD_U32(list) * 8);
+    const uint32_t r28 = PPC_LOAD_U32(self + 148) + PPC_LOAD_U32(list) * 8;
+    const int32_t n = int32_t(PPC_LOAD_U32(r28 + 4));
+    const uint32_t first = PPC_LOAD_U32(r28), table = PPC_LOAD_U32(self + 164);
+    std::string line;
+    for (int32_t i = 0; i < n && i < 64; i++)
+    {
+        const uint32_t e = table + (first + i) * 20, obj = PPC_LOAD_U32(e);
+        char buf[64];
+        snprintf(buf, sizeof(buf), " [%08X k%u s%u f%X r%d]", obj, PPC_LOAD_U32(e + 4), PPC_LOAD_U8(e + 12),
+            obj ? PPC_LOAD_U32(obj + 28) : 0, obj ? int32_t(PPC_LOAD_U32(obj + 896)) : 0);
+        line += buf;
+    }
+    (void)sel;
+    RuntimeLog("[occl] call %d entries %d:%s\n", calls - 1, n, line.c_str());
+}
