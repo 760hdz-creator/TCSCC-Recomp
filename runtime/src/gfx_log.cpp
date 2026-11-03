@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <watchdog.h>
 
 // Conviction: Scaleform GFx log sink sub_832FA860(log + 20, fmt, ...) (GFxLoader "Error: ..." strings
 // at 0x823EAEF8+). Copies each message to scda.log as [gfx], then runs the original.
@@ -88,7 +89,7 @@ PPC_FUNC(sub_832FB110)
         __imp__sub_##addr(ctx, base);                                                            \
     }
 PZ_TRACE_ONCE(83309A20)
-PZ_TRACE_ONCE(83427FD8)
+
 PZ_TRACE_ONCE(83365C28)
 PZ_TRACE_ONCE(83366338)
 PZ_TRACE_ONCE(82E83DF8)
@@ -171,4 +172,91 @@ PPC_FUNC(sub_82EF6278)
     }
     (void)sel;
     RuntimeLog("[occl] call %d entries %d:%s\n", calls - 1, n, line.c_str());
+}
+
+// GFx movie (vtable 0x821CB780) ctor sub_82DAA408 / dtor sub_82DAA4F0. SCDA_TRACE_GFX: log this and
+// the guest call chain (stale movie pointers: HUD_Saving SetVariable crash in sub_83427D78).
+static void LogMovieLife(const char* what, uint32_t self, uint8_t* base, const PPCContext& ctx)
+{
+    std::string chain;
+    for (uint32_t a : WalkGuestStack(base, ctx.r1.u32, uint32_t(ctx.lr), 10))
+    {
+        char buf[16];
+        snprintf(buf, sizeof(buf), " %08X", a);
+        chain += buf;
+    }
+    RuntimeLog("[gfx] movie %s 0x%08X:%s\n", what, self, chain.c_str());
+}
+
+extern "C" PPC_FUNC(__imp__sub_82DAA408);
+PPC_FUNC(sub_82DAA408)
+{
+    static const bool trace = getenv("SCDA_TRACE_GFX") != nullptr;
+    if (trace)
+        LogMovieLife("ctor", ctx.r3.u32, base, ctx);
+    __imp__sub_82DAA408(ctx, base);
+}
+
+// Stale HUD_Saving fix. The HUD wrapper (vtable 0x82403000, mgr+92) borrows the loading screen's
+// HUD_Saving movie through the registry lookup (no refcount). The loading-screen teardown
+// (sub_82D02350 -> sub_82D11278) releases it by name and the dtor runs. Event 9 (save icon,
+// sub_82E8F920 -> sub_83427D78) then calls through the freed vtable. Fix: when a movie dies, clear
+// +4 of every live wrapper that points to it. sub_83427D78 null-checks +4, so the save icon is skipped.
+static constexpr uint32_t kSavingWrapperVt = 0x82403000;
+static uint32_t g_savingWrappers[8];
+
+extern "C" PPC_FUNC(__imp__sub_82DAA4F0);
+PPC_FUNC(sub_82DAA4F0)
+{
+    static const bool trace = getenv("SCDA_TRACE_GFX") != nullptr;
+    const uint32_t movie = ctx.r3.u32;
+    if (trace)
+        LogMovieLife("dtor", movie, base, ctx);
+    for (uint32_t& w : g_savingWrappers)
+    {
+        if (w && PPC_LOAD_U32(w) != kSavingWrapperVt)
+            w = 0; // wrapper itself is gone
+        if (w && PPC_LOAD_U32(w + 4) == movie)
+        {
+            RuntimeLog("[gfx] HUD_Saving wrapper 0x%08X: movie 0x%08X destroyed, pointer cleared\n", w, movie);
+            PPC_STORE_U32(w + 4, 0);
+        }
+    }
+    __imp__sub_82DAA4F0(ctx, base);
+}
+
+// HUD_Saving wrapper load sub_83427FD8(this, ...): this+4 = registry lookup sub_82D10420(sub_82D11588(),
+// "Ingame\HUD_Saving.swf", 0) (raw pointer, no refcount), else a fresh load. SCDA_TRACE_GFX: log the
+// result and which registry list (+76 main / +108 second) holds it.
+extern "C" PPC_FUNC(__imp__sub_83427FD8);
+extern "C" PPC_FUNC(__imp__sub_82D11588);
+PPC_FUNC(sub_83427FD8)
+{
+    static const bool trace = getenv("SCDA_TRACE_GFX") != nullptr;
+    const uint32_t self = ctx.r3.u32, lr = uint32_t(ctx.lr);
+    __imp__sub_83427FD8(ctx, base);
+    const uint32_t movie = PPC_LOAD_U32(self + 4);
+    if (movie)
+    {
+        uint32_t* slot = nullptr;
+        for (uint32_t& w : g_savingWrappers)
+            if (w == self || (!slot && (!w || PPC_LOAD_U32(w) != kSavingWrapperVt)))
+                slot = &w;
+        if (slot)
+            *slot = self;
+    }
+    if (!trace)
+        return;
+    PPCContext c = ctx;
+    __imp__sub_82D11588(c, base);
+    const uint32_t reg = c.r3.u32;
+    int where = 0;
+    for (int list = 0; list < 2 && !where; list++)
+    {
+        const uint32_t items = PPC_LOAD_U32(reg + (list ? 108 : 76)), n = PPC_LOAD_U32(reg + (list ? 112 : 80));
+        for (uint32_t i = 0; i < n && i < 512; i++)
+            if (PPC_LOAD_U32(items + 4 * i) == movie)
+                where = list ? 108 : 76;
+    }
+    RuntimeLog("[gfx] HUD_Saving wrapper 0x%08X movie 0x%08X (reg 0x%08X list +%d) lr 0x%08X\n", self, movie, reg, where, lr);
 }

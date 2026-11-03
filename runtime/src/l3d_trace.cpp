@@ -158,11 +158,11 @@ uint32_t PzVisFill(uint32_t ptr, uint8_t* base)
     if (off || !g_visDriver || !ptr)
         return 0;
     const uint32_t first = ptr + PPC_LOAD_U32(g_visDriver + 184), n = PPC_LOAD_U32(g_visDriver + 188);
-    static uint32_t lastFirst, lastN;
-    if (first != lastFirst || n != lastN)
+    static uint32_t lastFirst, maxN; // log a new buffer or a new high count only (n jitters per frame)
+    if (first != lastFirst || n > maxN)
     {
         lastFirst = first;
-        lastN = n;
+        maxN = n;
         RuntimeLog("[l3d] visibility bytes 0x%08X x%u = %02X (PS memexport workaround)\n", first, n, fill);
     }
     // n bytes from first is exactly the range the driver loop reads.
