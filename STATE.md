@@ -14,10 +14,18 @@
 - 04db715 (runtime part): audio callback arg cell + RtlInitializeCriticalSectionAndSpinCount. Symptom: fatal KeWaitForMultipleObjects lr 0x82811AD0.
 - 37a180e (kernel.cpp only, pz_trace.cpp debug hooks left out): NtSuspend/ResumeThread pseudo handle. Symptom: main() returns, exit-time AVs (guest 0x400/0x18).
 - Boot now: no fatal over 90 s; SCDA_TRACE_PRESENT 40 s run = 1176 presents, 159 draws/frame (outer tcscc.exe: 1170, 159 = same), Bink logos opened, menu.umd/menu.ass loaded. Test exe: `_install\tcscc_fresh.exe` (outer tcscc.exe untouched).
+## Fresh-only fixes (2026-11-03)
+- XenonRecomp: jump-table `switch` on rN.u32 (was u64: addi carry 0x100000000 passed cmplwi, hit __builtin_unreachable -> host AV in sub_82858B60); default case = __builtin_trap. Patch file refreshed (541 lines). NOTE: outer tools/patches copy is now stale.
+- XamUserGetSigninInfo (0x28 struct: xuid, state 1 @+0xC, name @+0x18) + XamUserGetName ("Player"): stubs left struct garbage -> crash after START.
+- Blind input works: `SCDA_AUTOPRESS=240:START,270:A,...` passes the invisible menu and loads 01_Market.umd (draws 159 -> 197 -> load).
+- New crash in mission load: sub_83427D78 SetVariable("_root.SavingIcon.txtSavingNormal.txtField.text") on GFx movie with garbage vtable (0xA5FFCFE0).
+- GFx: no logger installed; GFx file open (sub_832FB110) NEVER called, but UI setup fns run (sub_83309A20 fonts, sub_83427FD8 HUD_Saving). Hooks in runtime/src/gfx_log.cpp (`SCDA_TRACE_GFX=1`). Menu frame has zero UI draws.
+- Xenia canary (copied to _run/xenia) sees the same shader set (22 VS/26 PS) in 60 s: likely same stall. Screen capture of its window returns black.
+- Bink red: BT.601 consts + shader verified; G,B ~0 from plane data (unverified if genuine).
 ## Known outer-repo fixes NOT ported (cherry-pick from outer when the symptom shows)
 - 99a759a: mftb scaled to 50 MHz, KeQueryPerformanceFrequency 50000000 (guest_time).
 - 8cea794: k_16 / k_16*_EXPAND texture formats. b5c9e94..fd81c4d: renderer/CP debug traces (SCDA_TRACE_*, SCDA_DUMP_RAM).
 - Open outer bug: menu shows sky only, no world/UI (occlusion, camera, timebase ruled out). Bink logo red only.
 ## Next
-1. Screen check: what the window shows (outer: Bink red only, menu sky only). Port 99a759a/8cea794 only if needed.
+1. Why GFx movies never load (no sub_832FB110 call): find movie-load path from sub_83427FD8 / UI manager; garbage movie object = load failed.
 2. Review the 3 HEURISTIC jump tables and the .text tail decode failures.

@@ -15,7 +15,7 @@ index 34add40..df946cc 100644
                      {
                          // right block's just going to return
 diff --git a/XenonRecomp/recompiler.cpp b/XenonRecomp/recompiler.cpp
-index fa91527..8470a1b 100644
+index fa91527..2a2294e 100644
 --- a/XenonRecomp/recompiler.cpp
 +++ b/XenonRecomp/recompiler.cpp
 @@ -420,6 +420,22 @@ bool Recompiler::Recompile(
@@ -41,7 +41,27 @@ index fa91527..8470a1b 100644
      auto printSetFlushMode = [&](bool enable)
          {
              auto newState = enable ? CSRState::VMX : CSRState::FPU;
-@@ -649,7 +665,7 @@ bool Recompiler::Recompile(
+@@ -609,7 +625,9 @@ bool Recompiler::Recompile(
+     case PPC_INST_BCTR:
+         if (switchTable != config.switchTables.end())
+         {
+-            println("\tswitch ({}.u64) {{", r(switchTable->second.r));
++            // The table index is the low word (rlwinm r0,rN,2,0,29): rN.u64 can hold the carry of
++            // addi on 0xFFFFFFFF (0x100000000), which passes cmplwi but missed every case.
++            println("\tswitch ({}.u32) {{", r(switchTable->second.r));
+ 
+             for (size_t i = 0; i < switchTable->second.labels.size(); i++)
+             {
+@@ -628,7 +646,7 @@ bool Recompiler::Recompile(
+             }
+ 
+             println("\tdefault:");
+-            println("\t\t__builtin_unreachable();");
++            println("\t\t__builtin_trap();");
+             println("\t}}");
+ 
+             switchTable = config.switchTables.end();
+@@ -649,7 +667,7 @@ bool Recompiler::Recompile(
  
      case PPC_INST_BDZ:
          println("\t--{}.u64;", ctr());
@@ -50,7 +70,7 @@ index fa91527..8470a1b 100644
          break;
  
      case PPC_INST_BDZLR:
-@@ -659,13 +675,13 @@ bool Recompiler::Recompile(
+@@ -659,13 +677,13 @@ bool Recompiler::Recompile(
  
      case PPC_INST_BDNZ:
          println("\t--{}.u64;", ctr());
@@ -66,7 +86,7 @@ index fa91527..8470a1b 100644
          break;
  
      case PPC_INST_BEQ:
-@@ -1133,6 +1149,8 @@ bool Recompiler::Recompile(
+@@ -1133,6 +1151,8 @@ bool Recompiler::Recompile(
          println("\t{}.s64 = {};", r(insn.operands[0]), int32_t(insn.operands[1] << 16));
          break;
  
@@ -75,7 +95,7 @@ index fa91527..8470a1b 100644
      case PPC_INST_LVEWX:
      case PPC_INST_LVEWX128:
      case PPC_INST_LVX:
-@@ -1710,6 +1728,154 @@ bool Recompiler::Recompile(
+@@ -1710,6 +1730,154 @@ bool Recompiler::Recompile(
          println("\t{}.s64 = {} - {}.s64;", r(insn.operands[0]), int32_t(insn.operands[2]), r(insn.operands[1]));
          break;
  
@@ -230,7 +250,7 @@ index fa91527..8470a1b 100644
      case PPC_INST_SYNC:
          // no op
          break;
-@@ -1769,6 +1935,7 @@ bool Recompiler::Recompile(
+@@ -1769,6 +1937,7 @@ bool Recompiler::Recompile(
          println("\tsimde_mm_store_si128((simde__m128i*){}.u8, simde_mm_and_si128(simde_mm_load_si128((simde__m128i*){}.u8), simde_mm_load_si128((simde__m128i*){}.u8)));", v(insn.operands[0]), v(insn.operands[1]), v(insn.operands[2]));
          break;
  
@@ -238,7 +258,7 @@ index fa91527..8470a1b 100644
      case PPC_INST_VANDC128:
          println("\tsimde_mm_store_si128((simde__m128i*){}.u8, simde_mm_andnot_si128(simde_mm_load_si128((simde__m128i*){}.u8), simde_mm_load_si128((simde__m128i*){}.u8)));", v(insn.operands[0]), v(insn.operands[2]), v(insn.operands[1]));
          break;
-@@ -1831,7 +1998,20 @@ bool Recompiler::Recompile(
+@@ -1831,7 +2000,20 @@ bool Recompiler::Recompile(
  
      case PPC_INST_VCMPBFP:
      case PPC_INST_VCMPBFP128:
@@ -260,7 +280,7 @@ index fa91527..8470a1b 100644
          break;
  
      case PPC_INST_VCMPEQFP:
-@@ -1877,6 +2057,8 @@ bool Recompiler::Recompile(
+@@ -1877,6 +2059,8 @@ bool Recompiler::Recompile(
  
      case PPC_INST_VCMPGTUH:
          println("\tsimde_mm_store_si128((simde__m128i*){}.u8, simde_mm_cmpgt_epu16(simde_mm_load_si128((simde__m128i*){}.u16), simde_mm_load_si128((simde__m128i*){}.u16)));", v(insn.operands[0]), v(insn.operands[1]), v(insn.operands[2]));
@@ -269,7 +289,7 @@ index fa91527..8470a1b 100644
          break;
  
      case PPC_INST_VEXPTEFP:
-@@ -2088,6 +2270,7 @@ bool Recompiler::Recompile(
+@@ -2088,6 +2272,7 @@ bool Recompiler::Recompile(
          break;
  
      case PPC_INST_VSEL:
@@ -277,7 +297,7 @@ index fa91527..8470a1b 100644
          println("\tsimde_mm_store_si128((simde__m128i*){}.u8, simde_mm_or_si128(simde_mm_andnot_si128(simde_mm_load_si128((simde__m128i*){}.u8), simde_mm_load_si128((simde__m128i*){}.u8)), simde_mm_and_si128(simde_mm_load_si128((simde__m128i*){}.u8), simde_mm_load_si128((simde__m128i*){}.u8))));", v(insn.operands[0]), v(insn.operands[3]), v(insn.operands[1]), v(insn.operands[3]), v(insn.operands[2]));
          break;
  
-@@ -2186,6 +2369,181 @@ bool Recompiler::Recompile(
+@@ -2186,6 +2371,181 @@ bool Recompiler::Recompile(
          println("\tsimde_mm_store_si128((simde__m128i*){}.u8, simde_mm_sub_epi16(simde_mm_load_si128((simde__m128i*){}.u8), simde_mm_load_si128((simde__m128i*){}.u8)));", v(insn.operands[0]), v(insn.operands[1]), v(insn.operands[2]));
          break;
  
@@ -459,7 +479,7 @@ index fa91527..8470a1b 100644
      case PPC_INST_VUPKD3D128:
          // TODO: vectorize somehow?
          // NOTE: handling vector reversal here too
-@@ -2212,6 +2570,20 @@ bool Recompiler::Recompile(
+@@ -2212,6 +2572,20 @@ bool Recompiler::Recompile(
              println("\t{} = {};", v(insn.operands[0]), vTemp());
              break;
  

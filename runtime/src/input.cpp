@@ -16,7 +16,7 @@
 #include <runtime.h>
 #include <settings.h>
 
-constexpr uint32_t kErrorSuccess = 0, kErrorDeviceNotConnected = 0x48F, kErrorNoSuchUser = 0x525;
+constexpr uint32_t kErrorSuccess = 0, kErrorInvalidParameter = 87, kErrorDeviceNotConnected = 0x48F, kErrorNoSuchUser = 0x525;
 constexpr uint64_t kLocalXuid = 0xE000000053434441ull; // offline XUID ('SCDA')
 
 void StoreInputState(uint32_t addr, uint32_t packet, const XINPUT_GAMEPAD& g)
@@ -341,5 +341,49 @@ SCDA_IMPORT(XamUserGetXUID)
     }
     if (ctx.r5.u32)
         GuestStore64(ctx.r5.u32, kLocalXuid);
+    ctx.r3.u64 = kErrorSuccess;
+}
+
+// Local profile name for XamUserGetName / XamUserGetSigninInfo.
+static constexpr char kLocalName[] = "Player";
+
+// XamUserGetSigninInfo(UserIndex, Flags, X_USER_SIGNIN_INFO*): 0x28 bytes (Xenia): u64 xuid,
+// u32 flags, u32 signin state, u32 x2, char name[16]. Was a stub that left the struct unwritten:
+// Conviction's START handler read garbage from it and crashed (sub_82C2BBD0, guest 0x140).
+SCDA_IMPORT(XamUserGetSigninInfo)
+{
+    const uint32_t user = ctx.r3.u32, info = ctx.r5.u32;
+    if (!info)
+    {
+        ctx.r3.u64 = kErrorInvalidParameter;
+        return;
+    }
+    memset(GuestPtr(info), 0, 0x28);
+    if (user != 0)
+    {
+        ctx.r3.u64 = kErrorNoSuchUser;
+        return;
+    }
+    GuestStore64(info, kLocalXuid);
+    GuestStore32(info + 0xC, 1); // signed in locally
+    memcpy(GuestPtr(info + 0x18), kLocalName, sizeof(kLocalName));
+    ctx.r3.u64 = kErrorSuccess;
+}
+
+// XamUserGetName(UserIndex, char* Buffer, BufferSize)
+SCDA_IMPORT(XamUserGetName)
+{
+    const uint32_t user = ctx.r3.u32, buffer = ctx.r4.u32, size = ctx.r5.u32;
+    if (user != 0)
+    {
+        ctx.r3.u64 = kErrorNoSuchUser;
+        return;
+    }
+    if (buffer && size)
+    {
+        const uint32_t n = std::min<uint32_t>(size - 1, sizeof(kLocalName) - 1);
+        memcpy(GuestPtr(buffer), kLocalName, n);
+        static_cast<char*>(GuestPtr(buffer))[n] = 0;
+    }
     ctx.r3.u64 = kErrorSuccess;
 }
