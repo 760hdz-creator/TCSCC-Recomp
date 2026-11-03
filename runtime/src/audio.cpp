@@ -71,7 +71,11 @@ void AudioReset()
 SCDA_IMPORT(XAudioRegisterRenderDriverClient)
 {
     uint32_t info = ctx.r3.u32, pDriver = ctx.r4.u32;
-    g_callbackArg = GuestLoad32(info + 4);
+    // The hardware hands the callback a pointer to a cell holding the argument, not the argument
+    // itself (Xenia: wrapped_callback_arg; Conviction's callback does `this = *r3`).
+    const uint32_t cell = GuestAllocVirtual(4, 4);
+    GuestStore32(cell, GuestLoad32(info + 4));
+    g_callbackArg = cell;
     g_callback = GuestLoad32(info);
     GuestStore32(pDriver, kDriverHandle);
     RuntimeLog("[audio] client callback 0x%08X arg 0x%08X\n", g_callback.load(), g_callbackArg.load());

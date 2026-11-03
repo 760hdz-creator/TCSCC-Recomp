@@ -73,6 +73,18 @@ SCDA_IMPORT(RtlInitializeCriticalSection)
     ctx.r3.u64 = 0;
 }
 
+// RtlInitializeCriticalSectionAndSpinCount(CS*, SpinCount): same as RtlInitializeCriticalSection;
+// header byte +1 keeps the spin count in 256s (Xenia), unused here. Was a logging stub, so every
+// section the title made with it stayed uninitialised and the first contended Enter hung.
+SCDA_IMPORT(RtlInitializeCriticalSectionAndSpinCount)
+{
+    uint32_t cs = ctx.r3.u32;
+    memset(GuestPtr(cs), 0, 0x1C);
+    g_base[cs + 1] = uint8_t(std::min<uint32_t>((ctx.r4.u32 + 255) >> 8, 255));
+    GuestStore32(cs + 0x10, 0xFFFFFFFF);
+    ctx.r3.u64 = 0;
+}
+
 SCDA_IMPORT(RtlEnterCriticalSection)
 {
     WatchdogBlockScope watch("RtlEnterCriticalSection");

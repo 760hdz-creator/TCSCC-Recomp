@@ -51,7 +51,6 @@ SCDA_IMPORT(XamUserGetName) { ImportStub("XamUserGetName", ctx); }
 SCDA_IMPORT(XamUserCreateStatsEnumerator) { ImportStub("XamUserCreateStatsEnumerator", ctx); }
 SCDA_IMPORT(XamUserGetSigninInfo) { ImportStub("XamUserGetSigninInfo", ctx); }
 SCDA_IMPORT(MmMapIoSpace) { ImportStub("MmMapIoSpace", ctx); }
-SCDA_IMPORT(RtlInitializeCriticalSectionAndSpinCount) { ImportStub("RtlInitializeCriticalSectionAndSpinCount", ctx); }
 SCDA_IMPORT(RtlCaptureContext) { ImportStub("RtlCaptureContext", ctx); }
 SCDA_IMPORT(RtlCompareStringN) { ImportStub("RtlCompareStringN", ctx); }
 SCDA_IMPORT(NtDeviceIoControlFile) { ImportStub("NtDeviceIoControlFile", ctx); }

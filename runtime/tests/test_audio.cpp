@@ -28,7 +28,7 @@ TEST(audio_register_writes_driver_and_pumps_callback)
     for (int i = 0; i < 100 && g_audioCalls.load() < 3; i++)
         Sleep(5);
     CHECK(g_audioCalls.load() >= 3);
-    CHECK_EQ(g_audioArg.load(), 0x4023EC80u);
+    CHECK_EQ(GuestLoad32(g_audioArg.load()), 0x4023EC80u); // r3 = cell holding the argument (Xenia)
     CHECK(g_audioThread.load() != GetCurrentThreadId());
 
     ctx.r3.u64 = driver;

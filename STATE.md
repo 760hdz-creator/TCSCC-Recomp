@@ -10,12 +10,14 @@
 - RECOMP CLEAN in 3 fix loops: unrecognized=0 switch_errors=0 error_sites=0 cut=0 table_calls=0, functions=99213 (outer: 99211; outer STATE's 99929 was stale). Diff vs outer = only 2 new split functions sub_832AB184, sub_832AB510; all other code identical.
 - Runtime = `git archive f243060 runtime` (outer) = SCDA runtime (identical to C:\SCDA-Recomp except import_vars.inc) + Conviction retarget. Import stubs regenerate unchanged (292 imports, 202 implemented, 98 stubbed).
 - Guest-address audit of runtime/src: SC4 hooks not built (menu_hooks, travel/audio/wait_trace, xma_xaudio). fov.cpp built but its caller (travel_trace) is not, so it never runs. Other hits are comments.
+## Ported from outer (symptom seen on fresh boot, 2026-11-03)
+- 04db715 (runtime part): audio callback arg cell + RtlInitializeCriticalSectionAndSpinCount. Symptom: fatal KeWaitForMultipleObjects lr 0x82811AD0.
+- 37a180e (kernel.cpp only, pz_trace.cpp debug hooks left out): NtSuspend/ResumeThread pseudo handle. Symptom: main() returns, exit-time AVs (guest 0x400/0x18).
+- Boot now: no fatal over 90 s, Bink logos opened, menu.umd/menu.ass loaded. Test exe: `_install	cscc_fresh.exe` (outer tcscc.exe untouched).
 ## Known outer-repo fixes NOT ported (cherry-pick from outer when the symptom shows)
-- 04db715: audio client callback gets pointer to a 4-byte arg cell (audio.cpp); RtlInitializeCriticalSectionAndSpinCount real impl (hang otherwise).
-- 37a180e: NtSuspendThread/NtResumeThread accept NtCurrentThread pseudo handle (boot hang/fatal in main()).
 - 99a759a: mftb scaled to 50 MHz, KeQueryPerformanceFrequency 50000000 (guest_time).
 - 8cea794: k_16 / k_16*_EXPAND texture formats. b5c9e94..fd81c4d: renderer/CP debug traces (SCDA_TRACE_*, SCDA_DUMP_RAM).
 - Open outer bug: menu shows sky only, no world/UI (occlusion, camera, timebase ruled out). Bink logo red only.
 ## Next
-1. Build runtime + ctest; install/run against `..\_install` (copy tcscc.exe), confirm first boot behaviour on the clean fork.
+1. Screen check: what the window shows (outer: Bink red only, menu sky only). Port 99a759a/8cea794 only if needed.
 2. Review the 3 HEURISTIC jump tables and the .text tail decode failures.

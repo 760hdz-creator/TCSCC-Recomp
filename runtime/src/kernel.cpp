@@ -204,9 +204,16 @@ SCDA_IMPORT(ExRegisterTitleTerminateNotification) {}
 SCDA_IMPORT(KiApcNormalRoutineNop) {}
 
 // NtResumeThread(Handle, u32* SuspendCount)
+// 0xFFFFFFFE is NtCurrentThread(): Conviction's main() parks itself with SuspendThread(GetCurrentThread())
+// after starting the game thread; failing it made main() return and exit() destroy live globals.
+static HANDLE ThreadHandle(uint32_t guest)
+{
+    return guest == 0xFFFFFFFE ? GetCurrentThread() : HostHandle(guest);
+}
+
 SCDA_IMPORT(NtResumeThread)
 {
-    HANDLE h = HostHandle(ctx.r3.u32);
+    HANDLE h = ThreadHandle(ctx.r3.u32);
     DWORD prev = h ? ResumeThread(h) : 0;
     if (ctx.r4.u32) GuestStore32(ctx.r4.u32, prev);
     ctx.r3.u64 = h ? X_STATUS_SUCCESS : X_STATUS_INVALID_HANDLE;
@@ -214,7 +221,7 @@ SCDA_IMPORT(NtResumeThread)
 
 SCDA_IMPORT(NtSuspendThread)
 {
-    HANDLE h = HostHandle(ctx.r3.u32);
+    HANDLE h = ThreadHandle(ctx.r3.u32);
     DWORD prev = h ? SuspendThread(h) : 0;
     if (ctx.r4.u32) GuestStore32(ctx.r4.u32, prev);
     ctx.r3.u64 = h ? X_STATUS_SUCCESS : X_STATUS_INVALID_HANDLE;

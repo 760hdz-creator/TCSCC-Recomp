@@ -28,7 +28,7 @@ else()
 endif()
 
 # This build's version (F1 menu > Update compares it with the latest GitHub release of SCDA_UPDATE_REPO).
-set(SCDA_UPDATE_REPO "" CACHE STRING "GitHub owner/name the update check asks")
+set(SCDA_UPDATE_REPO "" CACHE STRING "GitHub owner/name the update check asks" FORCE)
 
 # SDL3 (zlib): native PlayStation / Switch / other gamepads (src/pad.cpp), linked static so an
 # update that replaces scda.exe alone carries it. Source: external/SDL (github.com/libsdl-org/SDL
