@@ -137,7 +137,7 @@ SCDA_IMPORT(RtlLeaveCriticalSection)
 SCDA_IMPORT(KeGetCurrentProcessType) { ctx.r3.u64 = 1; }
 SCDA_IMPORT(XexCheckExecutablePrivilege) { ctx.r3.u64 = 0; }
 // Must match mftb, which recompiles to the host TSC.
-SCDA_IMPORT(KeQueryPerformanceFrequency) { ctx.r3.u64 = TimebaseFrequency(); }
+SCDA_IMPORT(KeQueryPerformanceFrequency) { ctx.r3.u64 = kGuestTimebaseHz; }
 SCDA_IMPORT(KeEnterCriticalRegion) {}
 SCDA_IMPORT(KeLeaveCriticalRegion) {}
 SCDA_IMPORT(KeRaiseIrqlToDpcLevel) { ctx.r3.u64 = 0; }

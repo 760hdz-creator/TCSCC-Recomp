@@ -43,6 +43,14 @@ uint64_t TimebaseFrequency()
     return freq;
 }
 
+// Recompiled mftb (ppc_context.h maps __rdtsc() here): host TSC since start scaled to 50 MHz.
+extern "C" uint64_t PpcGuestTimebase()
+{
+    static const uint64_t t0 = __rdtsc();
+    static const double scale = double(kGuestTimebaseHz) / double(TimebaseFrequency());
+    return uint64_t(double(__rdtsc() - t0) * scale);
+}
+
 void GuestTimeStart(uint32_t bundle)
 {
     // Called again by each title instance (relaunch): re-points the one updater thread.

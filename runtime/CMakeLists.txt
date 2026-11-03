@@ -65,6 +65,7 @@ add_library(scda_ppc STATIC ${SCDA_PPC_SOURCES} "${GENERATED}/ppc_func_mapping.c
 target_include_directories(scda_ppc PUBLIC "${GENERATED}" "${XENON_ROOT}/thirdparty/simde")
 target_precompile_headers(scda_ppc PRIVATE "${GENERATED}/ppc_recomp_shared.h")
 target_compile_options(scda_ppc PRIVATE -Wno-unused-label -Wno-unused-variable)
+target_compile_definitions(scda_ppc PRIVATE PPC_GUEST_TIMEBASE) # mftb = 50 MHz guest timebase (ppc_context.h)
 
 add_executable(scda
     src/main.cpp

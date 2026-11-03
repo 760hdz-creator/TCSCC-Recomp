@@ -369,7 +369,18 @@ static bool ExecutePacket(uint32_t h, const Pm4Payload& p, int depth, CpStats& s
     uint32_t count = ((h >> 16) & 0x3FFF) + 1;
     // Predicated tiling: header bit 0 = run only for the selected bins (Xenia).
     if ((h & 1) && !(g_binSelect & g_binMask))
+    {
+        // SCDA_TRACE_PRED=1: log predicated packets dropped by the bin test (first 64).
+        static const bool tracePred = getenv("SCDA_TRACE_PRED") != nullptr;
+        static int logged = 0;
+        if (tracePred && logged < 64)
+        {
+            logged++;
+            RuntimeLog("[pred] skip op 0x%02X count %u mask %016llX select %016llX\n", Pm4Opcode(h), count,
+                (unsigned long long)g_binMask, (unsigned long long)g_binSelect);
+        }
         return true;
+    }
     switch (Pm4Opcode(h))
     {
     case kOpEventWriteZpd:

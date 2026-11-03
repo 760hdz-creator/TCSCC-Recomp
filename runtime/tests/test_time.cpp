@@ -20,7 +20,7 @@ TEST(timestamp_bundle_advances)
     CHECK(s0 > 116444736000000000ull);                 // after 1970 as a FILETIME
 }
 
-// mftb is the host TSC in recompiled code: the reported frequency must match it.
+// TimebaseFrequency is the calibrated host TSC rate (PpcGuestTimebase scales by it).
 TEST(performance_frequency_matches_timebase)
 {
     uint64_t f = TimebaseFrequency();
@@ -28,5 +28,14 @@ TEST(performance_frequency_matches_timebase)
     Sleep(100);
     uint64_t ticks = __rdtsc() - t0;
     double seconds = double(ticks) / double(f);
+    CHECK(seconds > 0.08 && seconds < 0.15);
+}
+
+// Recompiled mftb runs at the console's 50 MHz, the rate KeQueryPerformanceFrequency reports.
+TEST(guest_timebase_is_50mhz)
+{
+    uint64_t t0 = PpcGuestTimebase();
+    Sleep(100);
+    double seconds = double(PpcGuestTimebase() - t0) / double(kGuestTimebaseHz);
     CHECK(seconds > 0.08 && seconds < 0.15);
 }
