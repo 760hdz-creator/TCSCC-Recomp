@@ -43,7 +43,10 @@ struct SharedConstants
     // 0-5, none when clip_disable): the VS writes dot(position, plane) to SV_ClipDistance.
     float ucp[6][4];
     uint32_t ucpEnable;
-    uint32_t ucpPad[3];
+    // PS memexport window (MemExport in translate.cpp): guest physical byte base and size of the UAV.
+    uint32_t exportBase;
+    uint32_t exportBytes;
+    uint32_t ucpPad;
 };
 static_assert(sizeof(SharedConstants) == 1264 && sizeof(SharedConstants) % 16 == 0);
 static_assert(offsetof(SharedConstants, ucp) == 1152 && offsetof(SharedConstants, ucpEnable) == 1248);

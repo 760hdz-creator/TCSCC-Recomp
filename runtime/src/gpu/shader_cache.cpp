@@ -21,9 +21,9 @@ static uint64_t Fnv1a(const uint8_t* p, size_t n, uint64_t seed)
     return h;
 }
 
-// True if the control flow has an ALLOC of type memory (memexport). The translator does not
-// implement memexport (eA/eM writes become plain temps), so such shaders silently lose their
-// writes. CF: two 48-bit instructions per 3 dwords; opcode bits 44-47, exec address bits 0-11,
+// True if the control flow has an ALLOC of type memory (memexport). PS memexport goes through
+// MemExport (translate.cpp, k_8 only) and the renderer's u7 window; VS memexport is not
+// translated (writes lost). CF: two 48-bit instructions per 3 dwords; opcode bits 44-47, exec address bits 0-11,
 // alloc type bits 41-42 (3 = memory); the CF block ends at the lowest exec address.
 static bool HasMemExport(const uint32_t* w, uint32_t dwords)
 {
@@ -68,9 +68,10 @@ const ShaderBlob* ShaderCacheInsert(ShaderType type, const uint32_t* be, uint32_
         snprintf(name, sizeof(name), "%016llx.%s.bin", (unsigned long long)hash, type == ShaderType::Vertex ? "vs" : "ps");
         std::ofstream(std::filesystem::path(dir) / name, std::ios::binary).write((const char*)be, dwords * 4ull);
     }
-    if (HasMemExport(blob->ucode.data(), dwords))
-        RuntimeLog("[shader] %016llx.%s uses MEMEXPORT (not translated: its memory writes are lost)\n",
-                   (unsigned long long)hash, type == ShaderType::Vertex ? "vs" : "ps");
+    blob->memExport = HasMemExport(blob->ucode.data(), dwords);
+    if (blob->memExport)
+        RuntimeLog("[shader] %016llx.%s uses MEMEXPORT%s\n", (unsigned long long)hash, type == ShaderType::Vertex ? "vs" : "ps",
+                   type == ShaderType::Vertex ? " (VS: not translated, its memory writes are lost)" : "");
     const ShaderBlob* out = blob.get();
     g_shaders.emplace(hash, std::move(blob));
     return out;

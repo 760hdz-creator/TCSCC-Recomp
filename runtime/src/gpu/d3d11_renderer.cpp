@@ -400,6 +400,11 @@ struct DrawResources
     ComPtr<ID3D11Buffer> memory;
     ComPtr<ID3D11ShaderResourceView> memorySrv;
     uint32_t memoryBytes = 0;
+    // PS memexport window (MemExport, translate.cpp): UAV u7 over guest physical [exportBase,
+    // +exportBytes), seeded from guest RAM before the draw and copied back after it.
+    ComPtr<ID3D11Buffer> exportBuf, exportStaging;
+    ComPtr<ID3D11UnorderedAccessView> exportUav;
+    uint32_t exportBase = 0, exportBytes = 0;
     // Dynamic ring for per-draw index data (NO_OVERWRITE appends, DISCARD on wrap).
     ComPtr<ID3D11Buffer> indexRing;
     uint32_t indexRingBytes = 0, indexRingPos = 0;
@@ -1305,6 +1310,8 @@ void D3D11Renderer::BindRegisterState(const RegisterFile& regs, uint32_t texSlot
     const uint32_t surface = regs[kRegRbSurfaceInfo];
     const SurfaceLayout layout = EdramSurfaceLayout(surface);
     SharedConstants shared = BuildSharedConstants(regs, layout.pitch, layout.sampleRows / layout.samplesY);
+    shared.exportBase = r.exportBase;
+    shared.exportBytes = r.exportBytes;
     const uint32_t targetScale = TargetScale(r, layout.samplePitch);
     shared.positionScale[0] = 1.0f / float(targetScale * layout.samplesX);
     shared.positionScale[1] = 1.0f / float(targetScale * layout.samplesY);
@@ -2259,6 +2266,38 @@ void D3D11Renderer::ExecuteDraw(const DrawCall& d, const Frame& frame)
         RuntimeLog("[zalias] quad xy %g %g / %g %g / %g %g wo %08X sc %08X %08X\n", double(SnapshotVertexDword(d, frame, r.regs, 0)), double(SnapshotVertexDword(d, frame, r.regs, 1)),
             double(SnapshotVertexDword(d, frame, r.regs, 7)), double(SnapshotVertexDword(d, frame, r.regs, 8)), double(SnapshotVertexDword(d, frame, r.regs, 14)), double(SnapshotVertexDword(d, frame, r.regs, 15)),
             r.regs[0x2080], r.regs[0x2081], r.regs[0x2082]);
+    // PS memexport: the window is the first PS constant shaped like a memexport stream constant
+    // (x = 0x40000000 | dword address, y = 2^23, z = 2^23 exponent | format info, w = 2^23 + count).
+    // k_8 elements (1 byte) only; 64 KB window. SCDA_NO_MEMEXPORT=1: no window (writes dropped).
+    {
+        // Conviction gate: memexport only feeds l3d visibility bytes, which the CPU workaround overwrites
+        // (l3d_trace.cpp PzVisFill) unless SCDA_VISBUF_FILL is off / or<hex>. Overwritten, the write-back
+        // is 3 blocking Maps per frame for nothing and can race the fill.
+        static const char* fillEnv = getenv("SCDA_VISBUF_FILL");
+        static const bool noMemExport = getenv("SCDA_NO_MEMEXPORT") != nullptr ||
+            !(fillEnv && (!strcmp(fillEnv, "off") || !strncmp(fillEnv, "or", 2)));
+        uint32_t base = 0, bytes = 0;
+        for (uint32_t c = 0; d.ps->memExport && !noMemExport && c < 256 && !bytes; c++)
+        {
+            const uint32_t* k = r.regs.Data() + kRegAluConstants + 1024 + c * 4;
+            if ((k[0] >> 30) == 1 && k[1] == 0x4B000000 && (k[2] >> 23) == 0x96 && ((k[2] >> 8) & 0x3F) == 2 && (k[3] >> 23) == 0x96)
+            {
+                base = (k[0] & 0x3FFFFFFF) * 4;
+                bytes = 64u << 10; // eA.w is not the element count: fixed window, written range copied back
+                bytes = std::min<uint32_t>(bytes, ~base + 1u); // not past 4 GB
+            }
+        }
+        static uint32_t logged;
+        if (bytes && logged++ < 6)
+            RuntimeLog("[memexport] PS %016llx window phys 0x%08X x%u (point size %08X minmax %08X, %u vertices)\n",
+                (unsigned long long)d.ps->hash, base, bytes, r.regs[0x2280], r.regs[0x2281], d.indexCount);
+        if (base != r.exportBase || bytes != r.exportBytes)
+        {
+            r.exportBase = base;
+            r.exportBytes = bytes;
+            r.stateDirty = true;
+        }
+    }
     if (r.stateDirty || (texSlots & ~r.lastTexSlots))
     {
         r.lastTexSlots = r.stateDirty ? texSlots : r.lastTexSlots | texSlots;
@@ -2436,6 +2475,43 @@ void D3D11Renderer::ExecuteDraw(const DrawCall& d, const Frame& frame)
         m_context->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
         if (!faceVs && !facePsHash) RuntimeLog("[face] present %llu draw %u vs %016llx: facing shader\n", m_presented, faceDrawIndex, (unsigned long long)d.vs->hash);
     }
+    // PS memexport window: seed it with the guest bytes (elements the draw does not write keep them),
+    // bind it as u7 (after the colour targets).
+    const bool memExportDraw = r.exportBytes != 0;
+    if (memExportDraw)
+    {
+        if (!r.exportBuf)
+        {
+            D3D11_BUFFER_DESC bd{};
+            bd.ByteWidth = 4u << 20;
+            bd.BindFlags = D3D11_BIND_UNORDERED_ACCESS;
+            bd.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS;
+            m_device->CreateBuffer(&bd, nullptr, &r.exportBuf);
+            D3D11_UNORDERED_ACCESS_VIEW_DESC ud{};
+            ud.Format = DXGI_FORMAT_R32_TYPELESS;
+            ud.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
+            ud.Buffer.NumElements = bd.ByteWidth / 4;
+            ud.Buffer.Flags = D3D11_BUFFER_UAV_FLAG_RAW;
+            if (r.exportBuf)
+                m_device->CreateUnorderedAccessView(r.exportBuf.Get(), &ud, &r.exportUav);
+            bd.BindFlags = 0;
+            bd.MiscFlags = 0;
+            bd.Usage = D3D11_USAGE_STAGING;
+            bd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+            m_device->CreateBuffer(&bd, nullptr, &r.exportStaging);
+        }
+        const uint32_t bytes = (r.exportBytes + 3) & ~3u;
+        const D3D11_BOX box{ 0, 0, 0, bytes, 1, 1 };
+        if (r.exportUav && r.exportStaging)
+        {
+            m_context->UpdateSubresource(r.exportBuf.Get(), 0, &box, PhysicalPtr(r.exportBase), 0, 0);
+            static const uint32_t kNoRange[2] = { ~0u, 0 }; // MemExport's written [min, max]
+            const D3D11_BOX rangeBox{ (4u << 20) - 8, 0, 0, 4u << 20, 1, 1 };
+            m_context->UpdateSubresource(r.exportBuf.Get(), 0, &rangeBox, kNoRange, 0, 0);
+            ID3D11UnorderedAccessView* uav = r.exportUav.Get();
+            m_context->OMSetRenderTargetsAndUnorderedAccessViews(D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL, nullptr, nullptr, 7, 1, &uav, nullptr);
+        }
+    }
     m_context->GSSetShader(rectList ? r.rectListGs.Get() : pointList ? r.pointListGs.Get() : nullptr, nullptr, 0);
     m_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY(topology));
     const bool expand = NeedsTriangleListExpansion(d.primType);
@@ -2606,6 +2682,31 @@ void D3D11Renderer::ExecuteDraw(const DrawCall& d, const Frame& frame)
     else
         m_context->Draw(d.indexCount, autoOffset);
     m_lastDrawn++;
+    // PS memexport: unbind u7 and write the window back to guest RAM (the CPU reads it, e.g. l3d
+    // visibility bytes in sub_82EF9990). Blocks on this draw.
+    if (memExportDraw && r.exportUav && r.exportStaging)
+    {
+        ID3D11UnorderedAccessView* none = nullptr;
+        m_context->OMSetRenderTargetsAndUnorderedAccessViews(D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL, nullptr, nullptr, 7, 1, &none, nullptr);
+        const D3D11_BOX box{ 0, 0, 0, (r.exportBytes + 3) & ~3u, 1, 1 };
+        const D3D11_BOX rangeBox{ (4u << 20) - 8, 0, 0, 4u << 20, 1, 1 };
+        m_context->CopySubresourceRegion(r.exportStaging.Get(), 0, 0, 0, 0, r.exportBuf.Get(), 0, &box);
+        m_context->CopySubresourceRegion(r.exportStaging.Get(), 0, (4u << 20) - 8, 0, 0, r.exportBuf.Get(), 0, &rangeBox);
+        D3D11_MAPPED_SUBRESOURCE map;
+        if (SUCCEEDED(m_context->Map(r.exportStaging.Get(), 0, D3D11_MAP_READ, 0, &map)))
+        {
+            const uint8_t* data = static_cast<const uint8_t*>(map.pData);
+            uint32_t lo, hi;
+            memcpy(&lo, data + (4u << 20) - 8, 4);
+            memcpy(&hi, data + (4u << 20) - 4, 4);
+            if (lo <= hi && hi < r.exportBytes) // only the bytes the draw wrote (and those between)
+                memcpy(const_cast<uint8_t*>(PhysicalPtr(r.exportBase)) + lo, data + lo, hi - lo + 1);
+            static uint32_t logged;
+            if (logged++ < 4)
+                RuntimeLog("[memexport] draw wrote phys 0x%08X..0x%08X\n", r.exportBase + lo, r.exportBase + hi);
+            m_context->Unmap(r.exportStaging.Get(), 0);
+        }
+    }
     // SCDA_PIXEL_WATCH=<frame>,<x>,<y>: in that presented frame, after every draw, read RT0 at guest
     // window pixel (x, y) (window offset and MSAA/scale applied) and log the draw when it changed.
     static const char* watch = getenv("SCDA_PIXEL_WATCH");

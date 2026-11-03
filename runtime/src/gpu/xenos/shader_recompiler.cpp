@@ -680,6 +680,7 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
     bool closeIfBracket = false;
 
     std::string_view exportRegister;
+    bool memExportData = false;
     if (instr.exportData)
     {
         if (isPixelShader)
@@ -701,6 +702,17 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
             case ExportRegister::PSDepth:
                 exportRegister = "oDepth";
                 break;
+            default:
+            {
+                // Memexport: eA (32) and eM0-4 (33-37) live in r32-r37; each eM write exports (MemExport).
+                static const char* const kExportTemps[] = { "r32", "r33", "r34", "r35", "r36", "r37" };
+                if (instr.vectorDest >= 32 && instr.vectorDest <= 37)
+                {
+                    exportRegister = kExportTemps[instr.vectorDest - 32];
+                    memExportData = instr.vectorDest >= 33;
+                }
+                break;
+            }
             }
         }
         else
@@ -1226,6 +1238,11 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
                 indent();
                 println("{}.{} = 1.0;", exportRegister, SWIZZLES[i]);
             }
+        }
+        if (memExportData)
+        {
+            indent();
+            println("MemExport(r32, {});", exportRegister);
         }
     }
 

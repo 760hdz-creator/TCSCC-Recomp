@@ -105,6 +105,7 @@ PPC_FUNC(sub_82EF8CA8)
 // sub_82511988(resource, ?, out, ?, flags): D3D buffer lock. Called by the visibility driver
 // sub_82EF9990 (lr 0x82EF99F0) on a per-frame buffer of one byte per object that the GPU writes
 // (byte & 7 != 0 -> object is a candidate). SCDA_TRACE_VISBUF=<n>: dump it for n frames.
+static uint32_t g_visDriver; // V of the last sub_82EF9990 (visibility driver, see below)
 extern "C" PPC_FUNC(__imp__sub_82511988);
 
 PPC_FUNC(sub_82511988)
@@ -123,6 +124,18 @@ PPC_FUNC(sub_82511988)
         int nonzero = 0;
         for (uint32_t k = 0; k < 1024; k++)
             nonzero += PPC_LOAD_U8(p + k) != 0;
+        if (g_visDriver) // what the driver loop reads: n bytes at ptr + V[184]; bits 0+1 = candidate
+        {
+            const uint32_t first = p + PPC_LOAD_U32(g_visDriver + 184), n = PPC_LOAD_U32(g_visDriver + 188);
+            uint32_t set = 0, cand = 0;
+            for (uint32_t k = 0; k < n && k < 65536; k++)
+            {
+                const uint8_t b = PPC_LOAD_U8(first + k);
+                set += b != 0;
+                cand += (b & 3) == 3;
+            }
+            RuntimeLog("[l3d] visbuf read +%u x%u: nonzero %u candidates %u\n", PPC_LOAD_U32(g_visDriver + 184), n, set, cand);
+        }
         char line[200];
         int len = snprintf(line, sizeof(line), "[l3d] visbuf res 0x%08X (+0 %08X +4 %08X) ptr 0x%08X nonzero/1024 %d:", res,
                            PPC_LOAD_U32(res), PPC_LOAD_U32(res + 4), p, nonzero);
@@ -141,7 +154,6 @@ PPC_FUNC(sub_82511988)
 // (sub_82EF8B18) is drawn: black world, no menu planes.
 // Workaround until PS memexport exists: after the lock every object byte = SCDA_VISBUF_FILL (hex,
 // default FF = visible in every list, i.e. no occlusion culling). SCDA_VISBUF_FILL=off: GPU bytes.
-static uint32_t g_visDriver;
 extern "C" PPC_FUNC(__imp__sub_82EF9990);
 
 PPC_FUNC(sub_82EF9990)
@@ -152,9 +164,12 @@ PPC_FUNC(sub_82EF9990)
 
 uint32_t PzVisFill(uint32_t ptr, uint8_t* base)
 {
+    // SCDA_VISBUF_FILL=<hex>: byte = hex; or<hex>: byte |= hex (GPU bytes from PS memexport kept);
+    // off: GPU bytes only. The renderer runs memexport only for off / or<hex>.
     static const char* env = getenv("SCDA_VISBUF_FILL");
     static const bool off = env && !strcmp(env, "off");
-    static const uint8_t fill = env && !off ? uint8_t(strtoul(env, nullptr, 16)) : 0xFF;
+    static const bool orMode = env && !strncmp(env, "or", 2);
+    static const uint8_t fill = env && !off ? uint8_t(strtoul(env + (orMode ? 2 : 0), nullptr, 16)) : 0xFF;
     if (off || !g_visDriver || !ptr)
         return 0;
     const uint32_t first = ptr + PPC_LOAD_U32(g_visDriver + 184), n = PPC_LOAD_U32(g_visDriver + 188);
@@ -167,6 +182,6 @@ uint32_t PzVisFill(uint32_t ptr, uint8_t* base)
     }
     // n bytes from first is exactly the range the driver loop reads.
     for (uint32_t k = 0; k < n; k++)
-        PPC_STORE_U8(first + k, fill);
+        PPC_STORE_U8(first + k, orMode ? uint8_t(PPC_LOAD_U8(first + k) | fill) : fill);
     return n;
 }

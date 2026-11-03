@@ -11,6 +11,7 @@ struct ShaderBlob
     ShaderType type;
     uint64_t hash;              // FNV-1a 64 over the big-endian microcode bytes
     std::vector<uint32_t> ucode; // host-order dwords
+    bool memExport = false;      // control flow allocates memory exports (PS: MemExport window)
 };
 
 // Returns the cached blob for this microcode (inserting it); nullptr when dwords == 0.

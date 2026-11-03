@@ -36,6 +36,8 @@ cbuffer SharedConstants : register(b2)
     uint4 g_TexSwizzle[8];   // per fetch slot: 0 = none, else 0x1000 | fetch swizzle (resolve copies)
     float4 g_Ucp[6];         // user clip planes PA_CL_UCP_0..5 (guest clip space)
     uint g_UcpEnable;        // bit n: plane n clips (PA_CL_CLIP_CNTL bits 0-5)
+    uint g_ExportBase;       // PS memexport window: guest physical byte base of g_Export
+    uint g_ExportBytes;      // and its size (0 = no window bound)
 };
 // Fetch-constant swizzle for textures bound raw (resolve copies): 0-3 = X-W, 4 = 0, 5 = 1.
 float4 TexSwizzle(float4 v, uint t)
@@ -109,6 +111,28 @@ Texture3D<float4> g_Tex3D[32] : register(t32);
 TextureCube<float4> g_TexCube[32] : register(t64);
 ByteAddressBuffer g_Memory : register(t96); // guest physical memory from address 0
 SamplerState g_Samp[16] : register(s0);
+
+#ifndef SCDA_VERTEX
+// PS memexport (eA = r32, eM0-4 = r33-37). Stream constant, as Conviction's sub_82EF5CA8 builds it:
+// eA.x = 0x40000000 | base >> 2 (bits), eA.y = 2^23 + element index (float add), eA.z = 0x4B000000 |
+// format info (bits 8-13 format, bit 17 integer), eA.w = 2^23 + a small count (not the element count). g_Export is a window of guest
+// physical memory [g_ExportBase, +g_ExportBytes) the renderer seeds and copies back. Only k_8 (format 2).
+RWByteAddressBuffer g_Export : register(u7);
+void MemExport(float4 eA, float4 eM)
+{
+    const uint info = asuint(eA.z);
+    const int index = int(asuint(eA.y)) - 0x4B000000;
+    const uint addr = (asuint(eA.x) & 0x3FFFFFFF) * 4 + uint(index) - g_ExportBase;
+    if (((info >> 8) & 0x3F) != 2 || index < 0 || addr >= g_ExportBytes)
+        return;
+    const uint v = (info & 0x20000) ? uint(clamp(eM.x, 0.0, 255.0)) : uint(saturate(eM.x) * 255.0 + 0.5);
+    const uint shift = (addr & 3) * 8;
+    g_Export.InterlockedAnd(addr & ~3u, ~(0xFFu << shift));
+    g_Export.InterlockedOr(addr & ~3u, v << shift);
+    g_Export.InterlockedMin(4194296, addr); // written range [min, max] at the buffer's last 8 bytes:
+    g_Export.InterlockedMax(4194300, addr); // only that is copied back to guest RAM
+}
+#endif
 
 float2 Dims2D(Texture2D<float4> t)
 {
@@ -337,10 +361,12 @@ void main(in float4 iPos : SV_Position, in float4 iT[16] : TEXCOORD0, in bool iF
     out float4 oC0 : SV_Target0, out float4 oC1 : SV_Target1, out float4 oC2 : SV_Target2, out float4 oC3 : SV_Target3)
 {
     // Param gen: pixel position (guest pixels) in xy; zw keep the point sprite coordinate the point
-    // geometry shader wrote there (0 for other primitives).
+    // geometry shader wrote there (0 for other primitives). The integer pixel, whatever PA_SU_VTX_CNTL
+    // pix_center says: Conviction's l3d visibility PS (pix_center 1) indexes objects by x + 256 y and
+    // pixel (0, 0) must give object 0 (centres made it 128).
     float4 t[16] = iT;
     if (g_ParamGen)
-        t[g_ParamGen - 1] = float4(iPos.xy * g_PositionScale, iT[g_ParamGen - 1].zw);
+        t[g_ParamGen - 1] = float4(floor(iPos.xy * g_PositionScale), iT[g_ParamGen - 1].zw);
     xenos_main(float4(iPos.xy * g_PositionScale, iPos.zw), t, iFace, oC0, oC1, oC2, oC3);
     oC0 = Clamp7e3(oC0, 0); oC1 = Clamp7e3(oC1, 1); oC2 = Clamp7e3(oC2, 2); oC3 = Clamp7e3(oC3, 3);
 }
