@@ -110,6 +110,10 @@ SCDA_IMPORT(MmFreePhysicalMemory)
 // MmQueryAllocationSize(BaseAddress): size of the allocation holding the address.
 SCDA_IMPORT(MmQueryAllocationSize) { ctx.r3.u64 = GuestAllocations().SizeOf(ctx.r3.u32); }
 SCDA_IMPORT(MmGetPhysicalAddress) { ctx.r3.u64 = ctx.r3.u32 & 0x1FFFFFFF; }
+// MmMapIoSpace(Type, PhysicalAddress, Size, Protect): only seen mapping 64-byte XMA contexts
+// (type 2, protect 0x404, caller 827F56B4); the title reads the context back through the result.
+// Physical memory is mapped once at 0xA0000000.
+SCDA_IMPORT(MmMapIoSpace) { ctx.r3.u64 = 0xA0000000u | (ctx.r4.u32 & 0x1FFFFFFF); }
 SCDA_IMPORT(MmQueryAddressProtect) { ctx.r3.u64 = PAGE_READWRITE; }
 
 // MmQueryStatistics(MM_STATISTICS*): 26 big-endian u32, Length (104) first. The title's

@@ -112,9 +112,10 @@ add_executable(scda
     src/l3d_trace.cpp
     src/pawn_trace.cpp
     src/pawn_hooks.cpp
+    src/xma_xaudio.cpp
     src/imports_stubs.cpp
     scda.rc)
-# SCDA guest hooks (menu_hooks, travel_trace, audio_trace, wait_trace, xma_xaudio) are not built:
+# SCDA guest hooks (menu_hooks, travel_trace, audio_trace, wait_trace) are not built (xma_xaudio is re-found for Conviction):
 # they override SC4 guest addresses, which are unrelated code in Conviction. Re-find before re-adding.
 set_target_properties(scda PROPERTIES OUTPUT_NAME tcscc)
 target_include_directories(scda PRIVATE include src)

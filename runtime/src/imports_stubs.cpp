@@ -48,7 +48,6 @@ SCDA_IMPORT(XamShowAchievementsUI) { ImportStub("XamShowAchievementsUI", ctx); }
 SCDA_IMPORT(XamShowMarketplaceUI) { ImportStub("XamShowMarketplaceUI", ctx); }
 SCDA_IMPORT(XamShowMessageBoxUI) { ImportStub("XamShowMessageBoxUI", ctx); }
 SCDA_IMPORT(XamUserCreateStatsEnumerator) { ImportStub("XamUserCreateStatsEnumerator", ctx); }
-SCDA_IMPORT(MmMapIoSpace) { ImportStub("MmMapIoSpace", ctx); }
 SCDA_IMPORT(RtlCaptureContext) { ImportStub("RtlCaptureContext", ctx); }
 SCDA_IMPORT(RtlCompareStringN) { ImportStub("RtlCompareStringN", ctx); }
 SCDA_IMPORT(NtDeviceIoControlFile) { ImportStub("NtDeviceIoControlFile", ctx); }
