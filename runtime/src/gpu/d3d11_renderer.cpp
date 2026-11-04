@@ -1787,9 +1787,17 @@ void D3D11Renderer::BindRegisterState(const RegisterFile& regs, uint32_t texSlot
                 // SCDA_TRACE_CONVERT=<present>: log every texture conversion of that present and the next 2 (re-conversion hunting).
                 static const long long traceConvert = getenv("SCDA_TRACE_CONVERT") ? atoll(getenv("SCDA_TRACE_CONVERT")) : -1;
                 if (traceConvert >= 0 && (long long)m_presented >= traceConvert && (long long)m_presented < traceConvert + 3)
-                    RuntimeLog("[convert] present %llu fetch %08X fmt %u %ux%u tiled %d mips %u bytes %u had %d stable %u hash %016llx was %016llx\n",
-                        m_presented, t.physical, t.format, t.width, t.height, t.tiled, t.mipMaxLevel, guestBytes, cached.srv ? 1 : 0, cached.stable,
+                    RuntimeLog("[convert] present %llu fetch %08X fmt %u %ux%u tiled %d swz %03X mips %u bytes %u had %d stable %u hash %016llx was %016llx\n",
+                        m_presented, t.physical, t.format, t.width, t.height, t.tiled, t.swizzle, t.mipMaxLevel, guestBytes, cached.srv ? 1 : 0, cached.stable,
                         (unsigned long long)hash, (unsigned long long)cached.hash);
+                if (traceConvert >= 0 && (long long)m_presented >= traceConvert && (long long)m_presented < traceConvert + 3 && t.format == 2)
+                {
+                    uint64_t sum = 0;
+                    uint32_t hi = 0;
+                    for (uint32_t i = 0; i < guestBytes; i++)
+                        sum += guest[i], hi = std::max<uint32_t>(hi, guest[i]);
+                    RuntimeLog("[convert]   k_8 bytes avg %.1f max %u\n", guestBytes ? double(sum) / guestBytes : 0.0, hi);
+                }
                 std::vector<float> floats = isFloat ? ConvertTextureFloat(t, guest) : std::vector<float>();
                 std::vector<uint32_t> texels = isFloat ? std::vector<uint32_t>() : ConvertTexture(t, guest);
                 if (promptStyle != PromptStyle::Xbox && PromptRedraw(cached.icon, promptStyle, texels, t.width, t.height))
@@ -2188,6 +2196,16 @@ void D3D11Renderer::ExecuteDraw(const DrawCall& d, const Frame& frame)
         if (r.regs[0x2205] & 0x3800) // PA_SU_SC_MODE_CNTL poly offset enables: PA_SU_POLY_OFFSET_FRONT/BACK_SCALE/OFFSET
             RuntimeLog("[rtrace]   polyoffset front %g %g back %g %g\n", std::bit_cast<float>(r.regs[0x2380]), std::bit_cast<float>(r.regs[0x2381]),
                 std::bit_cast<float>(r.regs[0x2382]), std::bit_cast<float>(r.regs[0x2383]));
+        // SCDA_TRACE_PSC=<ps hash hex>: draws with that PS also log PS c0-c3 and c252-c255 (float consts 0x4000 + 4 * (256 + n)).
+        static const uint64_t tracePsc = getenv("SCDA_TRACE_PSC") ? strtoull(getenv("SCDA_TRACE_PSC"), nullptr, 16) : 0;
+        if (tracePsc && d.ps->hash == tracePsc)
+            for (uint32_t n : {0u, 1u, 2u, 3u, 252u, 253u, 254u, 255u})
+            {
+                const uint32_t c = 0x4000 + 4 * (256 + n);
+                RuntimeLog("[rtrace]   psc%u %g %g %g %g\n", n, std::bit_cast<float>(uint32_t(r.regs[c])),
+                    std::bit_cast<float>(uint32_t(r.regs[c + 1])), std::bit_cast<float>(uint32_t(r.regs[c + 2])),
+                    std::bit_cast<float>(uint32_t(r.regs[c + 3])));
+            }
         // SCDA_TRACE_VSC=<vs hash hex>[,..]: draws with one of those VS also log VS c8-c17 (transforms).
         static const std::vector<uint64_t> traceVscList = []
         {

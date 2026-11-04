@@ -353,3 +353,30 @@ void AutopilotApply(uint64_t frame, XINPUT_GAMEPAD& g)
             std::remainder(rel, 6.2831853f) * 57.29578f);
     }
 }
+
+// SCDA_PEEK=<frame>: (first input poll at or after it) <hex addr>,<bytes>[;<hex addr>,<bytes>..]: at that frame, byte stats of each guest range.
+void PeekTick(uint64_t frame)
+{
+    static const char* spec = getenv("SCDA_PEEK");
+    static bool done;
+    if (!spec || done || frame < strtoull(spec, nullptr, 10))
+        return;
+    done = true;
+    for (const char* p = strchr(spec, ':'); p && *p;)
+    {
+        char* e;
+        const uint32_t a = uint32_t(strtoul(p + 1, &e, 16));
+        const uint32_t n = *e == ',' ? uint32_t(strtoul(e + 1, &e, 10)) : 0;
+        uint64_t sum = 0;
+        uint32_t lo = 255, hi = 0, hist[8] = {};
+        for (uint32_t i = 0; i < n; i++)
+        {
+            const uint8_t v = g_base[a + i];
+            sum += v, lo = v < lo ? v : lo, hi = v > hi ? v : hi, hist[v >> 5]++;
+        }
+        RuntimeLog("[peek] frame %llu %08X+%u avg %.1f min %u max %u hist %u %u %u %u %u %u %u %u\n",
+            (unsigned long long)frame, a, n, n ? double(sum) / n : 0.0, lo, hi, hist[0], hist[1], hist[2], hist[3],
+            hist[4], hist[5], hist[6], hist[7]);
+        p = strchr(e, ';');
+    }
+}
