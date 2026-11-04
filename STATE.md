@@ -35,6 +35,6 @@
 ## Next
 1. Play further: blind scripts stall (no objective steering). Options: steer by objective marker / Sam position from guest RAM; Deniable Ops maps (menu: DOWN switches panels, A enters MATCH SETTINGS, then Map row RIGHT; other maps may be locked); Scene Select (locked on this save?).
 2. (done b89b800) tx_coord_denorm uses guest size (GuestDims2D, v32); scale 2 matches scale 1 on 02_Museum.
-3. (done) HUD_Saving movie kept at the teardown (sub_82D0F9F0 hook, lr 82D112E4); icon visibility not yet seen on screen.
+3. (done) HUD_Saving movie kept at the teardown (sub_82D0F9F0 hook, lr 82D112E4); 2 checkpoint restarts on 02_Museum: movie kept each load, saves OK, audio continues, no crash to 10000. Icon not yet seen on screen.
 4. Gemini bridge: 2026-11-04 still 503 (API overloaded), --cli times out at 120 s.
 5. 8-bit/DXT textures ignore the fetch sign field: none seen on menu + 01_Market (2026-11-04); renderer logs `[convert] ... sign field ignored` once per (fmt, signs) if one shows up.
