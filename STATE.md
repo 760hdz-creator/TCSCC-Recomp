@@ -19,6 +19,7 @@
 - ~29 presents/s, no fatal in menus. Pre-START screen black (Xenia too). Input script: `SCDA_AUTOPRESS='240:START,400:A:20,500:A:20,600:A:20'` (A needs `:20` hold).
 - Scaleform UI works: "Corrupted Data - Player" dialog, autosave notice. GFx OpenFile (sub_83377E98) loads `ingame\3D_MainMenu_1024.swf` etc.
 - Main menu renders fully with the visibility workaround (frame 900 screenshot checked).
+- 2026-11-03 SPEED: gameplay at the game's 30 fps cap (render 8-12 ms/frame, was ~85). GPU culling (166b3a2) + texture hash fix (46c98f4: hash only a level's own elements; tile padding / bytes past packed tails hold live game data, ~200 re-conversions per frame).
 - 01_Market RENDERS (Sam at the cafe table, lit + textured, HUD prompts), ~12k draws, ~50 ms/frame with fill FF. Fill 03 = sky only (bits 5-7 = view mask needed), so FF stays.
 - Bink logos dark red (Xenia: Clancy silhouette white). Upload == guest RAM; plane data dark (Y<=48 @frame 50). Low priority.
 - Save shows "corrupted": retest with clean `%LOCALAPPDATA%\TCSCCRecomp` (redirect LOCALAPPDATA).
@@ -33,7 +34,7 @@
 ## Xenia reference (`_run\xenia`, copy of SCDA build)
 - Screenshot: focus window, Alt+D then T -> `screenshots\5553080B\`. Keyboard (`--keyboard_mode=1`): START=X, A=';'. After logos stays black even with START: weak reference.
 ## Next
-1. Speed: GPU culling is default (166b3a2; ~2.7x fewer draws) but gameplay ~85 ms/frame at ~9 us/draw: profile (`SCDA_PROFILE`), check the 3 blocking memexport Maps. Open: GPU light-list bytes darken the scene (cleared for now, `SCDA_VISBUF_LIGHTS=gpu`). `docs/l3d_visibility.md`.
+1. Open: GPU light-list bytes darken the scene (cleared for now, `SCDA_VISBUF_LIGHTS=gpu`; `docs/l3d_visibility.md`). Bloom/exposure looks strong in the cafe: compare with a reference.
 2. Play past the opening: drive input further into 01_Market, look for the next crash / missing effect.
 3. tx_coord_denorm at internal scale > 1: pass guest texture size instead of host Dims2D.
 4. Save icon: reload the HUD_Saving movie instead of clearing it. Corrupted save check; Bink colour; review HEURISTIC jump tables.
