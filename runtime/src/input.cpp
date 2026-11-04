@@ -194,6 +194,9 @@ static bool GameWindowFocused()
 }
 
 // XamInputGetState(UserIndex, Flags, X_INPUT_STATE*)
+void PawnTraceTick(uint64_t frame);
+void AutopilotApply(uint64_t frame, XINPUT_GAMEPAD& g);
+
 SCDA_IMPORT(XamInputGetState)
 {
     uint32_t user = ctx.r3.u32, out = ctx.r5.u32;
@@ -266,6 +269,8 @@ SCDA_IMPORT(XamInputGetState)
         g_waitRelease = wait;
     }
     AutoPressApply(script, uint32_t(Frames().FramesEnded()), g);
+    PawnTraceTick(Frames().FramesEnded());
+    AutopilotApply(Frames().FramesEnded(), g);
     // SCDA_TRACE_INPUT=1: every poll (frame, host thread, mouse delta, foreground, sticks/buttons).
     static const bool trace = getenv("SCDA_TRACE_INPUT") != nullptr;
     if (trace)
