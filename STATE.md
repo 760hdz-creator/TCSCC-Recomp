@@ -2,14 +2,14 @@
 ## Setup
 - Nested git repo `G:\Project Zero\fresh` (outer ignores `/fresh/`). `assets/`, `external/` = junctions to outer (never rm -rf; `cmd /c rmdir`).
 - XenonRecomp patch `tools/patches/xenonrecomp_pz.patch` = live `external/XenonRecomp` diff vs ddd128b (outer copy STALE).
-- Test exe: copy `runtime\build\tcscc.exe` -> `_install\tcscc_fresh.exe`, run from `_install`, log `_install\scda.log`. Shader tests: set LOCALAPPDATA to a temp dir (disk cache keyed by translator version, now v31; any translate.cpp prelude change needs a `kTranslatorVersion` bump).
+- Test exe: copy `runtime\build\tcscc.exe` -> `_install\tcscc_fresh.exe`, run from `_install`, log `_install\scda.log`. Shader tests: set LOCALAPPDATA to a temp dir (disk cache keyed by translator version, now v32; any translate.cpp prelude change needs a `kTranslatorVersion` bump).
 ## Verified
 - Image sha 5945a60c... OK. Recomp clean: acceptance counters 0, 99213 functions. HEURISTIC tables reviewed 2026-11-04: labels >= index bound (8255C350 22>=15, 826F1B64 17>=16, 82F72A9C 31>=29), safe.
 - Runtime = outer f243060 (SCDA + Conviction retarget); SC4 hooks not built.
 ## Fixes in fresh (all 2026-11-03 unless noted)
 - Ported 04db715, 37a180e (kernel.cpp only), 99a759a. XenonRecomp: jump-table `switch` on rN.u32. XamUserGetSigninInfo/XamUserGetName real.
 - Menu world: l3d visibility is GPU PS memexport (PS f374a14f, 1 byte/object, Hi-Z test). Now implemented: MemExport -> u7 window -> guest write-back (6b649b9); param-gen = integer pixel; depth-source resolves = R32 depth + max mip chain (aa212dc); point MINMAX only for VS sizes (166b3a2). GPU culling is the default. `docs/l3d_visibility.md`.
-- Mission-load crash: HUD_Saving wrapper borrowed a freed loading-screen movie; dtor hook clears it (save icon skipped). `docs/hud_saving_uaf.md`.
+- Mission-load crash: HUD_Saving wrapper borrowed a freed loading-screen movie; 2026-11-04 movie now kept at the teardown (sub_82D0F9F0 hook, lr 82D112E4; `SCDA_NO_SAVING_KEEP=1` = old dtor clear). `docs/hud_saving_uaf.md`.
 - Flat-colour world: translator ignored tx_coord_denorm (d176044).
 - Speed: texture hash covered tile padding / bytes past packed tails holding live game data (~200 re-conversions/frame); now a level's own elements only (46c98f4). Gameplay at the 30 fps cap, render 7-12 ms/frame.
 ## Current behaviour
@@ -33,7 +33,8 @@
 - CPU: `SCDA_TRACE_GFX=1`, `SCDA_WATCH_WRITE=<hex>[,..][:max]` (+`SCDA_WATCH_RW=1`), `WatchAdd(addr,max)`, `SCDA_PROFILE=<start>:<secs>`, `SCDA_TRACE_FS`, `SCDA_TRACE_INPUT=1`.
 - Presented index = frame - 1 (dump of frame 2500 is p2499).
 ## Next
-1. Play further: blind scripts stall (no objective steering). Options: steer by objective marker / Sam position from guest RAM; Deniable Ops maps (menu: DOWN switches panels, A enters MATCH SETTINGS, then Map row RIGHT; other maps may be locked); Scene Select (locked on this save?).
+1. Play further: autopilot works, but waypoints are hand-typed (no objective source: AEObjectiveLight vt 82190420 / manager vt 8219B270 arrays empty). Find the objective marker data, or the Scene Select gate for missions 4+ (last sweep: mission 1 = 02_Museum, missions 2/3 = 01_Market).
+6. New-profile "Corrupted Data - Player" dialog (line 25): still open, most visible bug left.
 2. (done b89b800) tx_coord_denorm uses guest size (GuestDims2D, v32); scale 2 matches scale 1 on 02_Museum.
 3. (done) HUD_Saving movie kept at the teardown (sub_82D0F9F0 hook, lr 82D112E4); 2 checkpoint restarts on 02_Museum: movie kept each load, saves OK, audio continues, no crash to 10000. Icon not yet seen on screen.
 4. Gemini bridge: 2026-11-04 still 503 (API overloaded), --cli times out at 120 s.
