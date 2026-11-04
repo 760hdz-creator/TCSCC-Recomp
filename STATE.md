@@ -20,9 +20,9 @@
 - 01_Market plays from the cafe cutscene to the TAKE COVER tutorial (frame 10000, 5.5 min, no crash, 30 fps): `SCDA_AUTOPRESS=@tools/autopress/01_market_walk.txt` (look pulses from 2800; the prompt appears at 2000-2800).
 - Exposure FIXED: colour exp bias (RB_COLOR_INFO +2/+5 on 7e3 HDR RTs, RB_COPY_DEST_INFO +10 into k_16_16_16_16 signed-int resolves) + tfetch exp_adjust (-15) were all ignored. Cafe now night, warm lamp pools (matches reference). `SCDA_NO_EXP_BIAS=1|rt|copy` A/B. `docs/exp_bias.md`.
 - GPU light list now DEFAULT (black volumes fixed: signed k_16_16 sphere-occluder falloff read as unorm + depth-only aliased shadow-mask clear colour; also vfetch_mini stride). `SCDA_VISBUF_LIGHTS=off` = old clear. `docs/light_list.md`. Walk to 10000 + menu verified.
-- Bink logos dark red: probably the videos themselves (guest Y/Cr/Cb consistent, G=B=0); confirm by eye.
+- Bink OK: logos are red by design; Market intro cutscene shows natural colours.
 - Saves persist (existing save -> main menu fine). Brand-new profile only: one "Corrupted Data - Player" dialog (OPEN_EXISTING on missing save -> 3, same as Xenia); OK creates the save.
-- 2026-11-04 SCENE SELECT: `SCDA_UNLOCK_ALL=1` lists all 11 chapters (0a261a1). Menu: START, DOWN (Scene Select), A, DOWN x k, A, A (Rookie), A (overwrite OK). 02_Museum loads + renders, objective marker on HUD. Test with a COPY of LOCALAPPDATA (overwrites the save). Sweep script: scratchpad sweep.ps1.
+- 2026-11-04 SCENE SELECT: `SCDA_UNLOCK_ALL=1` lists all 11 chapters (0a261a1). Menu: START, DOWN (Scene Select), A, DOWN x k, A, A (Rookie), A (overwrite OK). 02_Museum, 03_Airfield, 04_FB-Coste load + render (missions 1-3). Missions 4+ still start 01_Market (state @+260 patched to 0; another gate, not found: +0x100 flag? `SCDA_DUMP_MISSIONS=<file>` dumps mission objects). Test with a COPY of LOCALAPPDATA (overwrites the save). Sweep script: scratchpad sweep.ps1.
 ## Ruled out
 - Occlusion queries, camera, timebase, GPU predication, CP packet drops; 26 patch ops + vsel128/eqv/frsqrte/mulhd/vandc/vcmpbfp correct.
 - sub_82EFD598 = SONAR pass (gate R+24456 = sonar flag). Light-list black volumes were not PS 6372c96f, Hi-Z or shadow maps (fixed, docs/light_list.md).
@@ -33,7 +33,7 @@
 - Presented index = frame - 1 (dump of frame 2500 is p2499).
 ## Next
 1. Play further: blind scripts stall (no objective steering). Options: steer by objective marker / Sam position from guest RAM; Deniable Ops maps (menu: DOWN switches panels, A enters MATCH SETTINGS, then Map row RIGHT; other maps may be locked); Scene Select (locked on this save?).
-2. tx_coord_denorm at internal scale > 1: guest texture size instead of host Dims2D.
-3. Save icon: reload the HUD_Saving movie instead of clearing it. Bink colour (confirm by eye).
+2. (done b89b800) tx_coord_denorm uses guest size (GuestDims2D, v32); scale 2 matches scale 1 on 02_Museum.
+3. Save icon: reload the HUD_Saving movie instead of clearing it.
 4. Gemini bridge returned 503 twice; retry.
 5. 8-bit textures (ConvertTexture) still ignore fetch sign bits (signed k_8_8_8_8 normal maps?); check if a signed 8888 shows up.

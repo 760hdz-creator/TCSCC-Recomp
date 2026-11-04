@@ -51,6 +51,17 @@ PPC_FUNC(sub_82CE28A8)
     if (all && c >= 0 && m >= 0 && c < int32_t(GuestLoad32(p + 120)))
     {
         const uint32_t camp = GuestLoad32(GuestLoad32(p + 116) + 4 * uint32_t(c));
+        // SCDA_DUMP_MISSIONS=<file>: raw 512 bytes of every mission object of campaign 0, once.
+        static bool dumped;
+        if (const char* path = getenv("SCDA_DUMP_MISSIONS"); path && !dumped && c == 0)
+            if (FILE* f = fopen(path, "wb"))
+            {
+                dumped = true;
+                const uint32_t missions = GuestLoad32(camp + 24), n = GuestLoad32(camp + 28);
+                for (uint32_t i = 0; i < n && i < 64; i++)
+                    fwrite(base + GuestLoad32(missions + 4 * i), 1, 512, f);
+                fclose(f);
+            }
         if (m < int32_t(GuestLoad32(camp + 28)))
         {
             const uint32_t missions = GuestLoad32(camp + 24), mi = GuestLoad32(missions + 4 * uint32_t(m));
