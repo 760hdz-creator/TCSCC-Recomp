@@ -477,6 +477,8 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
         SCALAR_CONSTANT_1
     };
 
+    // Setp*Push read fixed lanes (Xenia ucode.h): p0 from src.w, the result from src.x.
+    uint32_t laneOverride = 0, pushConstStart = 0;
     auto op = [&](size_t operand)
         {
             size_t reg = 0;
@@ -624,7 +626,7 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
                     break;
 
                 default:
-                    mask = instr.vectorWriteMask != 0 ? instr.vectorWriteMask : 0b1;
+                    mask = laneOverride ? laneOverride : instr.vectorWriteMask != 0 ? instr.vectorWriteMask : 0b1;
                     break;
                 }
 
@@ -758,7 +760,10 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
     if (instr.vectorOpcode >= AluVectorOpcode::SetpEqPush && instr.vectorOpcode <= AluVectorOpcode::SetpGePush)
     {
         indent();
+        laneOverride = 0b1000;
+        pushConstStart = rawConstOperand;
         print("p0 = {} == 0.0 && {} ", op(VECTOR_0), op(VECTOR_1));
+        laneOverride = 0;
 
         switch (instr.vectorOpcode)
         {
@@ -920,8 +925,20 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
         case AluVectorOpcode::SetpNePush:
         case AluVectorOpcode::SetpGtPush:
         case AluVectorOpcode::SetpGePush:
-            print("p0 ? 0.0 : {} + 1.0", op(VECTOR_0));
+        {
+            // dest = (src0.x == 0 && src1.x <op> 0) ? 0 : src0.x + 1, independent of p0 (src.w).
+            const char* cmp = instr.vectorOpcode == AluVectorOpcode::SetpEqPush ? "==" : instr.vectorOpcode == AluVectorOpcode::SetpNePush ? "!="
+                : instr.vectorOpcode == AluVectorOpcode::SetpGtPush ? ">" : ">=";
+            laneOverride = 0b0001;
+            const uint32_t constAfter = rawConstOperand;
+            rawConstOperand = pushConstStart; // same operands as the p0 line: same relative flags
+            const std::string s0 = op(VECTOR_0);
+            const std::string s1 = op(VECTOR_1);
+            rawConstOperand = constAfter;
+            laneOverride = 0;
+            print("({0} == 0.0 && {1} {2} 0.0) ? 0.0 : {0} + 1.0", s0, s1, cmp);
             break;
+        }
 
         case AluVectorOpcode::KillEq:
             print("any({} == {})", op(VECTOR_0), op(VECTOR_1));
