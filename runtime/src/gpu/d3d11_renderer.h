@@ -48,6 +48,7 @@ public:
     const RegisterFile& Registers() const;
     // [Display] CleanGoggles: drop the goggle scanline overlay and the noise displacement.
     void SetCleanGoggles(bool on) { m_cleanGoggles = on; }
+    void SetUltrawide(bool on) { m_ultrawide = on; }
     // [Display] DrawBackFaces: no back-face culling for opaque, non-stencil draws.
     void SetDrawBackFaces(bool on) { m_drawBackFaces = on; }
     // Reads one texel (as RGBA8) of the last RT0 drawn or resolved (tests); 0 when unavailable.
@@ -113,6 +114,7 @@ private:
     bool m_vsync = true;
     uint32_t m_scale = 1, m_anisotropy = 1;
     bool m_cleanGoggles = false;
+    bool m_ultrawide = false; // Hor+ in windows wider than 16:9 (PresentViewport, camera.cpp)
     bool m_drawBackFaces = false;
     uint64_t m_presented = 0;
     uint32_t m_lastDrawn = 0, m_lastSkipped = 0, m_lastResolved = 0;

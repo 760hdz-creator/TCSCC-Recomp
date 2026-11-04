@@ -170,6 +170,7 @@ static void RenderThread(DisplaySettings s)
     GetClientRect(hwnd, &rc);
     D3D11Renderer renderer;
     renderer.SetCleanGoggles(s.cleanGoggles);
+    renderer.SetUltrawide(s.ultrawide);
     if (!renderer.Init(hwnd, rc.right, rc.bottom, s.vsync, UpscalingScale(s.upscaling, uint32_t(rc.bottom), s.scale), s.anisotropy))
     {
         RuntimeLog("[window] no Direct3D 11 device\n");

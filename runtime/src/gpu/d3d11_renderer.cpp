@@ -3496,8 +3496,9 @@ D3D11_VIEWPORT D3D11Renderer::PresentViewport()
     // The 360 scaler shows the frontbuffer at 16:9 (Conviction's 1040x576 included). SCDA_STRETCH=1:
     // old (stretched to the window).
     static const bool stretch = getenv("SCDA_STRETCH") != nullptr;
-    // SCDA_ULTRAWIDE=1: Hor+ (camera.cpp widens the FOV, the frame fills a wider window).
-    static const bool ultrawide = getenv("SCDA_ULTRAWIDE") != nullptr;
+    // Ultrawide setting or SCDA_ULTRAWIDE=1: Hor+ (camera.cpp widens the FOV, the frame fills a wider window).
+    static const bool ultrawideEnv = getenv("SCDA_ULTRAWIDE") != nullptr;
+    const bool ultrawide = m_ultrawide || ultrawideEnv;
     constexpr float kAspect = 16.0f / 9.0f;
     const float w = float(m_width), h = float(m_height);
     // SCDA_ULTRAWIDE_FROM=<present>: Hor+ only from that present on (A/B in one run: HUD marker test).

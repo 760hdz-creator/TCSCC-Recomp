@@ -23,6 +23,9 @@ struct DisplaySettings
     // caps at 60 instead of 30. The game clock is wall time (0x401AAB48 tracks it 1:1 at both rates,
     // movement matches, 01_Market 2026-11-04). Default off (authentic).
     bool fps60 = false;
+    // Ultrawide ([Display] Ultrawide=1): in windows wider than 16:9 the camera widens (Hor+) and the
+    // frame fills the window; the HUD and menus are stretched (markers stay on target). Off = 16:9 bars.
+    bool ultrawide = false;
     // Post-processing on the presented frame (F1 menu, Graphics). Defaults leave the image as the
     // console made it. The game's own 4x MSAA is always on.
     enum AntiAliasing { AaOff, AaFxaa } antiAliasing = AaOff; // [Display] AntiAliasing=Off|FXAA

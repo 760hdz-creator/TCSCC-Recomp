@@ -78,6 +78,7 @@ void Apply(const DisplaySettings& s)
     g_renderer->SetVsync(s.vsync);
     g_renderer->SetAnisotropy(s.anisotropy);
     g_renderer->SetCleanGoggles(s.cleanGoggles);
+    g_renderer->SetUltrawide(s.ultrawide);
     g_renderer->SetDrawBackFaces(s.drawBackFaces);
     SetFovOverride(float(s.fov));
     InterruptsSetVblankRate(s.fps60 ? 120 : 60);
@@ -100,6 +101,8 @@ void Save(const DisplaySettings& before, const DisplaySettings& after)
         save("CleanGoggles", after.cleanGoggles ? "1" : "0");
     if (before.fov != after.fov)
         save("FOV", std::to_string(after.fov));
+    if (before.ultrawide != after.ultrawide)
+        save("Ultrawide", after.ultrawide ? "1" : "0");
     if (before.fps60 != after.fps60)
         save("FPS60", after.fps60 ? "1" : "0");
     if (before.drawBackFaces != after.drawBackFaces)
@@ -153,6 +156,9 @@ void DisplayTab(DisplaySettings& s)
     if (ImGui::SliderInt("Field of view", &fov, 60, 110, fov == 75 ? "%d (default)" : "%d"))
         s.fov = uint32_t(fov);
     Hint("Camera field of view in degrees; 75 is the game's own. Zoom (binoculars, sniper, cameras) keeps its own value.");
+    ImGui::Checkbox("Ultrawide", &s.ultrawide);
+    Hint("In a window wider than 16:9, shows more of the scene at the sides instead of black bars. "
+         "The HUD and menus are stretched to the window.");
     ImGui::Checkbox("60 FPS", &s.fps60);
     Hint("Unlocks the game's 30 fps cap to 60. Game speed is unchanged (the game runs on wall time). "
          "Menus may run below 60.");
