@@ -29,6 +29,7 @@
 - A/B runs: `SCDA_AUTOPRESS_WALL=1` = script clock in 30 fps units of wall time (same scene at any fps); test settings via `SCDA_SETTINGS=<ini>` (SHGetKnownFolderPath ignores LOCALAPPDATA env).
 - 2026-11-04 Lamp light wedges FIXED (3af885c, v34): vfetch index floored unless is_index_rounded. docs/light_beams.md. Sky vs 360 ref (Mahalo 2:51-2:55) matches (avg RGB within 1-2). v34 sweep: 01_Market, 02_Museum, 03_Airfield, 04_FB-Coste, C01_MafiaClub render OK, no sky flicker (32 consecutive static frames each; Coste only isolated ember/spark pixels).
 ## Ruled out
+- 2026-11-04 graphics: shadow map = 880x880 depth (pitch 0x370, resolve -> 0x00532000 x2/frame), already scales with internal res; extra x4 gave no visible change (softness = the game's filter). Post chain frame 6000: bloom 320/160/80 (draws 1312-1338), grade 1351+. Clean Goggles hashes are SC:DA's (likely inert on Conviction). Right-edge black strip FIXED abf3e4b (present = swap size_2d 1040x576, not the 1056 resolve).
 - Occlusion queries, camera, timebase, GPU predication, CP packet drops; 26 patch ops + vsel128/eqv/frsqrte/mulhd/vandc/vcmpbfp correct.
 - sub_82EFD598 = SONAR pass (gate R+24456 = sonar flag). Light-list black volumes were not PS 6372c96f, Hi-Z or shadow maps (fixed, docs/light_list.md).
 ## Debug switches
