@@ -4,7 +4,7 @@
 - XenonRecomp patch `tools/patches/xenonrecomp_pz.patch` = live `external/XenonRecomp` diff vs ddd128b (outer copy STALE).
 - Test exe: copy `runtime\build\tcscc.exe` -> `_install\tcscc_fresh.exe`, run from `_install`, log `_install\scda.log`. Shader tests: set LOCALAPPDATA to a temp dir (disk cache keyed by translator version, now v31; any translate.cpp prelude change needs a `kTranslatorVersion` bump).
 ## Verified
-- Image sha 5945a60c... OK. Recomp clean: acceptance counters 0, 99213 functions. HEURISTIC tables 8255C350 826F1B64 82F72A9C unreviewed.
+- Image sha 5945a60c... OK. Recomp clean: acceptance counters 0, 99213 functions. HEURISTIC tables reviewed 2026-11-04: labels >= index bound (8255C350 22>=15, 826F1B64 17>=16, 82F72A9C 31>=29), safe.
 - Runtime = outer f243060 (SCDA + Conviction retarget); SC4 hooks not built.
 ## Fixes in fresh (all 2026-11-03 unless noted)
 - Ported 04db715, 37a180e (kernel.cpp only), 99a759a. XenonRecomp: jump-table `switch` on rN.u32. XamUserGetSigninInfo/XamUserGetName real.
@@ -34,6 +34,6 @@
 ## Next
 1. Play further: blind scripts stall (no objective steering). Options: steer by objective marker / Sam position from guest RAM; Deniable Ops maps (menu: DOWN switches panels, A enters MATCH SETTINGS, then Map row RIGHT; other maps may be locked); Scene Select (locked on this save?).
 2. tx_coord_denorm at internal scale > 1: guest texture size instead of host Dims2D.
-3. Save icon: reload the HUD_Saving movie instead of clearing it. Corrupted save; Bink colour; HEURISTIC jump tables.
+3. Save icon: reload the HUD_Saving movie instead of clearing it. Bink colour (confirm by eye).
 4. Gemini bridge returned 503 twice; retry.
 5. 8-bit textures (ConvertTexture) still ignore fetch sign bits (signed k_8_8_8_8 normal maps?); check if a signed 8888 shows up.
