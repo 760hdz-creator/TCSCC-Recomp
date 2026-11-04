@@ -126,6 +126,10 @@ static void WindowThread(DisplaySettings s)
     AdjustWindowRect(&frame, style, FALSE);
     auto [cw, ch] = WindowClientSize(uint32_t(work.right - work.left - (frame.right - frame.left)),
                                      uint32_t(work.bottom - work.top - (frame.bottom - frame.top)));
+    // SCDA_WINDOW_SIZE=<w>x<h>: client size of a windowed run (aspect tests, e.g. 1680x720 = 21:9).
+    if (const char* ws = getenv("SCDA_WINDOW_SIZE"); ws && s.mode == DisplaySettings::Windowed)
+        if (unsigned w = 0, h = 0; sscanf(ws, "%ux%u", &w, &h) == 2 && w >= 320 && h >= 180)
+            cw = w, ch = h;
     RECT r{ 0, 0, LONG(cw), LONG(ch) };
     int x = CW_USEDEFAULT, y = CW_USEDEFAULT;
     if (s.mode != DisplaySettings::Windowed)
@@ -135,7 +139,7 @@ static void WindowThread(DisplaySettings s)
     }
     else
         AdjustWindowRect(&r, style, FALSE);
-    HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"Splinter Cell: Double Agent Recomp", style, x, y,
+    HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"Splinter Cell: Conviction Recomp", style, x, y,
         r.right - r.left, r.bottom - r.top, nullptr, nullptr, inst, nullptr);
     ShowWindow(hwnd, SW_SHOW);
     // Scripted runs (SCDA_AUTOPRESS) never take the mouse: an unattended window must not trap the cursor.
@@ -381,7 +385,7 @@ static void RenderThread(DisplaySettings s)
                     }
             }
             wchar_t title[200];
-            swprintf(title, 200, L"Splinter Cell: Double Agent Recomp - frame %llu draws %u (drawn %u skipped %u) resolves %u shaders %u compiled %u failed %u",
+            swprintf(title, 200, L"Splinter Cell: Conviction Recomp - frame %llu draws %u (drawn %u skipped %u) resolves %u shaders %u compiled %u failed %u",
                 (unsigned long long)frame.stats.frame, frame.stats.draws, renderer.LastDrawn(), renderer.LastSkipped(),
                 frame.stats.resolves, frame.stats.shaders,
                 ShaderCompilerReadyCount(), ShaderCompilerFailedCount());

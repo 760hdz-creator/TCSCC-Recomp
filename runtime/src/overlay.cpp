@@ -255,7 +255,7 @@ void Menu()
     const float em = ImGui::GetFontSize();
     ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x * 0.5f, vp->WorkPos.y + vp->WorkSize.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSize(ImVec2(em * 40.0f, em * 22.0f), ImGuiCond_Always);
-    if (ImGui::Begin("Extra Settings - Splinter Cell: Double Agent Recomp", nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse))
+    if (ImGui::Begin("Extra Settings - Splinter Cell: Conviction Recomp", nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse))
     {
         const DisplaySettings before = g_settings;
         // Previous/next tab: L1/R1 (LB/RB) on a pad, Q/E on the keyboard.

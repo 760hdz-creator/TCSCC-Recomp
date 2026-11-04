@@ -95,7 +95,11 @@ private:
     void Blit(ID3D11ShaderResourceView* source);
     // PostFx path of Blit: FXAA (source size), scaling, sharpening + ramp, through intermediate targets.
     void BlitPost(ID3D11ShaderResourceView* source);
-    void PostPass(ID3D11ShaderResourceView* source, ID3D11RenderTargetView* target, uint32_t width, uint32_t height, int mode, bool ramp);
+    void PostPass(ID3D11ShaderResourceView* source, ID3D11RenderTargetView* target, uint32_t width, uint32_t height, int mode, bool ramp,
+        const D3D11_VIEWPORT* place = nullptr);
+    // Where the frame goes in the back buffer: the largest 16:9 rect, centred (pillar/letterbox);
+    // the whole window when it is 16:9 within 1%. Clears the bars when they exist.
+    D3D11_VIEWPORT PresentViewport();
     void ApplyScale(uint32_t scale);
     // ramp: apply the display gamma ramp (presented frames, so dumps match the window).
     void Dump(const std::string& path, ID3D11Texture2D* source, bool ramp = false);

@@ -3471,9 +3471,9 @@ void D3D11Renderer::Blit(ID3D11ShaderResourceView* source)
     }
     ID3D11ShaderResourceView* none = nullptr;
     m_context->PSSetShaderResources(0, 1, &none);
+    const D3D11_VIEWPORT vp = PresentViewport();
     m_context->OMSetRenderTargets(1, &m_backBuffer, nullptr);
     r.bound = false; r.srvShadow = false;
-    D3D11_VIEWPORT vp{ 0, 0, float(m_width), float(m_height), 0, 1 };
     m_context->RSSetViewports(1, &vp);
     m_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     m_context->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
@@ -3490,15 +3490,31 @@ void D3D11Renderer::Blit(ID3D11ShaderResourceView* source)
     m_context->PSSetShaderResources(0, 2, nones);
 }
 
-// One kPostPs pass of source into target (width x height).
-void D3D11Renderer::PostPass(ID3D11ShaderResourceView* source, ID3D11RenderTargetView* target, uint32_t width, uint32_t height, int mode, bool ramp)
+D3D11_VIEWPORT D3D11Renderer::PresentViewport()
+{
+    // The 360 scaler shows the frontbuffer at 16:9 (Conviction's 1040x576 included). SCDA_STRETCH=1:
+    // old (stretched to the window).
+    static const bool stretch = getenv("SCDA_STRETCH") != nullptr;
+    constexpr float kAspect = 16.0f / 9.0f;
+    const float w = float(m_width), h = float(m_height);
+    if (stretch || !m_width || !m_height || std::abs(w / h / kAspect - 1.0f) < 0.01f)
+        return { 0, 0, w, h, 0, 1 };
+    const float vw = std::min(w, std::round(h * kAspect)), vh = std::min(h, std::round(w / kAspect));
+    const float black[4] = { 0, 0, 0, 1 };
+    m_context->ClearRenderTargetView(m_backBuffer, black);
+    return { std::floor((w - vw) / 2), std::floor((h - vh) / 2), vw, vh, 0, 1 };
+}
+
+// One kPostPs pass of source into target (width x height, or the place rect).
+void D3D11Renderer::PostPass(ID3D11ShaderResourceView* source, ID3D11RenderTargetView* target, uint32_t width, uint32_t height, int mode, bool ramp,
+    const D3D11_VIEWPORT* place)
 {
     DrawResources& r = *m_draw;
     ID3D11ShaderResourceView* nones[2] = {};
     m_context->PSSetShaderResources(0, 2, nones);
     m_context->OMSetRenderTargets(1, &target, nullptr);
     r.bound = false; r.srvShadow = false;
-    D3D11_VIEWPORT vp{ 0, 0, float(width), float(height), 0, 1 };
+    const D3D11_VIEWPORT vp = place ? *place : D3D11_VIEWPORT{ 0, 0, float(width), float(height), 0, 1 };
     m_context->RSSetViewports(1, &vp);
     m_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     m_context->IASetInputLayout(nullptr);
@@ -3560,15 +3576,17 @@ void D3D11Renderer::BlitPost(ID3D11ShaderResourceView* source)
             PostPass(cur, t.rtv.Get(), t.width, t.height, 2, false);
             cur = t.srv.Get();
         }
-    const int scaleMode = m_postFx.upscale && sd.Width && sd.Width < m_width ? 1 : 0;
+    const D3D11_VIEWPORT place = PresentViewport();
+    const uint32_t pw = uint32_t(place.Width), ph = uint32_t(place.Height);
+    const int scaleMode = m_postFx.upscale && sd.Width && sd.Width < pw ? 1 : 0;
     if (m_postFx.sharpness > 0.0f)
-        if (auto& t = target(1, m_width, m_height); t.rtv)
+        if (auto& t = target(1, pw, ph); t.rtv)
         {
-            PostPass(cur, t.rtv.Get(), m_width, m_height, scaleMode, false);
-            PostPass(t.srv.Get(), m_backBuffer, m_width, m_height, 3, true);
+            PostPass(cur, t.rtv.Get(), pw, ph, scaleMode, false);
+            PostPass(t.srv.Get(), m_backBuffer, pw, ph, 3, true, &place);
             return;
         }
-    PostPass(cur, m_backBuffer, m_width, m_height, scaleMode, true);
+    PostPass(cur, m_backBuffer, pw, ph, scaleMode, true, &place);
 }
 
 void D3D11Renderer::SetAnisotropy(uint32_t anisotropy)
