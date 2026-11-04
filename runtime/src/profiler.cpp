@@ -162,7 +162,8 @@ static LONG CALLBACK WatchHandler(EXCEPTION_POINTERS* e)
     for (int i = 0; i < g_watchCount; i++)
         if (dr6 >> i & 1)
             RuntimeLog("[watch] tid %lu write %08X = %08X (BE) by %s\n", GetCurrentThreadId(), g_watchAddr[i],
-                _byteswap_ulong(*(uint32_t*)GuestPtr(g_watchAddr[i])), chain.c_str());
+                // SCDA_WATCH_RW: reading the value here would re-trigger the read watchpoint on this thread
+                getenv("SCDA_WATCH_RW") ? 0u : _byteswap_ulong(*(uint32_t*)GuestPtr(g_watchAddr[i])), chain.c_str());
     return EXCEPTION_CONTINUE_EXECUTION;
 }
 

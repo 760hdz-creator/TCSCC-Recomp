@@ -63,6 +63,15 @@ TEST(settings_post_processing_parsed)
     CHECK(bad.antiAliasing == DisplaySettings::AaOff && bad.sharpening == 0 && bad.upscaling == DisplaySettings::UpOff);
 }
 
+TEST(settings_draw_distance_parsed)
+{
+    CHECK_EQ(LoadDisplaySettings(Ini("[Display]\n")).drawDistance, 0u);
+    CHECK_EQ(LoadDisplaySettings(Ini("[Display]\nDrawDistance=Ultra\n")).drawDistance, 2u);
+    CHECK_EQ(LoadDisplaySettings(Ini("[Display]\ndrawdistance=maximum\n")).drawDistance, 3u);
+    CHECK_EQ(LoadDisplaySettings(Ini("[Display]\nDrawDistance=Far\n")).drawDistance, 0u);
+    CHECK(std::string(DrawDistanceName(1)) == "High");
+}
+
 TEST(upscaling_scale_from_window_height)
 {
     CHECK_EQ(UpscalingScale(DisplaySettings::UpOff, 2160, 3), 3u);

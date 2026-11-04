@@ -1,6 +1,7 @@
 #include <windows.h>
 #include <shlobj.h>
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <fstream>
 #include <vector>
@@ -92,6 +93,12 @@ DisplaySettings LoadDisplaySettings(const std::filesystem::path& ini)
             s.ultrawide = Truthy(value);
         else if (key == "fps60")
             s.fps60 = Truthy(value);
+        else if (key == "drawdistance")
+        {
+            for (uint32_t l = 0; l < 4; l++)
+                if (value == Lower(DrawDistanceName(l)))
+                    s.drawDistance = l;
+        }
         else if (key == "drawbackfaces")
             s.drawBackFaces = Truthy(value);
         else if (key == "fov")
@@ -125,6 +132,16 @@ const char* UpscalingName(DisplaySettings::Upscaling mode)
 {
     static const char* const names[] = { "Off", "Native", "Quality", "Balanced", "Performance", "UltraPerformance" };
     return names[std::clamp(int(mode), 0, 5)];
+}
+
+static std::atomic<int> g_drawDistance{0};
+void SetDrawDistance(int level) { g_drawDistance = level; }
+int DrawDistance() { return g_drawDistance; }
+
+const char* DrawDistanceName(uint32_t level)
+{
+    static const char* const names[] = { "Console", "High", "Ultra", "Maximum" };
+    return names[std::min(level, 3u)];
 }
 
 const char* AntiAliasingName(DisplaySettings::AntiAliasing aa) { return aa == DisplaySettings::AaFxaa ? "FXAA" : "Off"; }

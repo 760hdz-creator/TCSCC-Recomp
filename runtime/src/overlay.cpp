@@ -81,6 +81,7 @@ void Apply(const DisplaySettings& s)
     g_renderer->SetUltrawide(s.ultrawide);
     g_renderer->SetDrawBackFaces(s.drawBackFaces);
     SetFovOverride(float(s.fov));
+    SetDrawDistance(int(s.drawDistance));
     InterruptsSetVblankRate(s.fps60 ? 120 : 60);
 }
 
@@ -105,6 +106,8 @@ void Save(const DisplaySettings& before, const DisplaySettings& after)
         save("Ultrawide", after.ultrawide ? "1" : "0");
     if (before.fps60 != after.fps60)
         save("FPS60", after.fps60 ? "1" : "0");
+    if (before.drawDistance != after.drawDistance)
+        save("DrawDistance", DrawDistanceName(after.drawDistance));
     if (before.drawBackFaces != after.drawBackFaces)
         save("DrawBackFaces", after.drawBackFaces ? "1" : "0");
     if (before.antiAliasing != after.antiAliasing)
@@ -162,6 +165,12 @@ void DisplayTab(DisplaySettings& s)
     ImGui::Checkbox("60 FPS", &s.fps60);
     Hint("Unlocks the game's 30 fps cap to 60. Game speed is unchanged (the game runs on wall time). "
          "Menus may run below 60.");
+    int drawDistance = int(s.drawDistance);
+    const char* const drawDistances[] = { "Console (default)", "High (2x)", "Ultra (4x)", "Maximum" };
+    if (ImGui::Combo("Draw distance", &drawDistance, drawDistances, 4))
+        s.drawDistance = uint32_t(drawDistance);
+    Hint("Small objects stay visible and models keep their detailed versions further away "
+         "(2x or 4x the console distance; Maximum: never hidden or simplified). Costs GPU time.");
     ImGui::Checkbox("Clean goggles", &s.cleanGoggles);
     Hint("Night, thermal and EMF vision without the scanlines and noise.");
     // [General] Language (X_LANGUAGE id), saved at once, read at startup (GameLanguage).

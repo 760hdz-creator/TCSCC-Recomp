@@ -78,11 +78,16 @@ Everything new is **off by default**, so the game looks and runs like the consol
 |-|-|
 | **60 FPS** | Lifts the game's 30 fps cap. Game speed is unchanged (checked: the game clock, walk speed and camera turn speed match at 30 and 60 fps). |
 | **Ultrawide** | In a window wider than 16:9, shows more at the sides (Hor+) instead of black bars. The HUD and menus are stretched; objective markers stay on their targets. |
+| **Draw distance** | Console (default), High, Ultra or Maximum. Small objects stay visible and models keep their detailed versions 2x (High) or 4x (Ultra) further away. Maximum never hides or simplifies them. No measurable fps cost at 60 fps on 01_Market. |
 | Internal resolution | Renders at 1x-4x and filters down (supersampling). The game itself renders at 1040x576. |
 | Upscaling, FXAA, sharpening, anisotropic filtering | Image quality options. |
 | VSync, window mode | Display options. |
 
 ## Patch notes
+
+### 2026-11-04: draw distance
+- **New: Draw distance option.** On the console, about half the small-object tests in the market hide the object.
+  High cuts that to about a tenth, and Ultra to about 1%. Models also switch to their simpler versions later.
 
 ### 2026-11-04: 60 fps, ultrawide, picture fixes
 - **New: 60 FPS option.** Gameplay runs at 57-60 fps. The renderer now wakes up as soon as a frame is ready

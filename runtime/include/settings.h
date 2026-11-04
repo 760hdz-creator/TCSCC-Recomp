@@ -26,6 +26,10 @@ struct DisplaySettings
     // Ultrawide ([Display] Ultrawide=1): in windows wider than 16:9 the camera widens (Hor+) and the
     // frame fills the window; the HUD and menus are stretched (markers stay on target). Off = 16:9 bars.
     bool ultrawide = false;
+    // Draw distance ([Display] DrawDistance=Console|High|Ultra|Maximum): small objects are culled and
+    // meshes switch to coarser LODs 2x (High) / 4x (Ultra) further away; Maximum = no small-object cull,
+    // always the finest LOD. Console (default) changes nothing. docs/draw_distance.md.
+    uint32_t drawDistance = 0;
     // Post-processing on the presented frame (F1 menu, Graphics). Defaults leave the image as the
     // console made it. The game's own 4x MSAA is always on.
     enum AntiAliasing { AaOff, AaFxaa } antiAliasing = AaOff; // [Display] AntiAliasing=Off|FXAA
@@ -41,6 +45,9 @@ struct DisplaySettings
 uint32_t UpscalingScale(DisplaySettings::Upscaling mode, uint32_t windowHeight, uint32_t manualScale);
 const char* UpscalingName(DisplaySettings::Upscaling mode);     // ini value ("UltraPerformance")
 const char* AntiAliasingName(DisplaySettings::AntiAliasing aa); // ini value ("FXAA")
+const char* DrawDistanceName(uint32_t level);                   // ini value ("Console" .. "Maximum")
+void SetDrawDistance(int level);                                // lod.cpp applies it on the next guest read
+int DrawDistance();
 
 struct InputSettings
 {
