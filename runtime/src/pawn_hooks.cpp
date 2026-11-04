@@ -1,6 +1,8 @@
 #include <runtime.h>
 #include <bit>
 #include <cstdlib>
+#include <cstring>
+#include <cstdio>
 
 // Guest hooks for pawn_trace.cpp (not linked into scda_tests: needs the recompiled code).
 namespace
@@ -33,3 +35,4 @@ PPC_FUNC(sub_82C1EAC8)
             GuestLoad32(a + kRot + 4), GuestLoad32(a + kRot + 8));
     }
 }
+

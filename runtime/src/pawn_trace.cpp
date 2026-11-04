@@ -1,6 +1,7 @@
 #include <windows.h>
 #include <xinput.h>
 #include <runtime.h>
+#include <algorithm>
 #include <bit>
 #include <cmath>
 #include <cstdio>
@@ -76,6 +77,54 @@ void Scan(uint64_t frame, float radius)
                     GuestLoad32(o + kRot), GuestLoad32(o + kRot + 4), GuestLoad32(o + kRot + 8));
             }
         a = end;
+    }
+    // SCDA_FIND_VT=<hex>[,<hex>..]: every object with that vtable (any distance), Location @+0x94.
+    // AEObjectiveLight = 82190420 (InternalConstructor sub_82B0B578).
+    if (const char* r = getenv("SCDA_FIND_VT"))
+    {
+        std::vector<uint32_t> vts;
+        for (const char* p = r; *p;)
+        {
+            char* e;
+            vts.push_back(uint32_t(strtoul(p, &e, 16)));
+            if (e == p)
+                break;
+            p = *e == ',' ? e + 1 : e;
+        }
+        int n = 0;
+        for (uint64_t a = 0x40000000; a < 0x80000000ull && n < 200;)
+        {
+            uint32_t end;
+            const bool ok = Committed(uint32_t(a), end);
+            if (end <= a)
+                break;
+            if (ok)
+                for (uint32_t o = uint32_t(a); o + kRot + 12 <= end && n < 200; o += 4)
+                {
+                    const uint32_t vt = GuestLoad32(o);
+                    if (std::find(vts.begin(), vts.end(), vt) == vts.end())
+                        continue;
+                    n++;
+                    const float x = F(o + kLoc), y = F(o + kLoc + 4), z = F(o + kLoc + 8);
+                    RuntimeLog("[pawn] vt %08X obj %08X loc %.1f %.1f %.1f d %.0f\n", vt, o, x, y, z,
+                        std::sqrt((x - cx) * (x - cx) + (y - cy) * (y - cy)));
+                    // AEObjectiveManager (8219B270): TArrays @+940 and @+960 (data, num, max).
+                    if (vt == 0x8219B270)
+                        for (uint32_t arr : {940u, 960u})
+                        {
+                            const uint32_t data = GuestLoad32(o + arr), num = GuestLoad32(o + arr + 4);
+                            RuntimeLog("[pawn]   +%u data %08X num %u\n", arr, data, num);
+                            for (uint32_t i = 0; data && i < num && i < 32; i++)
+                            {
+                                const uint32_t e = GuestLoad32(data + 4 * i);
+                                RuntimeLog("[pawn]    [%u] %08X vt %08X loc %.1f %.1f %.1f\n", i, e,
+                                    e ? GuestLoad32(e) : 0, e ? F(e + kLoc) : 0.f, e ? F(e + kLoc + 4) : 0.f,
+                                    e ? F(e + kLoc + 8) : 0.f);
+                            }
+                        }
+                }
+            a = end;
+        }
     }
     // SCDA_FIND_REF=<hex>[,<hex>..]: where those guest pointers are stored (image data + heap).
     if (const char* r = getenv("SCDA_FIND_REF"))

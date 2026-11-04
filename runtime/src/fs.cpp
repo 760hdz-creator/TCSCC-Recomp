@@ -237,6 +237,21 @@ static uint32_t OpenFile(PPCContext& ctx, uint32_t pHandle, uint32_t access, uin
         g_paths[handle] = host;
     }
     RuntimeLog("[fs] open %s -> 0x%X\n", guest.c_str(), handle);
+    // SCDA_TRACE_FS_CHAIN=<substring>: guest call chain (saved LR at -8 of each back-chain frame).
+    if (const char* want = getenv("SCDA_TRACE_FS_CHAIN"); want && strstr(guest.c_str(), want))
+    {
+        char chain[256] = {};
+        int len = 0;
+        for (uint32_t sp = ctx.r1.u32, i = 0; i < 16 && sp > 0x10000 && sp < 0xF0000000u; i++)
+        {
+            const uint32_t next = GuestLoad32(sp);
+            if (next <= sp || next >= 0xF0000000u)
+                break;
+            len += snprintf(chain + len, sizeof(chain) - len, " %08X", GuestLoad32(next - 8));
+            sp = next;
+        }
+        RuntimeLog("[fs] chain lr %08X:%s\n", uint32_t(ctx.lr), chain);
+    }
     GuestStore32(pHandle, handle);
     SetIoStatus(iosb, X_STATUS_SUCCESS, 1); // FILE_OPENED
     return X_STATUS_SUCCESS;
