@@ -36,7 +36,7 @@
 - Screenshot: focus window, Alt+D then T -> `screenshots\5553080B\`. Keyboard (`--keyboard_mode=1`): START=X, A=';'. After logos stays black even with START: weak reference.
 ## Next
 1. Open: GPU light-list bytes darken the scene (cleared for now, `SCDA_VISBUF_LIGHTS=gpu`; `docs/l3d_visibility.md`). Bloom/exposure looks strong in the cafe: compare with a reference.
-2. Overexposure: 01_Market washes out to white (bloom / eye adaptation; luminance chain 1x1 fmt 29 from fmt 32 resolve). Compare with a reference image.
+2. Overexposure: 01_Market washes out to white. Reference (PortForward walkthrough ch.1 Merchant's Street Market, Xbox 360): the cafe is at NIGHT, dark street lit by warm lamps/string lights, no heavy bloom. Our GPU-light-list run (`SCDA_VISBUF_LIGHTS=gpu`) looked closer than the default: re-check that darkening vs exposure (luminance chain 1x1 fmt 29 from fmt 32 resolve).
 3. tx_coord_denorm at internal scale > 1: pass guest texture size instead of host Dims2D.
 4. Save icon: reload the HUD_Saving movie instead of clearing it. Corrupted save check; Bink colour; review HEURISTIC jump tables.
 5. Gemini bridge returned 503 twice; retry.
