@@ -42,7 +42,7 @@
 - Timing/RAM: `SCDA_VSYNC_HZ=<n>`, `SCDA_TRACE_DELAY=1` (sleeps/waits per caller), `SCDA_TIMELINE=<s>:<ms>`, `SCDA_DUMP_RAM=<frames>` (+ tools/ramscan.py, ramdump_peek.py), `SCDA_TRACE_CP=1`, `SCDA_TRACE_SAVE=1`.
 - Presented index = frame - 1 (dump of frame 2500 is p2499).
 ## Next
-0. Draw distance / LOD (next). GitLab: remote `gitlab` = https://gitlab.com/octagram-labs-group/TCSCC-Recomp (PRIVATE, user to make public; README patch notes + docs/images). NEVER push game files (audit history first).
+0. Draw distance / LOD (next). User to test FPS60 on own PC. GitLab: remote `gitlab` = https://gitlab.com/octagram-labs-group/TCSCC-Recomp, main pushed to f972b9d (2026-11-04; PRIVATE: public create blocked, user flips Settings > General > Visibility). README = banner, title shot, screenshots, options, patch notes (add one per release), build, Legal; THIRD_PARTY_NOTICES retargeted. NEVER push game files (audit tree + history first).
 1. 60 fps polish: menus 38-50 fps at 120 Hz (presentation-bound?); soak FPS60 on more maps (Bink/Scaleform/cutscenes); remaining 57->60 gap: re-run gate with SCDA_AUTOPRESS_WALL=1 first; if both gate: (selective early fences; provisional query answers change culling: ask user).
 2. Play further: autopilot waypoints are hand-typed (no objective source: AEObjectiveLight vt 82190420 / manager vt 8219B270 arrays empty). Scene Select gate for missions 4+ not found.
 3. HUD_Saving icon not yet seen on screen (movie kept, saves OK).
