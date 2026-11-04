@@ -1,5 +1,6 @@
 #include <windows.h>
 #include <atomic>
+#include <cstdlib>
 #include <mutex>
 #include <vector>
 #include <command_processor.h>
@@ -76,7 +77,10 @@ static DWORD WINAPI InterruptThread(void*)
     LARGE_INTEGER freq, next, now;
     QueryPerformanceFrequency(&freq);
     QueryPerformanceCounter(&next);
-    const LONGLONG period = freq.QuadPart / 60;
+    // SCDA_VSYNC_HZ=<n>: vblank rate (default 60). The title flips every Nth vblank (presentation
+    // interval), so 120 doubles a 30 fps cap if the cap is the interval.
+    static const LONGLONG hz = [] { const char* v = getenv("SCDA_VSYNC_HZ"); long n = v ? atol(v) : 0; return LONGLONG(n >= 30 && n <= 480 ? n : 60); }();
+    const LONGLONG period = freq.QuadPart / hz;
     for (;;)
     {
         if (g_paused)

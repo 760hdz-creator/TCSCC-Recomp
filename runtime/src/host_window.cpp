@@ -279,6 +279,49 @@ static void RenderThread(DisplaySettings s)
                     nextDump++;
         }
         dumping &= !frame.partial;
+        // SCDA_DUMP_RAM=<n>[,<n>...] (ascending): at the first frame at or after each n, write every committed
+        // guest page range to ramdump_<frame>.bin as records {u32 guest addr, u32 size (LE), bytes}. Racy
+        // (guest threads keep running); good enough for value scans.
+        static std::vector<uint64_t> ramFrames = []
+        {
+            std::vector<uint64_t> v;
+            for (const char* p = getenv("SCDA_DUMP_RAM"); p && *p; p += strcspn(p, ",") + (p[strcspn(p, ",")] ? 1 : 0))
+                v.push_back(strtoull(p, nullptr, 10));
+            return v;
+        }();
+        static size_t nextRam = 0;
+        if (!frame.partial && nextRam < ramFrames.size() && frame.stats.frame >= ramFrames[nextRam])
+        {
+            while (nextRam < ramFrames.size() && ramFrames[nextRam] <= frame.stats.frame)
+                nextRam++;
+            const std::string name = "ramdump_" + std::to_string(frame.stats.frame) + ".bin";
+            if (FILE* f = fopen(name.c_str(), "wb"))
+            {
+                uint64_t total = 0;
+                for (uint64_t a = 0; a < 0x100000000ull;)
+                {
+                    MEMORY_BASIC_INFORMATION mbi;
+                    if (!VirtualQuery(g_base + a, &mbi, sizeof(mbi)))
+                        break;
+                    const uint64_t start = uint64_t((uint8_t*)mbi.BaseAddress - g_base);
+                    uint64_t end = start + mbi.RegionSize;
+                    if (end > 0x100000000ull)
+                        end = 0x100000000ull;
+                    if (mbi.State == MEM_COMMIT && !(mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)))
+                        for (uint64_t s = start; s < end; s += 0x1000000) // 16 MB records
+                        {
+                            const uint32_t addr = uint32_t(s), size = uint32_t(std::min<uint64_t>(end - s, 0x1000000));
+                            fwrite(&addr, 4, 1, f);
+                            fwrite(&size, 4, 1, f);
+                            fwrite(g_base + s, 1, size, f);
+                            total += size;
+                        }
+                    a = end;
+                }
+                fclose(f);
+                RuntimeLog("[ramdump] %s: %llu MB\n", name.c_str(), (unsigned long long)(total >> 20));
+            }
+        }
         // Renderer busy time (Present = execute + present), reported on [frame] lines since the last one.
         static LARGE_INTEGER qpf = [] { LARGE_INTEGER f; QueryPerformanceFrequency(&f); return f; }();
         static uint64_t busyTicks = 0, busyDraws = 0, busyFrames = 0;

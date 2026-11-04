@@ -8,6 +8,8 @@
 #include <bit>
 #include <cstdlib>
 #include <cstring>
+#include <map>
+#include <tuple>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -115,6 +117,29 @@ static DWORD TimeoutMs(uint32_t pTimeout)
         return DWORD(-t / 10000);
     // shortcut: absolute timeouts treated as immediate.
     return 0;
+}
+
+// SCDA_TRACE_DELAY=1: every 5 s, calls per (kind, caller from the guest back chain, timeout ms) since the
+// last report, for sleeps and waits with a finite timeout.
+static void TraceTimeout(PPCContext& ctx, DWORD ms, const char* kind)
+{
+    static const bool traceDelay = getenv("SCDA_TRACE_DELAY") != nullptr;
+    if (!traceDelay)
+        return;
+    static std::mutex m;
+    static std::map<std::tuple<const char*, uint32_t, DWORD>, uint32_t> counts;
+    static ULONGLONG lastReport = GetTickCount64();
+    const uint32_t back = GuestLoad32(ctx.r1.u32), caller = back ? GuestLoad32(back - 8) : 0;
+    std::lock_guard lock(m);
+    counts[{ kind, caller, ms }]++;
+    if (GetTickCount64() - lastReport >= 5000)
+    {
+        lastReport = GetTickCount64();
+        for (auto& [k, n] : counts)
+            if (n >= 20)
+                RuntimeLog("[delay] %s caller 0x%08X ms %lu x%u\n", std::get<0>(k), std::get<1>(k), std::get<2>(k), n);
+        counts.clear();
+    }
 }
 
 static uint32_t WaitResult(DWORD r)
@@ -274,6 +299,7 @@ SCDA_IMPORT(KeDelayExecutionThread)
 {
     WatchdogBlockScope watch("KeDelayExecutionThread");
     DWORD ms = TimeoutMs(ctx.r5.u32);
+    TraceTimeout(ctx, ms, "delay");
     if (ms == 0)
         SwitchToThread();
     else
@@ -373,7 +399,7 @@ SCDA_IMPORT(NtWaitForSingleObjectEx)
     TraceSync("wait", ctx, ctx.r3.u32);
     WatchdogBlockScope watch("NtWaitForSingleObjectEx");
     HANDLE h = HostHandle(ctx.r3.u32);
-    ctx.r3.u64 = h ? WaitResult(TitleWait(1, &h, false, TimeoutMs(ctx.r6.u32), ctx.r5.u32 != 0)) : X_STATUS_INVALID_HANDLE;
+    ctx.r3.u64 = h ? WaitResult(TitleWait(1, &h, false, (TraceTimeout(ctx, TimeoutMs(ctx.r6.u32), "wait"), TimeoutMs(ctx.r6.u32)), ctx.r5.u32 != 0)) : X_STATUS_INVALID_HANDLE;
 }
 
 // NtWaitForMultipleObjectsEx(Count, Handles*, WaitType (0 all, 1 any), WaitMode, Alertable, Timeout*)
@@ -384,7 +410,7 @@ SCDA_IMPORT(NtWaitForMultipleObjectsEx)
     HANDLE hs[64];
     for (uint32_t i = 0; i < count && i < 64; i++)
         hs[i] = HostHandle(GuestLoad32(ctx.r4.u32 + i * 4));
-    ctx.r3.u64 = WaitResult(TitleWait(count, hs, ctx.r5.u32 == 0, TimeoutMs(ctx.r8.u32), ctx.r7.u32 != 0));
+    ctx.r3.u64 = WaitResult(TitleWait(count, hs, ctx.r5.u32 == 0, (TraceTimeout(ctx, TimeoutMs(ctx.r8.u32), "wait"), TimeoutMs(ctx.r8.u32)), ctx.r7.u32 != 0));
 }
 
 // ---- Ke dispatcher objects (guest structs) ----
@@ -436,7 +462,7 @@ SCDA_IMPORT(KeWaitForSingleObject)
     TraceSync("kewait", ctx, ctx.r3.u32);
     WatchdogBlockScope watch("KeWaitForSingleObject");
     HANDLE h = DispatcherObject(ctx.r3.u32);
-    ctx.r3.u64 = WaitResult(TitleWait(1, &h, false, TimeoutMs(ctx.r7.u32), ctx.r6.u32 != 0));
+    ctx.r3.u64 = WaitResult(TitleWait(1, &h, false, (TraceTimeout(ctx, TimeoutMs(ctx.r7.u32), "wait"), TimeoutMs(ctx.r7.u32)), ctx.r6.u32 != 0));
 }
 
 // KeWaitForMultipleObjects(Count, Objects*, WaitType, WaitReason, WaitMode, Alertable, Timeout*, WaitBlocks*)
@@ -452,7 +478,7 @@ SCDA_IMPORT(KeWaitForMultipleObjects)
         TraceSync("  type", ctx, g_base[object]);
         hs[i] = DispatcherObject(object);
     }
-    ctx.r3.u64 = WaitResult(TitleWait(count, hs, ctx.r5.u32 == 0, TimeoutMs(ctx.r9.u32), ctx.r8.u32 != 0));
+    ctx.r3.u64 = WaitResult(TitleWait(count, hs, ctx.r5.u32 == 0, (TraceTimeout(ctx, TimeoutMs(ctx.r9.u32), "wait"), TimeoutMs(ctx.r9.u32)), ctx.r8.u32 != 0));
 }
 
 // RtlFillMemoryUlong(Destination, Length in bytes, Pattern): Length / 4 big-endian ulongs.

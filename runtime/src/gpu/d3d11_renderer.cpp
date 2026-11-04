@@ -2208,10 +2208,10 @@ void D3D11Renderer::ExecuteDraw(const DrawCall& d, const Frame& frame)
         if (r.regs[0x2205] & 0x3800) // PA_SU_SC_MODE_CNTL poly offset enables: PA_SU_POLY_OFFSET_FRONT/BACK_SCALE/OFFSET
             RuntimeLog("[rtrace]   polyoffset front %g %g back %g %g\n", std::bit_cast<float>(r.regs[0x2380]), std::bit_cast<float>(r.regs[0x2381]),
                 std::bit_cast<float>(r.regs[0x2382]), std::bit_cast<float>(r.regs[0x2383]));
-        // SCDA_TRACE_PSC=<ps hash hex>: draws with that PS also log PS c0-c3 and c252-c255 (float consts 0x4000 + 4 * (256 + n)).
+        // SCDA_TRACE_PSC=<ps hash hex>: draws with that PS also log PS c0-c3, c9, c10, c32, c35, c147, c252-c255 (float consts 0x4000 + 4 * (256 + n)).
         static const uint64_t tracePsc = getenv("SCDA_TRACE_PSC") ? strtoull(getenv("SCDA_TRACE_PSC"), nullptr, 16) : 0;
         if (tracePsc && d.ps->hash == tracePsc)
-            for (uint32_t n : {0u, 1u, 2u, 3u, 252u, 253u, 254u, 255u})
+            for (uint32_t n : {0u, 1u, 2u, 3u, 9u, 10u, 32u, 35u, 147u, 252u, 253u, 254u, 255u})
             {
                 const uint32_t c = 0x4000 + 4 * (256 + n);
                 RuntimeLog("[rtrace]   psc%u %g %g %g %g\n", n, std::bit_cast<float>(uint32_t(r.regs[c])),

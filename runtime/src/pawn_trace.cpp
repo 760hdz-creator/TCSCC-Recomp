@@ -348,8 +348,8 @@ void AutopilotApply(uint64_t frame, XINPUT_GAMEPAD& g)
     if (frame >= logged + 60)
     {
         logged = frame;
-        RuntimeLog("[autopilot] frame %llu pos %.0f %.0f -> #%zu (%.0f %.0f) d %.0f camYaw %.0f rel %.0f\n",
-            (unsigned long long)frame, x, y, next, w.x, w.y, std::sqrt(dx * dx + dy * dy), camYaw * 57.29578f,
+        RuntimeLog("[autopilot] frame %llu t %.2f pos %.0f %.0f -> #%zu (%.0f %.0f) d %.0f camYaw %.0f rel %.0f\n",
+            (unsigned long long)frame, double(GetTickCount64()) / 1000.0, x, y, next, w.x, w.y, std::sqrt(dx * dx + dy * dy), camYaw * 57.29578f,
             std::remainder(rel, 6.2831853f) * 57.29578f);
     }
 }
@@ -380,3 +380,4 @@ void PeekTick(uint64_t frame)
         p = strchr(e, ';');
     }
 }
+
