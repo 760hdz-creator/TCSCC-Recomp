@@ -2218,7 +2218,7 @@ void D3D11Renderer::ExecuteDraw(const DrawCall& d, const Frame& frame)
                     std::bit_cast<float>(uint32_t(r.regs[c + 1])), std::bit_cast<float>(uint32_t(r.regs[c + 2])),
                     std::bit_cast<float>(uint32_t(r.regs[c + 3])));
             }
-        // SCDA_TRACE_VSC=<vs hash hex>[,..]: draws with one of those VS also log VS c8-c17 (transforms).
+        // SCDA_TRACE_VSC=<vs hash hex>[,..]: draws with one of those VS also log VS c8-c17 (transforms), c42/43/51/52/95/100 (particle VS).
         static const std::vector<uint64_t> traceVscList = []
         {
             std::vector<uint64_t> v;
@@ -2229,7 +2229,7 @@ void D3D11Renderer::ExecuteDraw(const DrawCall& d, const Frame& frame)
         // (SCDA_TRACE_VSC=0: every VS.)
         if (std::find(traceVscList.begin(), traceVscList.end(), d.vs->hash) != traceVscList.end() ||
             (traceVscList.size() == 1 && traceVscList[0] == 0))
-            for (uint32_t c = 8; c < 18; c++)
+            for (uint32_t c : {8u, 9u, 10u, 11u, 12u, 13u, 14u, 15u, 16u, 17u, 42u, 43u, 51u, 52u, 95u, 100u})
                 RuntimeLog("[rtrace]   vc%u %g %g %g %g (%08X %08X %08X %08X)\n", c, std::bit_cast<float>(r.regs[kRegAluConstants + c * 4]),
                     std::bit_cast<float>(r.regs[kRegAluConstants + c * 4 + 1]), std::bit_cast<float>(r.regs[kRegAluConstants + c * 4 + 2]),
                     std::bit_cast<float>(r.regs[kRegAluConstants + c * 4 + 3]), r.regs[kRegAluConstants + c * 4], r.regs[kRegAluConstants + c * 4 + 1],
