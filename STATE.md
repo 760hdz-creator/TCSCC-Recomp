@@ -1,42 +1,33 @@
 # STATE — fresh/: clean Conviction recomp (Title 5553080B), started 2026-11-03
 ## Setup
 - Nested git repo `G:\Project Zero\fresh` (outer ignores `/fresh/`). `assets/`, `external/` = junctions to outer (never rm -rf; `cmd /c rmdir`).
-- Generic tools copied from outer (xex_dump rebuilt). Not copied: installer, ramscan/ramdump/rtrace.
-- XenonRecomp patch `tools/patches/xenonrecomp_pz.patch` = live `external/XenonRecomp` diff vs ddd128b. Outer repo's copy is STALE (no u32 switch fix).
-- Test exe: copy `runtime\build\tcscc.exe` -> `_install\tcscc_fresh.exe`, run from `_install`, log `_install\scda.log`.
-## Verified (2026-11-03)
-- Image sha 5945a60c... OK; 8 helper addresses re-found. BINK = separate code section 0x8357D600; decode failures 0x8357D2F8-0x8357D45C = tail of .text.
-- Recomp clean (3 fix loops): all acceptance counters 0, 99213 functions (outer 99211; old 99929 stale). HEURISTIC tables 8255C350 826F1B64 82F72A9C unreviewed.
-- Runtime = outer f243060 (SCDA + Conviction retarget). SC4 hooks not built; fov.cpp inert.
-## Fixes in fresh
-- Ported: 04db715 (audio cb arg cell, CS spin count), 37a180e (kernel.cpp only: Nt{Suspend,Resume}Thread pseudo handle), 99a759a (50 MHz timebase, no visible change).
-- XenonRecomp: jump-table `switch` on rN.u32 (u64 + addi carry hit __builtin_unreachable, AV in sub_82858B60); default = __builtin_trap.
-- XamUserGetSigninInfo (0x28: xuid, state @+0xC, name @+0x18) + XamUserGetName ("Player"): were stubs -> crash after START.
-- 2026-11-03 flat-colour world fixed (d176044): translator ignored tx_coord_denorm; full-screen post copies (VS a2b4ed14 has no texcoord, PS uses param-gen pixel pos) sampled one clamped texel. Now coord / Dims2D (exact at scale 1 only). Translator v25.
-- 2026-11-03 mission-load crash fixed: HUD_Saving wrapper borrowed the loading screen's movie (registry lookup, no refcount), teardown freed it; dtor hook clears the wrapper's +4 (save icon skipped). `docs/hud_saving_uaf.md`.
-- 2026-11-03 MAIN MENU RENDERS (3D room, both Sams, menu planes; 197 -> 1850 draws). Cause: world visibility = GPU PS MEMEXPORT (PS f374a14f971cb1bd writes 1 byte/object, Hi-Z test) into a buffer the CPU reads (sub_82EF9990); translator has no memexport -> bytes 0 -> only skybox. Now real: PS memexport + Hi-Z depth resolves (see Next 1); `SCDA_VISBUF_FILL=FF` = old no-culling workaround. Details `docs/l3d_visibility.md`.
+- XenonRecomp patch `tools/patches/xenonrecomp_pz.patch` = live `external/XenonRecomp` diff vs ddd128b (outer copy STALE).
+- Test exe: copy `runtime\build\tcscc.exe` -> `_install\tcscc_fresh.exe`, run from `_install`, log `_install\scda.log`. Shader tests: set LOCALAPPDATA to a temp dir (disk cache keyed by translator version, now v28).
+## Verified
+- Image sha 5945a60c... OK. Recomp clean: acceptance counters 0, 99213 functions. HEURISTIC tables 8255C350 826F1B64 82F72A9C unreviewed.
+- Runtime = outer f243060 (SCDA + Conviction retarget); SC4 hooks not built.
+## Fixes in fresh (all 2026-11-03 unless noted)
+- Ported 04db715, 37a180e (kernel.cpp only), 99a759a. XenonRecomp: jump-table `switch` on rN.u32. XamUserGetSigninInfo/XamUserGetName real.
+- Menu world: l3d visibility is GPU PS memexport (PS f374a14f, 1 byte/object, Hi-Z test). Now implemented: MemExport -> u7 window -> guest write-back (6b649b9); param-gen = integer pixel; depth-source resolves = R32 depth + max mip chain (aa212dc); point MINMAX only for VS sizes (166b3a2). GPU culling is the default. `docs/l3d_visibility.md`.
+- Mission-load crash: HUD_Saving wrapper borrowed a freed loading-screen movie; dtor hook clears it (save icon skipped). `docs/hud_saving_uaf.md`.
+- Flat-colour world: translator ignored tx_coord_denorm (d176044).
+- Speed: texture hash covered tile padding / bytes past packed tails holding live game data (~200 re-conversions/frame); now a level's own elements only (46c98f4). Gameplay at the 30 fps cap, render 7-12 ms/frame.
 ## Current behaviour
-- ~29 presents/s, no fatal in menus. Pre-START screen black (Xenia too). Input script: `SCDA_AUTOPRESS='240:START,400:A:20,500:A:20,600:A:20'` (A needs `:20` hold).
-- Scaleform UI works: "Corrupted Data - Player" dialog, autosave notice. GFx OpenFile (sub_83377E98) loads `ingame\3D_MainMenu_1024.swf` etc.
-- Main menu renders fully with the visibility workaround (frame 900 screenshot checked).
-- 2026-11-03 01_Market plays from the cafe cutscene to the TAKE COVER tutorial (frame 10000, 5.5 min, no crash, 30 fps): `SCDA_AUTOPRESS=@tools/autopress/01_market_walk.txt` (look pulses from 2800: the prompt appears 2000-2800 depending on timing).
-- 2026-11-03 SPEED: gameplay at the game's 30 fps cap (render 8-12 ms/frame, was ~85). GPU culling (166b3a2) + texture hash fix (46c98f4: hash only a level's own elements; tile padding / bytes past packed tails hold live game data, ~200 re-conversions per frame).
-- 01_Market RENDERS (Sam at the cafe table, lit + textured, HUD prompts), ~12k draws, ~50 ms/frame with fill FF. Fill 03 = sky only (bits 5-7 = view mask needed), so FF stays.
-- Bink logos dark red (Xenia: Clancy silhouette white). Upload == guest RAM; plane data dark (Y<=48 @frame 50). Low priority.
-- Save shows "corrupted": retest with clean `%LOCALAPPDATA%\TCSCCRecomp` (redirect LOCALAPPDATA).
+- Menus OK, Scaleform UI OK. Pre-START screen black (Xenia too).
+- 01_Market plays from the cafe cutscene to the TAKE COVER tutorial (frame 10000, 5.5 min, no crash, 30 fps): `SCDA_AUTOPRESS=@tools/autopress/01_market_walk.txt` (look pulses from 2800; the prompt appears at 2000-2800).
+- Lighting WRONG vs reference (cafe at night, dark street, warm lamp pools, no bloom; user screenshot + PortForward ch.1). Default: hard daylight, blown out (light list cleared). `SCDA_VISBUF_LIGHTS=gpu`: those lights draw black volumes.
+- Bink logos dark red (low priority). Save shows "corrupted" (retest with clean LOCALAPPDATA).
 ## Ruled out
-- Occlusion, camera, timebase, GPU predication, CP packet drops, texture cache; 26 patch ops + vsel128/eqv/frsqrte/mulhd/vandc/vcmpbfp reviewed correct.
-- sub_82EFD598 = SONAR pass; gate R+24456 = sonar-goggle flag (not a render-world flag). Forcing it -> white screen.
-## Debug switches (fresh)
-- `SCDA_TRACE_GFX=1` (gfx_log.cpp: OpenFile, movie load/ctor/dtor + guest chain, HUD_Saving wrapper), `SCDA_TRACE_OCCL=<n>`, `SCDA_TRACE_PRED=1`, `SCDA_SCAN=<val>/<mask>` (watchdog RAM scan), `SCDA_DUMP_TEX_AT=<present>`.
-- Existing: `SCDA_TRACE_RESOLVE=<present>` (+`SCDA_TRACE_PS=<hash>`), `SCDA_DUMP_FRAME`+`SCDA_DUMP_BACKBUFFER`, `SCDA_DUMP_DRAWS=<dir>,1`, `SCDA_PROFILE=<start>:<secs>`, `SCDA_TRACE_FS`.
-- Clean shader dump: set LOCALAPPDATA to a temp dir + `SCDA_DUMP_HLSL=<dir>`; raw ucode `SCDA_DUMP_SHADERS=<dir>`. Translate/compile failures and MEMEXPORT shaders (`[shader] ... uses MEMEXPORT`) go to scda.log.
-- l3d (`l3d_trace.cpp`): `SCDA_TRACE_L3D=<n>`, `SCDA_TRACE_L3D_ITEMS=<n>`, `SCDA_SKIP_L3D_BUCKET=<mask>`, `SCDA_WATCH_L3D=1|2`, `SCDA_TRACE_VISBUF=<n>`. `WatchAdd(addr,max)` (profiler.cpp) arms a hardware write watch at run time.
-## Xenia reference (`_run\xenia`, copy of SCDA build)
-- Screenshot: focus window, Alt+D then T -> `screenshots\5553080B\`. Keyboard (`--keyboard_mode=1`): START=X, A=';'. After logos stays black even with START: weak reference.
+- Occlusion queries, camera, timebase, GPU predication, CP packet drops; 26 patch ops + vsel128/eqv/frsqrte/mulhd/vandc/vcmpbfp correct.
+- sub_82EFD598 = SONAR pass (gate R+24456 = sonar flag). Light-list darkening is not the shadow maps (SCDA_DEPTH_FETCH_ONE=1 still black).
+## Debug switches
+- Visibility: `SCDA_VISBUF_FILL=<hex>|or<hex>|off` (FF = old no-culling), `SCDA_VISBUF_LIGHTS=gpu`, `SCDA_MEMEXPORT_DRAWS=<n>`, `SCDA_NO_MEMEXPORT`, `SCDA_NO_DEPTH_RESOLVE`, `SCDA_DEPTH_FETCH_ONE`, `SCDA_TRACE_HIZ=<n>`, `SCDA_TRACE_VISBUF=<n>`, `SCDA_TRACE_L3D*`, `SCDA_WATCH_L3D=1|2`.
+- GPU: `SCDA_TRACE_RESOLVE=<present>` (+`SCDA_TRACE_PS=<hash>`), `SCDA_PIXEL_WATCH=<present>,<x>,<y>`, `SCDA_DUMP_FRAME`+`SCDA_DUMP_BACKBUFFER`, `SCDA_DUMP_DRAWS=<dir>,<step>[,<first>,<last>]`, `SCDA_DUMP_RESOLVES=<dir>`, `SCDA_SKIP_SHADER=<hash>`, `SCDA_TRACE_CONVERT=<present>`, `SCDA_DUMP_HLSL=<dir>`, `SCDA_DUMP_SHADERS=<dir>`.
+- CPU: `SCDA_TRACE_GFX=1`, `SCDA_WATCH_WRITE=<hex>[,..][:max]` (+`SCDA_WATCH_RW=1`), `WatchAdd(addr,max)`, `SCDA_PROFILE=<start>:<secs>`, `SCDA_TRACE_FS`, `SCDA_TRACE_INPUT=1`.
+- Presented index = frame - 1 (dump of frame 2500 is p2499).
 ## Next
-1. Lighting vs reference (night cafe): GPU light-list lights = black volumes from PS 6372c96f shadow test; receiver depth > 1 / NaN (SCDA_DEPTH_FETCH_ONE=1 still black): check the 00D6A000 k_16_16_FLOAT G-buffer value and its decode. `docs/l3d_visibility.md`.
-2. Overexposure: 01_Market washes out to white. Reference (PortForward walkthrough ch.1 Merchant's Street Market, Xbox 360): the cafe is at NIGHT, dark street lit by warm lamps/string lights, no heavy bloom. Our GPU-light-list run (`SCDA_VISBUF_LIGHTS=gpu`) looked closer than the default: re-check that darkening vs exposure (luminance chain 1x1 fmt 29 from fmt 32 resolve).
-3. tx_coord_denorm at internal scale > 1: pass guest texture size instead of host Dims2D.
-4. Save icon: reload the HUD_Saving movie instead of clearing it. Corrupted save check; Bink colour; review HEURISTIC jump tables.
+1. Lighting: black light volumes = PS 6372c96f (8-tap PCF, blend src x DST_COLOR, draw ~1078 at frame 4500 of the walk). Receiver depth > 1 / NaN: check the 00D6A000 k_16_16_FLOAT G-buffer value, its decode (x - 2^floor(log2 x) * c254.x) and the light projection c1-c3. Then retest default vs `SCDA_VISBUF_LIGHTS=gpu` against the reference; drop the light-list clear when right.
+2. Play further: cover, combat, mark & execute; next crash.
+3. tx_coord_denorm at internal scale > 1: guest texture size instead of host Dims2D.
+4. Save icon: reload the HUD_Saving movie instead of clearing it. Corrupted save; Bink colour; HEURISTIC jump tables.
 5. Gemini bridge returned 503 twice; retry.
