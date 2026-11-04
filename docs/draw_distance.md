@@ -10,7 +10,7 @@ parses the developer commands from the strings at 0x821AD700+ and writes these f
 | offset | type | command | default |
 |---|---|---|---|
 | +46 | byte | `l3d-distance-fade` (toggle) | 1 |
-| +60 | float | small-object cull size (no command found) | 0.0025 |
+| +60 | float | small-object cull size (no command found; the game changes it per scene) | 0.0025 |
 | +64 | float | cull size override (used when nonzero) | 0 |
 | +279 | byte | `l3d-toggle-lod` | 1 |
 | +280 | float | `l3d-lod-size2=` | 0.18 |
@@ -53,4 +53,7 @@ changes about 274k px in 4 frames). The counters are the evidence.
 `SCDA_LOD_FROM=<frame>` applies those overrides only from that frame on. `SCDA_NO_DISTANCE_FADE=1`
 sets +46 to 0. `SCDA_TRACE_LOD=1` logs the struct and the counters, and `SCDA_WATCH_LOD=1|2` arms
 watchpoints. Every pass re-reads the game's value: a value that differs from the one last written
-becomes the new original, so level loads and console commands still count and Console restores it.
+becomes the new original, and Console restores it. The game rewrites +60 itself within 01_Market
+(0.0025, 0.0002, 2.5e-5, depending on the scene), and Ultra scaled each value once without compounding
+(single struct 0x402945D0, 10500 frames). Recapture after a mission load is expected but not tested.
+The pokes run under a mutex, because the getter is called from several threads.

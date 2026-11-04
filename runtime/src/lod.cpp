@@ -12,6 +12,7 @@
 #include <bit>
 #include <atomic>
 #include <cstdlib>
+#include <mutex>
 #include <algorithm>
 #include "gpu/frame_queue.h"
 
@@ -27,7 +28,9 @@ constexpr Level kLevels[] = { { 1.0f, 1.0f, false }, { 0.25f, 0.25f, false }, { 
 
 // One guest field we override. A value other than the one written last is the game's own (first
 // call, level load, console command): it becomes the new original. written = f(original) every call,
-// so a level change (or back to Console) applies at once. Racy across threads but idempotent.
+// so a level change (or back to Console) applies at once. Callers hold g_pokeMutex: without it a
+// thread could read the guest between another thread's new `written` and its store, and take the
+// old scaled value for the game's own.
 struct Slot
 {
     std::atomic<uint32_t> addr{0}, original{0}, written{0};
@@ -43,6 +46,7 @@ struct Slot
     }
 };
 Slot g_size2, g_size1, g_cull, g_cullOverride, g_lodToggle;
+std::mutex g_pokeMutex;
 
 float EnvFloat(const char* name, float fallback)
 {
@@ -93,17 +97,21 @@ PPC_FUNC(sub_82C95F30)
     static const uint64_t from = getenv("SCDA_LOD_FROM") ? strtoull(getenv("SCDA_LOD_FROM"), nullptr, 10) : 0;
     const bool envOn = !from || Frames().FramesEnded() >= from;
     Level level = kLevels[std::clamp(DrawDistance(), 0, 3)];
+    static const float envLod = EnvFloat("SCDA_LOD_SCALE", -1.0f), envCull = EnvFloat("SCDA_CULL_SCALE", -1.0f);
+    static const bool envLodOff = getenv("SCDA_LOD_OFF") != nullptr;
     if (envOn)
     {
-        level.lod = EnvFloat("SCDA_LOD_SCALE", level.lod);
-        level.cull = EnvFloat("SCDA_CULL_SCALE", level.cull);
-        level.lodOff |= getenv("SCDA_LOD_OFF") != nullptr;
+        level.lod = envLod >= 0.0f ? envLod : level.lod;
+        level.cull = envCull >= 0.0f ? envCull : level.cull;
+        level.lodOff |= envLodOff;
     }
+    std::unique_lock lock(g_pokeMutex);
     ScaleField(base, g_size2, s + 280, std::max(level.lod, 0.0f));
     ScaleField(base, g_size1, s + 284, std::max(level.lod, 0.0f));
     ScaleField(base, g_cull, s + 60, std::max(level.cull, 0.0f));
     ScaleField(base, g_cullOverride, s + 64, std::max(level.cull, 0.0f));
     SetByte(base, g_lodToggle, s + 279, level.lodOff);
+    lock.unlock();
     static const bool noFade = getenv("SCDA_NO_DISTANCE_FADE") != nullptr;
     if (noFade)
         PPC_STORE_U8(s + 46, 0);
