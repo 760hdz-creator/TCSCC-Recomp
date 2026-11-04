@@ -15,7 +15,7 @@
 #include <gpu/xenos/translate.h>
 
 // Bump when the translator or shader_common changes: old disk entries are then ignored.
-static constexpr uint32_t kTranslatorVersion = 30; // v30: texture fetch exp_adjust (TexExp); v29: colour exponent bias (g_ColorExpBias); v28: param-gen position = integer pixel; v26: PS memexport (MemExport, u7 window); v25: tx_coord_denorm fetches normalized; v24: sky nudge only for w > 0 (behind-camera vertices); v22: user clip planes (v21: far-only sky depth nudge in XenosViewport; v20: PRED_SET_INV 1 -> 0)
+static constexpr uint32_t kTranslatorVersion = 31; // v31: vfetch_mini inherits the previous vfetch_full's stride/source/constant; v30: texture fetch exp_adjust (TexExp); v29: colour exponent bias (g_ColorExpBias); v28: param-gen position = integer pixel; v26: PS memexport (MemExport, u7 window); v25: tx_coord_denorm fetches normalized; v24: sky nudge only for w > 0 (behind-camera vertices); v22: user clip planes (v21: far-only sky depth nudge in XenosViewport; v20: PRED_SET_INV 1 -> 0)
 static constexpr uint32_t kCacheMagic = 0x53444353; // "SCDS"
 
 struct CacheHeader

@@ -92,6 +92,10 @@ struct TextureFetch
     uint32_t dimension = 1, mipPhysical = 0, mipMaxLevel = 0;
     uint32_t depth = 1; // dword 2 bits 26-31 + 1: 2D array layers (stacked) or 3D depth
     bool stacked = false, packedMips = false;
+    // dword 0 bits 2-9: per format component x..w, 0 unsigned, 1 signed, 2 unsigned biased, 3 gamma;
+    // dword 3 bit 0 num_format: 1 = integer (not normalized). Honoured for k_16_16 / k_16_16_16_16.
+    uint32_t signs = 0;
+    bool integer = false;
 };
 TextureFetch DecodeTextureFetch(const RegisterFile& regs, uint32_t slot);
 // True when the guest mip chain can be read as plain 2D levels (not 1D, 3D, cube or stacked).

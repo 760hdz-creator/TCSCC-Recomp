@@ -280,6 +280,8 @@ TextureFetch DecodeTextureFetch(const RegisterFile& r, uint32_t slot)
         t.height = 1;
     }
     t.swizzle = (c3 >> 1) & 0xFFF;
+    t.signs = (c0 >> 2) & 0xFF;
+    t.integer = c3 & 1;
     if (!t.pitch)
         t.pitch = t.width;
     const uint32_t c4 = r[kRegFetchConstants + slot * 6 + 4], c5 = r[kRegFetchConstants + slot * 6 + 5];
@@ -630,8 +632,19 @@ std::vector<float> ConvertTextureFloat(const TextureFetch& t, const uint8_t* gue
                 {
                     const uint32_t bit = (bytes == 2 ? (byteOffset & 2) * 8 : 0) + c * 16;
                     const uint32_t v = (d[bit / 32] >> (bit % 32)) & 0xFFFF;
-                    // shortcut: 16_16 / 16_16_16_16 as unorm; fetch sign / exp-adjust fields ignored.
-                    ch[c] = t.format == 25 || t.format == 26 ? float(v) / 65535.0f : HalfToFloat(v);
+                    // 16_16 / 16_16_16_16: the fetch sign of the component (Xenia TextureSign) and
+                    // num_format; exp_adjust is applied in the shader (TexExp). Conviction's sphere
+                    // occluder falloff (k_16_16 signed, PS dd131dca) read as unorm made every
+                    // occluder volume a hard black box. shortcut: gamma (3) reads as unsigned.
+                    if (t.format == 25 || t.format == 26)
+                    {
+                        const uint32_t sign = (t.signs >> (2 * c)) & 3;
+                        const int32_t s = int16_t(uint16_t(v));
+                        ch[c] = sign == 1 ? (t.integer ? float(s) : std::max(float(s) / 32767.0f, -1.0f))
+                              : t.integer ? float(v) : sign == 2 ? float(v) / 65535.0f * 2.0f - 1.0f : float(v) / 65535.0f;
+                    }
+                    else
+                        ch[c] = HalfToFloat(v);
                 }
             }
             float* o = &out[(size_t(y) * t.width + x) * 4];

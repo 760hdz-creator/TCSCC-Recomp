@@ -239,6 +239,19 @@ TEST(float_texture_formats)
     CHECK(f[1] == 0.25f && f[2] == 0.25f && f[3] == 1.0f);
     CHECK(IsFloatTextureFormat(38) && !IsFloatTextureFormat(6));
     CHECK_EQ(TextureElementBytes(38), 16u);
+    // k_16_16, 8-in-32, dword 0x3FFFC894 -> x = 0xC894, y = 0x3FFF (x in the low half).
+    t.format = 25;
+    t.endian = 2;
+    t.swizzle = 0 | (1 << 3) | (2 << 6) | (3 << 9);
+    const uint8_t pair[4] = { 0x3F, 0xFF, 0xC8, 0x94 };
+    f = ConvertTextureFloat(t, pair);
+    CHECK(f[0] == float(0xC894) / 65535.0f && f[1] == float(0x3FFF) / 65535.0f); // unsigned
+    t.signs = 0x55; // all signed
+    f = ConvertTextureFloat(t, pair);
+    CHECK(f[0] == float(int16_t(0xC894)) / 32767.0f && f[1] == float(0x3FFF) / 32767.0f);
+    t.integer = true;
+    f = ConvertTextureFloat(t, pair);
+    CHECK(f[0] == float(int16_t(0xC894)) && f[1] == 16383.0f);
 }
 
 TEST(topology_and_index_swap)

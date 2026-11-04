@@ -2,7 +2,7 @@
 ## Setup
 - Nested git repo `G:\Project Zero\fresh` (outer ignores `/fresh/`). `assets/`, `external/` = junctions to outer (never rm -rf; `cmd /c rmdir`).
 - XenonRecomp patch `tools/patches/xenonrecomp_pz.patch` = live `external/XenonRecomp` diff vs ddd128b (outer copy STALE).
-- Test exe: copy `runtime\build\tcscc.exe` -> `_install\tcscc_fresh.exe`, run from `_install`, log `_install\scda.log`. Shader tests: set LOCALAPPDATA to a temp dir (disk cache keyed by translator version, now v30; any translate.cpp prelude change needs a `kTranslatorVersion` bump).
+- Test exe: copy `runtime\build\tcscc.exe` -> `_install\tcscc_fresh.exe`, run from `_install`, log `_install\scda.log`. Shader tests: set LOCALAPPDATA to a temp dir (disk cache keyed by translator version, now v31; any translate.cpp prelude change needs a `kTranslatorVersion` bump).
 ## Verified
 - Image sha 5945a60c... OK. Recomp clean: acceptance counters 0, 99213 functions. HEURISTIC tables 8255C350 826F1B64 82F72A9C unreviewed.
 - Runtime = outer f243060 (SCDA + Conviction retarget); SC4 hooks not built.
@@ -16,7 +16,7 @@
 - Menus OK, Scaleform UI OK. Pre-START screen black (Xenia too).
 - 01_Market plays from the cafe cutscene to the TAKE COVER tutorial (frame 10000, 5.5 min, no crash, 30 fps): `SCDA_AUTOPRESS=@tools/autopress/01_market_walk.txt` (look pulses from 2800; the prompt appears at 2000-2800).
 - Exposure FIXED: colour exp bias (RB_COLOR_INFO +2/+5 on 7e3 HDR RTs, RB_COPY_DEST_INFO +10 into k_16_16_16_16 signed-int resolves) + tfetch exp_adjust (-15) were all ignored. Cafe now night, warm lamp pools (matches reference). `SCDA_NO_EXP_BIAS=1|rt|copy` A/B. `docs/exp_bias.md`.
-- `SCDA_VISBUF_LIGHTS=gpu` still draws black light volumes (default keeps the light list cleared).
+- GPU light list now DEFAULT (black volumes fixed: signed k_16_16 sphere-occluder falloff read as unorm + depth-only aliased shadow-mask clear colour; also vfetch_mini stride). `SCDA_VISBUF_LIGHTS=off` = old clear. `docs/light_list.md`. Walk to 10000 + menu verified.
 - Bink logos dark red (low priority). Save shows "corrupted" (retest with clean LOCALAPPDATA).
 ## Ruled out
 - Occlusion queries, camera, timebase, GPU predication, CP packet drops; 26 patch ops + vsel128/eqv/frsqrte/mulhd/vandc/vcmpbfp correct.
@@ -27,8 +27,8 @@
 - CPU: `SCDA_TRACE_GFX=1`, `SCDA_WATCH_WRITE=<hex>[,..][:max]` (+`SCDA_WATCH_RW=1`), `WatchAdd(addr,max)`, `SCDA_PROFILE=<start>:<secs>`, `SCDA_TRACE_FS`, `SCDA_TRACE_INPUT=1`.
 - Presented index = frame - 1 (dump of frame 2500 is p2499).
 ## Next
-1. GPU light list black volumes: PS 6372c96f is NOT it (writes a shadow-mask channel, RB_COLOR_MASK 1/2, never the scene RT; forcing it to 1 changes nothing). Find the light pass that reads that mask / the light-list objects; drop the light-list clear when right.
-2. Play further: cover, combat, mark & execute; next crash.
-3. tx_coord_denorm at internal scale > 1: guest texture size instead of host Dims2D.
-4. Save icon: reload the HUD_Saving movie instead of clearing it. Corrupted save; Bink colour; HEURISTIC jump tables.
-5. Gemini bridge returned 503 twice; retry.
+1. Play further: cover, combat, mark & execute; next crash.
+2. tx_coord_denorm at internal scale > 1: guest texture size instead of host Dims2D.
+3. Save icon: reload the HUD_Saving movie instead of clearing it. Corrupted save; Bink colour; HEURISTIC jump tables.
+4. Gemini bridge returned 503 twice; retry.
+5. 8-bit textures (ConvertTexture) still ignore fetch sign bits (signed k_8_8_8_8 normal maps?); check if a signed 8888 shows up.

@@ -119,12 +119,12 @@ PPC_FUNC(sub_82511988)
     if (lr == 0x82EF99F0)
         PzVisFill(PPC_LOAD_U32(out + 4), base);
     // Light list (sub_82EF9100, lr 0x82EF914C): bytes at ptr + X[192], X[196] lights, written by the
-    // 2nd/3rd visibility draws. Lights with bits 0+1 set join light lists X->+80 / +92, and with the
-    // GPU's bytes the menu Sams and the mission go near black (not the shadow maps: same without
-    // depth resolves). Cleared here = what the FF fill gave (it never wrote them): those lights are
-    // not used. SCDA_VISBUF_LIGHTS=gpu: keep the GPU bytes.
-    static const bool gpuLights = getenv("SCDA_VISBUF_LIGHTS") && !strcmp(getenv("SCDA_VISBUF_LIGHTS"), "gpu");
-    if (lr == 0x82EF914C && g_lightDriver && !gpuLights)
+    // 2nd/3rd visibility draws. Lights with bits 0+1 set join light lists X->+80 / +92 (shadow
+    // lights, sphere/volume occluders). The GPU bytes are used as is: their black volumes were the
+    // sphere occluders' signed k_16_16 falloff texture read as unorm, plus the shadow-mask clear
+    // colour (docs/light_list.md). SCDA_VISBUF_LIGHTS=off: clear them (old: those lights unused).
+    static const bool clearLights = getenv("SCDA_VISBUF_LIGHTS") && !strcmp(getenv("SCDA_VISBUF_LIGHTS"), "off");
+    if (lr == 0x82EF914C && g_lightDriver && clearLights)
     {
         const uint32_t first = PPC_LOAD_U32(out + 4) + PPC_LOAD_U32(g_lightDriver + 192), n = PPC_LOAD_U32(g_lightDriver + 196);
         for (uint32_t k = 0; k < n && k < 65536; k++)

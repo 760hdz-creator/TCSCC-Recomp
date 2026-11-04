@@ -1970,6 +1970,22 @@ void ShaderRecompiler::recompileBody(const be<uint32_t>* code, uint32_t shaderSi
                 {
                     if (vertexFetch.opcode == FetchOpcode::VertexFetch)
                     {
+                        // vfetch_mini reuses the previous vfetch_full's source register, fetch
+                        // constant, stride and index rounding (Xenia ParseVertexFetchInstruction);
+                        // its own fields there are not meaningful (stride read as 0: every vertex got
+                        // vertex 0's data).
+                        if (vertexFetch.isMiniFetch)
+                        {
+                            vertexFetch.srcRegister = lastFullFetch.srcRegister;
+                            vertexFetch.srcRegisterAm = lastFullFetch.srcRegisterAm;
+                            vertexFetch.srcSwizzle = lastFullFetch.srcSwizzle;
+                            vertexFetch.constIndex = lastFullFetch.constIndex;
+                            vertexFetch.constIndexSelect = lastFullFetch.constIndexSelect;
+                            vertexFetch.stride = lastFullFetch.stride;
+                            vertexFetch.isIndexRounded = lastFullFetch.isIndexRounded;
+                        }
+                        else
+                            lastFullFetch = vertexFetch;
                         recompile(vertexFetch, address + i);
                     }
                     else

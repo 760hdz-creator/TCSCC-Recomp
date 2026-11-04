@@ -1347,6 +1347,10 @@ static bool EdramOverwrittenByOther(const RegisterFile& regs)
     return false;
 }
 
+// Raw z of the current draw's vertex 0 (SnapshotVertexDword dword 2), set before BindRegisterState;
+// NaN when unknown.
+static float g_aliasQuadZ = NAN;
+
 static void AliasedClearColor(const RegisterFile& regs, float rgba[4])
 {
     rgba[0] = rgba[1] = rgba[2] = rgba[3] = 0.0f;
@@ -1373,6 +1377,14 @@ static void AliasedClearColor(const RegisterFile& regs, float rgba[4])
     lastAuto = int(overwritten);
     if ((rawZ || overwritten) && !(regs[0x2206] & 0x20))
         zo = 0.0f;
+    // Conviction: the clear quad's own z when VTE has no z scale/offset (bits 4-5; the clears' 0x300):
+    // the depth the console writes. Its shadow-mask clear (EDRAM 0, 4x 520x288, z 1.5e-5 = D24 0xFF,
+    // stencil ref 0xFF) leaves dword 0xFFFF = (1, 1, 0, 0); the vertex colour says the same. The
+    // z-offset rule above (SC:DA Kinshasa tuning) gave (1, 0, 0, 0): every G-channel shadow light
+    // fully shadowed = the black light volumes. SCDA_ALIAS_ZO=1: old rule (A/B).
+    static const bool aliasZo = getenv("SCDA_ALIAS_ZO") != nullptr;
+    if (!aliasZo && !(regs[0x2206] & 0x30) && std::isfinite(g_aliasQuadZ))
+        zo = g_aliasQuadZ;
     const double depth = std::clamp(double(zo), 0.0, 1.0);
     uint32_t d24;
     if ((regs[kRegRbDepthInfo] >> 16) & 1) // D24FS8: 20e4 float (4-bit exponent, bias 15, 20-bit mantissa)
@@ -1438,6 +1450,11 @@ void D3D11Renderer::BindRegisterState(const RegisterFile& regs, uint32_t texSlot
             }
         }
     }
+    // SCDA_TRACE_BIND=1: on SCDA_TRACE_RESOLVE frames, each draw's target keys and whether RT0 / depth exist.
+    static const bool traceBind = getenv("SCDA_TRACE_BIND") != nullptr;
+    if (traceBind && TraceResolveFrame(m_presented))
+        RuntimeLog("[bind] keys %08X %08X %08X %08X z %08X count %u rt0 %d targets %zu/%zu\n", keys[0], keys[1], keys[2], keys[3], keys[4], count,
+            int(rtvs[0] != nullptr), r.colorTargets.size(), r.depthTargets.size());
     if (!r.bound || !std::equal(keys, keys + 5, r.boundKeys))
     {
         m_context->OMSetRenderTargets(count, rtvs, DepthTargetFor(m_device, m_context, r, keys[4]));
@@ -2197,7 +2214,7 @@ void D3D11Renderer::ExecuteDraw(const DrawCall& d, const Frame& frame)
         }();
         const bool tracePs = std::find(tracePsList.begin(), tracePsList.end(), d.ps->hash) != tracePsList.end();
         if (tracePs)
-            for (uint32_t c : { 0u, 1u, 2u, 3u, 4u, 5u, 6u, 7u, 8u, 9u, 10u, 11u, 12u, 15u, 16u, 20u, 21u, 22u, 23u, 220u, 225u, 229u, 230u, 231u, 232u, 245u, 246u, 247u, 248u, 249u, 250u, 253u, 254u })
+            for (uint32_t c : { 0u, 1u, 2u, 3u, 4u, 5u, 6u, 7u, 8u, 9u, 10u, 11u, 12u, 15u, 16u, 20u, 21u, 22u, 23u, 33u, 39u, 40u, 44u, 45u, 46u, 47u, 48u, 49u, 50u, 51u, 52u, 53u, 54u, 55u, 56u, 57u, 58u, 59u, 60u, 150u, 251u, 252u, 220u, 225u, 229u, 230u, 231u, 232u, 245u, 246u, 247u, 248u, 249u, 250u, 253u, 254u })
             {
                 auto f = [&](uint32_t i) { return std::bit_cast<float>(r.regs[kRegAluConstants + 1024 + c * 4 + i]); };
                 RuntimeLog("[rtrace]   ps c%u %g %g %g %g blend %08X\n", c, f(0), f(1), f(2), f(3), r.regs[0x2201]);
@@ -2246,16 +2263,16 @@ void D3D11Renderer::ExecuteDraw(const DrawCall& d, const Frame& frame)
                     std::string vs;
                     for (uint32_t v = 0; (v + 1) * 28 <= snap.Bytes().size() && v < 4; v++)
                     {
-                        char buf[96];
-                        float xyz[3];
-                        for (uint32_t k = 0; k < 3; k++)
+                        char buf[160];
+                        float xyz[7]; // dwords 3-6: a clear's colour float4
+                        for (uint32_t k = 0; k < 7; k++)
                         {
                             uint32_t w;
                             memcpy(&w, &snap.Bytes()[v * 28 + k * 4], 4);
                             w = _byteswap_ulong(w);
                             memcpy(&xyz[k], &w, 4);
                         }
-                        snprintf(buf, sizeof(buf), " (%g %g %g)", xyz[0], xyz[1], xyz[2]);
+                        snprintf(buf, sizeof(buf), " (%g %g %g | %g %g %g %g)", xyz[0], xyz[1], xyz[2], xyz[3], xyz[4], xyz[5], xyz[6]);
                         vs += buf;
                     }
                     RuntimeLog("[rtrace]   snapshot %08X +%u B:%s\n", uint32_t(snap.key >> 32), uint32_t(snap.key), vs.c_str());
@@ -2267,15 +2284,15 @@ void D3D11Renderer::ExecuteDraw(const DrawCall& d, const Frame& frame)
                     RuntimeLog("[rtrace]   vfetch0 %08X %08X\n", s0, s1);
                     for (uint32_t v = 0; vb0 && GuestRangeReadable(vb0, 4 * 28) && v < 4; v++)
                     {
-                        float xyz[3];
-                        for (uint32_t k = 0; k < 3; k++)
+                        float xyz[7]; // position + the clear colour (float4 at dword 3)
+                        for (uint32_t k = 0; k < 7; k++)
                         {
                             uint32_t w;
                             memcpy(&w, vb0 + v * 28 + k * 4, 4);
                             w = _byteswap_ulong(w);
                             memcpy(&xyz[k], &w, 4);
                         }
-                        RuntimeLog("[rtrace]   s0v%u %g %g %g\n", v, xyz[0], xyz[1], xyz[2]);
+                        RuntimeLog("[rtrace]   s0v%u %g %g %g | %g %g %g %g\n", v, xyz[0], xyz[1], xyz[2], xyz[3], xyz[4], xyz[5], xyz[6]);
                     }
                 }
                 // The vertices the first indices reference (or 0-7 for auto-indexed draws).
@@ -2424,6 +2441,7 @@ void D3D11Renderer::ExecuteDraw(const DrawCall& d, const Frame& frame)
     if (r.stateDirty || (texSlots & ~r.lastTexSlots))
     {
         r.lastTexSlots = r.stateDirty ? texSlots : r.lastTexSlots | texSlots;
+        g_aliasQuadZ = DepthOnlyOverwritesColor(r.regs) ? SnapshotVertexDword(d, frame, r.regs, 2) : NAN;
         BindRegisterState(r.regs, r.lastTexSlots);
         r.stateDirty = false;
     }

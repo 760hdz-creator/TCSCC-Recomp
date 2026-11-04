@@ -61,6 +61,7 @@ struct ShaderRecompiler : StringBuffer
 
     // SCDA: raw microcode (no D3D container). Constants/fetch/interpolators come from registers.
     bool raw = false;
+    VertexFetchInstruction lastFullFetch{}; // the last vfetch_full (vfetch_mini inherits from it)
     uint32_t rawConstOperand = 0;
     std::string error; // set when raw microcode is malformed; out is then incomplete
     void recompileRaw(const be<uint32_t>* code, uint32_t shaderSize, bool pixel, const std::string_view& include);
