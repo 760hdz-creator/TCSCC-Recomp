@@ -282,3 +282,15 @@ PPC_FUNC(sub_83427FD8)
     }
     RuntimeLog("[gfx] HUD_Saving wrapper 0x%08X movie 0x%08X (reg 0x%08X list +%d) lr 0x%08X\n", self, movie, reg, where, lr);
 }
+
+// Save-result handler sub_824FB378(save, result, name, ?, ?): picks the save error dialog from the
+// result. SCDA_TRACE_SAVE=1 logs each call.
+extern "C" PPC_FUNC(__imp__sub_824FB378);
+PPC_FUNC(sub_824FB378)
+{
+    static const bool trace = getenv("SCDA_TRACE_SAVE") != nullptr;
+    const uint32_t r4 = ctx.r4.u32, r5 = ctx.r5.u32, r6 = ctx.r6.u32, r7 = ctx.r7.u32, lr = uint32_t(ctx.lr);
+    __imp__sub_824FB378(ctx, base);
+    if (trace)
+        RuntimeLog("[save] result handler(0x%X, 0x%08X, %u, %u) lr 0x%08X -> %u\n", r4, r5, r6, r7, lr, ctx.r3.u32);
+}

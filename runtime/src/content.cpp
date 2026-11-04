@@ -142,14 +142,22 @@ SCDA_IMPORT(XamContentDelete)
 }
 
 // XamContentGetCreator(User, XCONTENT_DATA*, u32* IsCreator, u64* CreatorXuid, XOVERLAPPED*):
-// the local profile made every item.
+// the local profile made every item. A missing item: IsCreator 0 and ERROR_PATH_NOT_FOUND. Conviction's
+// save pre-check (sub_824FCE28) treats the error as benign and then reads IsCreator: 0 skips the load,
+// anything else loads the missing file and shows "Corrupted Data - Player" on a new profile (Xenia
+// leaves IsCreator unwritten, so the title reads stack garbage).
 SCDA_IMPORT(XamContentGetCreator)
 {
+    std::string name;
+    std::error_code ec;
+    const uint32_t data = ctx.r4.u32;
+    const bool exists = data && ContentFileName(data, name) && fs::is_directory(TypeDir(GuestLoad32(data + 4)) / name, ec);
     if (ctx.r5.u32)
-        GuestStore32(ctx.r5.u32, 1);
+        GuestStore32(ctx.r5.u32, exists ? 1 : 0);
     if (ctx.r6.u32)
-        GuestStore64(ctx.r6.u32, kLocalXuid);
-    Finish(ctx, ctx.r7.u32, kErrorSuccess);
+        GuestStore64(ctx.r6.u32, exists ? kLocalXuid : 0);
+    RuntimeLog("[content] creator %s -> %s\n", name.c_str(), exists ? "local" : "missing");
+    Finish(ctx, ctx.r7.u32, exists ? kErrorSuccess : kErrorPathNotFound);
 }
 
 // XamContentCreateEnumerator(User, DeviceID, ContentType, Flags, MaxItems, u32* BufferSize, u32* Handle):
