@@ -225,6 +225,28 @@ PPC_FUNC(sub_82DAA4F0)
     __imp__sub_82DAA4F0(ctx, base);
 }
 
+// Release by name sub_82D0F9F0(registry, movie): the loading-screen teardown loop (sub_82D11278 with
+// keep = 0, so the movie+120 keep flag does not help) queues every movie it acquired. A movie a live
+// HUD_Saving wrapper still holds is skipped: it stays in the registry, the next loading screen finds
+// it again by name, and the save icon keeps working. SCDA_NO_SAVING_KEEP=1: old behaviour (released,
+// the dtor hook above clears the wrapper and the icon is skipped).
+extern "C" PPC_FUNC(__imp__sub_82D0F9F0);
+PPC_FUNC(sub_82D0F9F0)
+{
+    static const bool noKeep = getenv("SCDA_NO_SAVING_KEEP") != nullptr;
+    const uint32_t movie = ctx.r4.u32;
+    if (!noKeep && movie && uint32_t(ctx.lr) == 0x82D112E4) // only the teardown loop: other callers retry until gone
+        for (uint32_t w : g_savingWrappers)
+            if (w && PPC_LOAD_U32(w) == kSavingWrapperVt && PPC_LOAD_U32(w + 4) == movie)
+            {
+                static int logged;
+                if (logged++ < 8)
+                    RuntimeLog("[gfx] HUD_Saving movie 0x%08X kept (held by wrapper 0x%08X)\n", movie, w);
+                return;
+            }
+    __imp__sub_82D0F9F0(ctx, base);
+}
+
 // HUD_Saving wrapper load sub_83427FD8(this, ...): this+4 = registry lookup sub_82D10420(sub_82D11588(),
 // "Ingame\HUD_Saving.swf", 0) (raw pointer, no refcount), else a fresh load. SCDA_TRACE_GFX: log the
 // result and which registry list (+76 main / +108 second) holds it.
