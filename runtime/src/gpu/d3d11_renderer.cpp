@@ -1,3 +1,4 @@
+#include <set>
 #include <algorithm>
 #include <bit>
 #include <atomic>
@@ -1800,6 +1801,17 @@ void D3D11Renderer::BindRegisterState(const RegisterFile& regs, uint32_t texSlot
                 }
                 std::vector<float> floats = isFloat ? ConvertTextureFloat(t, guest) : std::vector<float>();
                 std::vector<uint32_t> texels = isFloat ? std::vector<uint32_t>() : ConvertTexture(t, guest);
+                // 8-bit / DXT conversions ignore the fetch sign field (0 unsigned, 1 signed, 2 biased,
+                // 3 gamma): log each (format, signs) that would need it, once.
+                if (!isFloat && t.signs)
+                {
+                    static std::mutex m;
+                    static std::set<uint32_t> seen;
+                    std::lock_guard lock(m);
+                    if (seen.insert((t.format << 8) | t.signs).second)
+                        RuntimeLog("[convert] fmt %u signs %02X (x%u y%u z%u w%u) fetch %08X %ux%u: sign field ignored\n", t.format, t.signs,
+                            t.signs & 3, (t.signs >> 2) & 3, (t.signs >> 4) & 3, (t.signs >> 6) & 3, t.physical, t.width, t.height);
+                }
                 if (promptStyle != PromptStyle::Xbox && PromptRedraw(cached.icon, promptStyle, texels, t.width, t.height))
                     guestMips = false; // mips generated from the new icon
                 if (isFloat && getenv("SCDA_DUMP_TEXTURES")) // RGBA8 copy for the dump only

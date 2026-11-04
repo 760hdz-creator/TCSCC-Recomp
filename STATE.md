@@ -36,4 +36,4 @@
 2. (done b89b800) tx_coord_denorm uses guest size (GuestDims2D, v32); scale 2 matches scale 1 on 02_Museum.
 3. (done) HUD_Saving movie kept at the teardown (sub_82D0F9F0 hook, lr 82D112E4); icon visibility not yet seen on screen.
 4. Gemini bridge returned 503 twice; retry.
-5. 8-bit textures (ConvertTexture) still ignore fetch sign bits (signed k_8_8_8_8 normal maps?); check if a signed 8888 shows up.
+5. 8-bit/DXT textures ignore the fetch sign field: none seen on menu + 01_Market (2026-11-04); renderer logs `[convert] ... sign field ignored` once per (fmt, signs) if one shows up.
