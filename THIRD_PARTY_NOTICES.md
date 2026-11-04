@@ -1,10 +1,10 @@
 # Third-party notices
 
-SCDA Recomp is licensed under GPL-3.0 (see `LICENSE`). It builds on or adapts:
+TCSCC Recomp is licensed under GPL-3.0 (see `LICENSE`). It builds on or adapts:
 
 | Project | License | Use | URL |
 |-|-|-|-|
-| XenonRecomp / XenonAnalyse / XenonUtils | MIT | PPC recompiler, XEX loader (patched: `tools/patches/xenonrecomp_scda.patch`) | https://github.com/hedge-dev/XenonRecomp |
+| XenonRecomp / XenonAnalyse / XenonUtils | MIT | PPC recompiler, XEX loader (patched: `tools/patches/xenonrecomp_pz.patch`) | https://github.com/hedge-dev/XenonRecomp |
 | XenosRecomp | MIT | Shader microcode translator, forked into `runtime/src/gpu/xenos/` (modified) | https://github.com/hedge-dev/XenosRecomp |
 | UnleashedRecomp | GPL-3.0 | Reference runtime; kernel/XAM HLE patterns adapted | https://github.com/hedge-dev/UnleashedRecomp |
 | Xenia | BSD-3-Clause | XEX patching code inside XenonUtils (`xex_patcher`); format reference | https://github.com/xenia-project/xenia |
@@ -20,4 +20,4 @@ SCDA Recomp is licensed under GPL-3.0 (see `LICENSE`). It builds on or adapts:
 The Tekken Tag Tournament 2 PC port (https://github.com/shihabal3amri/tekken-tag-tournament-2-pc)
 is used as a design reference only. No code from it is included: it has no license.
 
-Splinter Cell: Double Agent is the property of Ubisoft. This project contains no game data.
+Tom Clancy's Splinter Cell: Conviction is the property of Ubisoft. This project contains no game data.
