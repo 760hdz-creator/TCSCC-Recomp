@@ -14,6 +14,7 @@
 - Speed: texture hash covered tile padding / bytes past packed tails holding live game data (~200 re-conversions/frame); now a level's own elements only (46c98f4). Gameplay at the 30 fps cap, render 7-12 ms/frame.
 ## Current behaviour
 - Menus OK, Scaleform UI OK. Pre-START screen black (Xenia too).
+- 2026-11-03 soak `tools/autopress/01_market_long.txt` (walk + LT cover/RB/Y/RT/B cycles): no crash to frame 30000, cover works; blind input loops between 2 cover spots (no objective steering). Deniable Ops Hunter St. Petersburg Banya (`deniable_banya.txt`: START, DOWN:10, A, START) plays to 9000, 30 fps.
 - 01_Market plays from the cafe cutscene to the TAKE COVER tutorial (frame 10000, 5.5 min, no crash, 30 fps): `SCDA_AUTOPRESS=@tools/autopress/01_market_walk.txt` (look pulses from 2800; the prompt appears at 2000-2800).
 - Exposure FIXED: colour exp bias (RB_COLOR_INFO +2/+5 on 7e3 HDR RTs, RB_COPY_DEST_INFO +10 into k_16_16_16_16 signed-int resolves) + tfetch exp_adjust (-15) were all ignored. Cafe now night, warm lamp pools (matches reference). `SCDA_NO_EXP_BIAS=1|rt|copy` A/B. `docs/exp_bias.md`.
 - GPU light list now DEFAULT (black volumes fixed: signed k_16_16 sphere-occluder falloff read as unorm + depth-only aliased shadow-mask clear colour; also vfetch_mini stride). `SCDA_VISBUF_LIGHTS=off` = old clear. `docs/light_list.md`. Walk to 10000 + menu verified.
@@ -27,7 +28,7 @@
 - CPU: `SCDA_TRACE_GFX=1`, `SCDA_WATCH_WRITE=<hex>[,..][:max]` (+`SCDA_WATCH_RW=1`), `WatchAdd(addr,max)`, `SCDA_PROFILE=<start>:<secs>`, `SCDA_TRACE_FS`, `SCDA_TRACE_INPUT=1`.
 - Presented index = frame - 1 (dump of frame 2500 is p2499).
 ## Next
-1. Play further: cover, combat, mark & execute; next crash.
+1. Play further: blind scripts stall (no objective steering). Options: steer by objective marker / Sam position from guest RAM; Deniable Ops maps (menu: DOWN switches panels, A enters MATCH SETTINGS, then Map row RIGHT; other maps may be locked); Scene Select (locked on this save?).
 2. tx_coord_denorm at internal scale > 1: guest texture size instead of host Dims2D.
 3. Save icon: reload the HUD_Saving movie instead of clearing it. Corrupted save; Bink colour; HEURISTIC jump tables.
 4. Gemini bridge returned 503 twice; retry.
