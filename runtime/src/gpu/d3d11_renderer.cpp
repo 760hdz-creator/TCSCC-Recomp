@@ -243,9 +243,10 @@ float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target
 
 // Resolve copy: rect = destination host texels (x0 y0 x1 y1), written dy rows down; each reads the
 // samples.x x samples.y source texels of its guest pixel (MSAA supersampling), averaged (flags
-// bit 0, copy_sample_select 4+) or sample 0. flags bit 1: fixed-point destination format, so
-// saturate like the EDRAM -> memory conversion (float host targets hold values past [0, 1]: FP16
-// 7e3 blending overflows the 2-bit alpha).
+// bit 0, copy_sample_select 4+) or sample 0. flags bits 1-2: fixed-point destination clamp like
+// the EDRAM -> memory conversion (float host targets hold values past [0, 1]: FP16 7e3 blending
+// overflows the 2-bit alpha): 1 = unsigned fraction [0, 1], 2 = signed fraction [-1, 1],
+// 3 = integer (bits 16-20 component bits, bit 21 signed). Bits 8-15: copy_dest_exp_bias.
 static const char kSaturateCs[] = R"HLSL(
 Texture2D<float4> src : register(t0);
 RWTexture2D<float4> dst : register(u0);
@@ -266,7 +267,18 @@ void main(uint3 id : SV_DispatchThreadID)
     }
     else
         c = src[p * samples];
-    dst[p + int2(0, dy)] = (flags & 2) ? saturate(c) : c;
+    c *= exp2(float((flags << 16) >> 24));
+    const int mode = (flags >> 1) & 3;
+    if (mode == 1)
+        c = saturate(c);
+    else if (mode == 2)
+        c = clamp(c, -1.0, 1.0);
+    else if (mode == 3)
+    {
+        const float bits = float((flags >> 16) & 31);
+        c = (flags >> 21) & 1 ? clamp(round(c), -exp2(bits - 1.0), exp2(bits - 1.0) - 1.0) : clamp(round(c), 0.0, exp2(bits) - 1.0);
+    }
+    dst[p + int2(0, dy)] = c;
 }
 )HLSL";
 
@@ -3275,14 +3287,23 @@ void D3D11Renderer::ExecuteResolve(const Resolve& res)
                 const uint32_t destFormat = (res.destInfo >> 7) & 0x3F;
                 const SurfaceLayout layout = EdramSurfaceLayout(res.surfaceInfo);
                 const bool multisampled = layout.samplesX * layout.samplesY > 1;
+                // RB_COPY_DEST_INFO bits 13-15 number format: 0 unsigned / 1 signed fraction, 2 / 3
+                // unsigned / signed integer (Xenia XePackFixed), 7 float.
+                const uint32_t numFormat = (res.destInfo >> 13) & 7;
                 const bool saturate = !IsFloatTextureFormat(destFormat);
-                if (dst.uav && r.saturateCs && (saturate || multisampled))
+                const int32_t clampMode = !saturate ? 0 : numFormat == 1 ? 2 : (numFormat == 2 || numFormat == 3) ? 3 : 1;
+                const uint32_t compBits = destFormat == 24 || destFormat == 25 || destFormat == 26 ? 16 : 8; // k_16*, else 8-bit
+                // RB_COPY_DEST_INFO bits 16-21 (signed): the copy scales by 2^bias (Xenia resolve.xesli).
+                static const bool noExpBias = getenv("SCDA_NO_EXP_BIAS") && strcmp(getenv("SCDA_NO_EXP_BIAS"), "rt") != 0;
+                const int32_t expBias = noExpBias ? 0 : int32_t(res.destInfo << 10) >> 26;
+                if (dst.uav && r.saturateCs && (saturate || multisampled || expBias))
                 {
                     // The source is bound as a render target: unbind it before reading it.
                     m_context->OMSetRenderTargets(0, nullptr, nullptr);
                     r.bound = false; r.srvShadow = false;
                     const int32_t rect[8] = { x0, y0, x1, y1, int32_t(hostDy), int32_t(layout.samplesX), int32_t(layout.samplesY),
-                        (((res.copyControl >> 4) & 7) >= 4 ? 1 : 0) | (saturate ? 2 : 0) };
+                        (((res.copyControl >> 4) & 7) >= 4 ? 1 : 0) | (clampMode << 1) | int32_t(uint32_t(expBias & 0xFF) << 8) |
+                        (clampMode == 3 ? int32_t((compBits << 16) | (numFormat == 3 ? 1u << 21 : 0)) : 0) };
                     m_context->UpdateSubresource(r.saturateRect.Get(), 0, nullptr, rect, 0, 0);
                     ID3D11ShaderResourceView* srv = source->srv.Get();
                     ID3D11UnorderedAccessView* uav = dst.uav.Get();

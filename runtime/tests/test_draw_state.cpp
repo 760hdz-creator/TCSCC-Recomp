@@ -45,6 +45,13 @@ TEST(shared_constants_viewport_and_offsets)
     r.Set(0x2005, 2u << 16);       // RT3 2_10_10_10 (unorm target clamps itself)
     c = BuildSharedConstants(r, 1280, 720);
     CHECK_EQ(c.colorClamp, 5u);
+    CHECK(c.colorExpBias[0] == 1.0f);
+
+    r.Set(0x2001, 0x00530000);     // RT0 7e3, color_exp_bias +5
+    r.Set(0x2003, 0x03C00000);     // RT1 k_8_8_8_8, color_exp_bias -4 (0x3C)
+    c = BuildSharedConstants(r, 1280, 720);
+    CHECK(c.colorExpBias[0] == 32.0f);
+    CHECK(c.colorExpBias[1] == 0.0625f);
 }
 
 TEST(alu_constants_per_stage)

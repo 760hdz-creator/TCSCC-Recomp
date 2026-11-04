@@ -38,10 +38,22 @@ cbuffer SharedConstants : register(b2)
     uint g_UcpEnable;        // bit n: plane n clips (PA_CL_CLIP_CNTL bits 0-5)
     uint g_ExportBase;       // PS memexport window: guest physical byte base of g_Export
     uint g_ExportBytes;      // and its size (0 = no window bound)
+    uint g_SharedPad;
+    float4 g_ColorExpBias;   // per RT: 2^RB_COLOR_INFO color_exp_bias (EDRAM store scale)
 };
+// Texture fetch result exponent bias: x 2^exp_adjust (fetch constant dword 3 bits 13-18, signed;
+// Xenia applies it to every tfetch). Conviction's HDR resolves (k_16_16_16_16 signed integer,
+// copy bias +10) read back with a negative one.
+float4 TexExp(float4 v, uint t)
+{
+    const uint d = 6 * t + 3;
+    const int e = int(g_Fetch[d >> 2][d & 3] << 13) >> 26;
+    return e ? v * asfloat(0x3F800000 + (e << 23)) : v;
+}
 // Fetch-constant swizzle for textures bound raw (resolve copies): 0-3 = X-W, 4 = 0, 5 = 1.
 float4 TexSwizzle(float4 v, uint t)
 {
+    v = TexExp(v, t);
     const uint s = g_TexSwizzle[t >> 2][t & 3];
     if (s == 0)
         return v;
@@ -153,14 +165,14 @@ float2 Dims2D(Texture2D<float4> t)
 #define tfetch2DBicubic(t, s, uv, off) tfetch2D(t, s, uv, off)
 #define getWeights2D(t, s, uv, off) (isnan(uv) ? 0.0 : frac((uv) * Dims2D(g_Tex2D[t]) + (off) - 0.5))
 // A 3D fetch of a 2D texture reads slice 0: the 2D binding (g_Tex3D itself is never bound).
-#define tfetch3D(t, s, uvw) ((g_Tex3DIs2D >> (t)) & 1 ? SAMPLE(g_Tex2D[t], g_Samp[(s) & 15], (uvw).xy) : SAMPLE(g_Tex3D[t], g_Samp[(s) & 15], uvw))
-#define tfetchCube(t, s, uvw, cmd) SAMPLE(g_TexCube[t], g_Samp[(s) & 15], (uvw).z ? (cmd).cubeMapDirections[1] : (cmd).cubeMapDirections[0])
+#define tfetch3D(t, s, uvw) TexExp((g_Tex3DIs2D >> (t)) & 1 ? SAMPLE(g_Tex2D[t], g_Samp[(s) & 15], (uvw).xy) : SAMPLE(g_Tex3D[t], g_Samp[(s) & 15], uvw), t)
+#define tfetchCube(t, s, uvw, cmd) TexExp(SAMPLE(g_TexCube[t], g_Samp[(s) & 15], (uvw).z ? (cmd).cubeMapDirections[1] : (cmd).cubeMapDirections[0]), t)
 #define getPixelCoord(t, uv) (Dims2D(g_Tex2D[t]) * (uv))
 // Register LOD (SetTextureLod + use_register_lod): an explicit mip level.
 #define SAMPLE_LOD(tex, s, c, l) tex.SampleLevel(s, c, l)
 #define tfetch2DLod(t, s, uv, off, l) TexSwizzle(SAMPLE_LOD(g_Tex2D[t], g_Samp[(s) & 15], (uv) + (off) / Dims2D(g_Tex2D[t]), l), t)
-#define tfetch3DLod(t, s, uvw, l) ((g_Tex3DIs2D >> (t)) & 1 ? SAMPLE_LOD(g_Tex2D[t], g_Samp[(s) & 15], (uvw).xy, l) : SAMPLE_LOD(g_Tex3D[t], g_Samp[(s) & 15], uvw, l))
-#define tfetchCubeLod(t, s, uvw, cmd, l) SAMPLE_LOD(g_TexCube[t], g_Samp[(s) & 15], (uvw).z ? (cmd).cubeMapDirections[1] : (cmd).cubeMapDirections[0], l)
+#define tfetch3DLod(t, s, uvw, l) TexExp((g_Tex3DIs2D >> (t)) & 1 ? SAMPLE_LOD(g_Tex2D[t], g_Samp[(s) & 15], (uvw).xy, l) : SAMPLE_LOD(g_Tex3D[t], g_Samp[(s) & 15], uvw, l), t)
+#define tfetchCubeLod(t, s, uvw, cmd, l) TexExp(SAMPLE_LOD(g_TexCube[t], g_Samp[(s) & 15], (uvw).z ? (cmd).cubeMapDirections[1] : (cmd).cubeMapDirections[0], l), t)
 
 struct CubeMapData
 {
@@ -368,6 +380,8 @@ void main(in float4 iPos : SV_Position, in float4 iT[16] : TEXCOORD0, in bool iF
     if (g_ParamGen)
         t[g_ParamGen - 1] = float4(floor(iPos.xy * g_PositionScale), iT[g_ParamGen - 1].zw);
     xenos_main(float4(iPos.xy * g_PositionScale, iPos.zw), t, iFace, oC0, oC1, oC2, oC3);
+    // Exponent bias after the alpha test (xenos_main), before the 7e3 clamp and blending (Xenia).
+    oC0 *= g_ColorExpBias.x; oC1 *= g_ColorExpBias.y; oC2 *= g_ColorExpBias.z; oC3 *= g_ColorExpBias.w;
     oC0 = Clamp7e3(oC0, 0); oC1 = Clamp7e3(oC1, 1); oC2 = Clamp7e3(oC2, 2); oC3 = Clamp7e3(oC3, 3);
 }
 )HLSL";

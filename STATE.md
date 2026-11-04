@@ -15,7 +15,8 @@
 ## Current behaviour
 - Menus OK, Scaleform UI OK. Pre-START screen black (Xenia too).
 - 01_Market plays from the cafe cutscene to the TAKE COVER tutorial (frame 10000, 5.5 min, no crash, 30 fps): `SCDA_AUTOPRESS=@tools/autopress/01_market_walk.txt` (look pulses from 2800; the prompt appears at 2000-2800).
-- Lighting WRONG vs reference (cafe at night, dark street, warm lamp pools, no bloom; user screenshot + PortForward ch.1). Default: hard daylight, blown out (light list cleared). `SCDA_VISBUF_LIGHTS=gpu`: those lights draw black volumes.
+- Exposure FIXED: colour exp bias (RB_COLOR_INFO +2/+5 on 7e3 HDR RTs, RB_COPY_DEST_INFO +10 into k_16_16_16_16 signed-int resolves) + tfetch exp_adjust (-15) were all ignored. Cafe now night, warm lamp pools (matches reference). `SCDA_NO_EXP_BIAS=1|rt|copy` A/B. `docs/exp_bias.md`.
+- `SCDA_VISBUF_LIGHTS=gpu` still draws black light volumes (default keeps the light list cleared).
 - Bink logos dark red (low priority). Save shows "corrupted" (retest with clean LOCALAPPDATA).
 ## Ruled out
 - Occlusion queries, camera, timebase, GPU predication, CP packet drops; 26 patch ops + vsel128/eqv/frsqrte/mulhd/vandc/vcmpbfp correct.
@@ -26,7 +27,7 @@
 - CPU: `SCDA_TRACE_GFX=1`, `SCDA_WATCH_WRITE=<hex>[,..][:max]` (+`SCDA_WATCH_RW=1`), `WatchAdd(addr,max)`, `SCDA_PROFILE=<start>:<secs>`, `SCDA_TRACE_FS`, `SCDA_TRACE_INPUT=1`.
 - Presented index = frame - 1 (dump of frame 2500 is p2499).
 ## Next
-1. Lighting: black light volumes = PS 6372c96f (8-tap PCF, blend src x DST_COLOR, draw ~1078 at frame 4500 of the walk). Receiver depth > 1 / NaN: check the 00D6A000 k_16_16_FLOAT G-buffer value, its decode (x - 2^floor(log2 x) * c254.x) and the light projection c1-c3. Then retest default vs `SCDA_VISBUF_LIGHTS=gpu` against the reference; drop the light-list clear when right.
+1. GPU light list black volumes: PS 6372c96f is NOT it (writes a shadow-mask channel, RB_COLOR_MASK 1/2, never the scene RT; forcing it to 1 changes nothing). Find the light pass that reads that mask / the light-list objects; drop the light-list clear when right.
 2. Play further: cover, combat, mark & execute; next crash.
 3. tx_coord_denorm at internal scale > 1: guest texture size instead of host Dims2D.
 4. Save icon: reload the HUD_Saving movie instead of clearing it. Corrupted save; Bink colour; HEURISTIC jump tables.

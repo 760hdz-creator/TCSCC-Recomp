@@ -97,6 +97,12 @@ SharedConstants BuildSharedConstants(const RegisterFile& r, uint32_t rtWidth, ui
         if (format == 3 || format == 0xC)
             c.colorClamp |= 1u << i;
     }
+    // Colour exponent bias (Xenia: color_exp_bias_scale): the EDRAM store scales the PS output by
+    // 2^bias. Conviction's HDR passes write 7e3 targets with +2/+5 and resolve with their own bias.
+    // SCDA_NO_EXP_BIAS=1: old behaviour (ignored); =rt: only this one off, =copy: only the resolve one.
+    static const bool noExpBias = getenv("SCDA_NO_EXP_BIAS") && strcmp(getenv("SCDA_NO_EXP_BIAS"), "copy") != 0;
+    for (uint32_t i = 0; i < 4; i++)
+        c.colorExpBias[i] = noExpBias ? 1.0f : std::bit_cast<float>(uint32_t(0x3F800000 + ((int32_t(r[kInfo[i]] << 6) >> 26) << 23)));
     // tfetch3D honours the fetch constant's dimension (dword 5 bits 9-10): a 2D texture (1) sampled
     // with a 3D fetch reads slice 0, i.e. the 2D binding. Other dimensions and non-texture constants
     // keep the (unbound, zero) 3D binding.

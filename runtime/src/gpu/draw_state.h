@@ -47,8 +47,10 @@ struct SharedConstants
     uint32_t exportBase;
     uint32_t exportBytes;
     uint32_t ucpPad;
+    // RB_COLOR_INFO / RB_COLOR1-3_INFO color_exp_bias (bits 20-25, signed): oCn x 2^bias before blending.
+    float colorExpBias[4];
 };
-static_assert(sizeof(SharedConstants) == 1264 && sizeof(SharedConstants) % 16 == 0);
+static_assert(sizeof(SharedConstants) == 1280 && sizeof(SharedConstants) % 16 == 0);
 static_assert(offsetof(SharedConstants, ucp) == 1152 && offsetof(SharedConstants, ucpEnable) == 1248);
 static_assert(offsetof(SharedConstants, fetch) == 160 && offsetof(SharedConstants, specConstants) == 928);
 static_assert(offsetof(SharedConstants, vte) == 944 && offsetof(SharedConstants, vpOffset) == 960);
