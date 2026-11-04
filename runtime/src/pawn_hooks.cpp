@@ -36,3 +36,19 @@ PPC_FUNC(sub_82C1EAC8)
     }
 }
 
+// sub_82CE28A8(progress, campaign, mission): 1 when the mission is not locked (state @+260 != 1).
+// Scene Select drops missions it returns 0 for (GetMissionList sub_82E7EB80).
+// SCDA_UNLOCK_ALL=1 (test aid): every in-range mission counts as unlocked.
+extern "C" PPC_FUNC(__imp__sub_82CE28A8);
+PPC_FUNC(sub_82CE28A8)
+{
+    static const bool all = getenv("SCDA_UNLOCK_ALL") != nullptr;
+    const uint32_t p = ctx.r3.u32;
+    const int32_t c = ctx.r4.s32, m = ctx.r5.s32;
+    __imp__sub_82CE28A8(ctx, base);
+    if (!all || ctx.r3.u32 || c < 0 || m < 0 || c >= int32_t(GuestLoad32(p + 120)))
+        return;
+    const uint32_t camp = GuestLoad32(GuestLoad32(p + 116) + 4 * uint32_t(c));
+    if (m < int32_t(GuestLoad32(camp + 28)))
+        ctx.r3.u64 = 1;
+}
