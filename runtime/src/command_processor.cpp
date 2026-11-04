@@ -487,7 +487,7 @@ static bool ExecutePacket(uint32_t h, const Pm4Payload& p, int depth, CpStats& s
         {
             Gpu().swapCounter++;
             Gpu().pendingSwaps++;
-            Frames().EndFrame(count >= 2 ? p(1) & 0x1FFFFFFF : 0); // VdSwap: frontbuffer address
+            Frames().EndFrame(count >= 2 ? p(1) & 0x1FFFFFFF : 0, count >= 3 ? p(2) : 0); // VdSwap: frontbuffer address, size_2d
             BumpEpoch();
         }
         return true;

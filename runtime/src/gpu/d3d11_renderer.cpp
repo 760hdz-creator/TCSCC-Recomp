@@ -3819,6 +3819,16 @@ void D3D11Renderer::Present(const Frame& frame)
         // No frontbuffer resolve: the last RT0 (or the idle colour when nothing was drawn yet).
         ID3D11Texture2D* shown = m_lastFrontbuffer ? front->second.texture.Get() : r.last ? r.last->texture.Get() : nullptr;
         ID3D11ShaderResourceView* shownSrv = m_lastFrontbuffer ? front->second.srv.Get() : r.last ? r.last->srv.Get() : nullptr;
+        // Only the swap's rect is shown: the 360 scaler reads width x height of the frontbuffer, not
+        // the pitch-padded resolve (Conviction 1040 of 1056: a ~19 px black strip at the right edge).
+        // SCDA_FULL_FRONTBUFFER=1: old (whole resolve).
+        static const bool fullFront = getenv("SCDA_FULL_FRONTBUFFER") != nullptr;
+        if (m_lastFrontbuffer && frame.frontbufferSize && !fullFront)
+        {
+            const uint32_t w = (frame.frontbufferSize & 0x1FFF) + 1, h = ((frame.frontbufferSize >> 13) & 0x1FFF) + 1;
+            if (w <= front->second.width && h <= front->second.height)
+                shownSrv = ResolvedView(m_device, m_context, front->second, w, h);
+        }
         if (!m_dumpPath.empty() && shown)
         {
             Dump(m_dumpPath, shown, true);

@@ -88,6 +88,7 @@ struct Frame
     // renderer replays them into its own RegisterFile (state carries over from frame to frame).
     std::vector<RegisterWrite> regWrites;
     uint32_t frontbuffer = 0;      // guest physical address of the surface this frame's swap shows
+    uint32_t frontbufferSize = 0;  // its fetch constant size_2d (0 = unknown: show the whole resolve)
     // Guest vertex and DMA index ranges the draws read, copied when the draw was submitted: the
     // CPU reuses its buffers long before the renderer gets here. A range gets a new snapshot only
     // when its bytes changed since the last one; DrawCall::memory / indexSnapshot index this.
@@ -273,11 +274,12 @@ public:
     }
     // Closes the current frame (called at the swap marker, in stream order); frontbuffer is the
     // guest physical address VdSwap presents (0 = unknown).
-    void EndFrame(uint32_t frontbuffer = 0)
+    void EndFrame(uint32_t frontbuffer = 0, uint32_t frontbufferSize = 0)
     {
         std::lock_guard lock(m_mutex);
         TimelineEvent('E', uint32_t(m_open.draws.size()));
         m_open.frontbuffer = frontbuffer;
+        m_open.frontbufferSize = frontbufferSize;
         m_open.stats.draws = uint32_t(m_open.draws.size()) + m_partialDraws;
         m_open.stats.resolves = uint32_t(m_open.resolves.size()) + m_partialResolves;
         m_partialDraws = m_partialResolves = 0;

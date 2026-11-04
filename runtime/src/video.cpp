@@ -138,7 +138,10 @@ SCDA_IMPORT(VdSwap)
     GuestStore32(buffer, 0xC0000000u | (62u << 16) | (0x10u << 8)); // type 3 NOP, 63 payload dwords
     GuestStore32(buffer + 4, kSwapMarker);
     GuestStore32(buffer + 8, frontbuffer);
-    for (uint32_t i = 3; i < 64; i++)
+    // Fetch constant dword 2 = size_2d (width - 1 bits 0-12, height - 1 bits 13-25): the shown rect.
+    // Conviction's frontbuffer is a 1040x576 image in a 1056-wide resolve (pitch padding).
+    GuestStore32(buffer + 12, ctx.r4.u32 ? GuestLoad32(ctx.r4.u32 + 8) : 0);
+    for (uint32_t i = 4; i < 64; i++)
         GuestStore32(buffer + i * 4, 0);
     ctx.r3.u64 = 0;
 }
