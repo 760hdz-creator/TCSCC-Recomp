@@ -2,7 +2,7 @@
 ## Setup
 - Nested git repo `G:\Project Zero\fresh` (outer ignores `/fresh/`). `assets/`, `external/` = junctions to outer (never rm -rf; `cmd /c rmdir`).
 - XenonRecomp patch `tools/patches/xenonrecomp_pz.patch` = live `external/XenonRecomp` diff vs ddd128b (outer copy STALE).
-- Test exe: copy `runtime\build\tcscc.exe` -> `_install\tcscc_fresh.exe`, run from `_install`, log `_install\scda.log`. Shader tests: set LOCALAPPDATA to a temp dir (disk cache keyed by translator version, now v28).
+- Test exe: copy `runtime\build\tcscc.exe` -> `_install\tcscc_fresh.exe`, run from `_install`, log `_install\scda.log`. Shader tests: set LOCALAPPDATA to a temp dir (disk cache keyed by translator version, now v30; any translate.cpp prelude change needs a `kTranslatorVersion` bump).
 ## Verified
 - Image sha 5945a60c... OK. Recomp clean: acceptance counters 0, 99213 functions. HEURISTIC tables 8255C350 826F1B64 82F72A9C unreviewed.
 - Runtime = outer f243060 (SCDA + Conviction retarget); SC4 hooks not built.

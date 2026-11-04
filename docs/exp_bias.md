@@ -23,3 +23,14 @@ Implementation (Xenia d3d12_command_processor color_exp_bias, resolve.xesli, XeP
 
 Not the cause: PS 6372c96f (8-tap PCF shadow) writes a shadow-mask channel (RB_COLOR_MASK 1 or 2,
 RT at EDRAM base 0), never the scene target; forcing its output to 1 changes nothing visible.
+
+Verified 2026-11-03: walk frames 2000/4500/6000/9000/10000 (night street, dusk sky at 10000) and
+the menu (clean LOCALAPPDATA) look right; render 8-9 ms/frame (unchanged). Fetch coverage: every
+texture read goes through the tfetch macros (TexExp).
+
+Known gaps (shortcut):
+- No typed UAV for the destination format: the resolve falls back to CopySubresourceRegion and
+  drops the copy bias silently.
+- compBits = 16 only for k_16 / k_16_16 / k_16_16_16_16 integer destinations, else 8.
+- k_16_16_16_16 fixed RTs (srcfmt 5, rtbias +5 seen) are FP16 on the host: the [-32, 32) EDRAM
+  clamp is not applied, so blending on them can differ (the resolve's integer clamp hides most).
