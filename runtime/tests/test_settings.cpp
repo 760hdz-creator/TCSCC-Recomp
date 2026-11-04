@@ -17,7 +17,7 @@ TEST(settings_defaults_when_missing)
     CHECK(s.vsync);
     CHECK(!s.cleanGoggles); // authentic goggle overlay unless asked
     CHECK(!s.drawBackFaces); // console culling by default (mirrors need it)
-    CHECK_EQ(s.fov, 75u);   // the game's own field of view
+    CHECK_EQ(s.fov, 90u);   // the game's own field of view
 }
 
 TEST(settings_parsed)
@@ -26,7 +26,8 @@ TEST(settings_parsed)
     CHECK(s.cleanGoggles);
     CHECK(LoadDisplaySettings(Ini("[Display]\nDrawBackFaces=1\n")).drawBackFaces);
     CHECK_EQ(LoadDisplaySettings(Ini("[Display]\nFOV=95\n")).fov, 95u);
-    CHECK_EQ(LoadDisplaySettings(Ini("[Display]\nFOV=300\n")).fov, 75u);
+    CHECK_EQ(LoadDisplaySettings(Ini("[Display]\nFOV=300\n")).fov, 90u);
+    CHECK_EQ(LoadDisplaySettings(Ini("[Display]\nFOV=60\n")).fov, 90u); // below the range
     CHECK_EQ(s.scale, 2u);
     CHECK(s.mode == DisplaySettings::Borderless);
     CHECK(!s.vsync);

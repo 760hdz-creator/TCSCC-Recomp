@@ -74,6 +74,7 @@ void StoreFloat(uint32_t a, float v)
 } // namespace
 
 void SetFovOverride(float degrees) { g_userFov = degrees; }
+float FovOverride() { return g_userFov; }
 
 void FovReset()
 {

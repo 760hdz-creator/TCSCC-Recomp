@@ -156,9 +156,9 @@ void DisplayTab(DisplaySettings& s)
     if (ImGui::Combo("Anisotropic filtering", &level, names, 5))
         s.anisotropy = uint32_t(levels[level]);
     int fov = int(s.fov);
-    if (ImGui::SliderInt("Field of view", &fov, 60, 110, fov == 75 ? "%d (default)" : "%d"))
+    if (ImGui::SliderInt("Field of view", &fov, 70, 120, fov == 90 ? "%d (default)" : "%d"))
         s.fov = uint32_t(fov);
-    Hint("Camera field of view in degrees; 75 is the game's own. Zoom (binoculars, sniper, cameras) keeps its own value.");
+    Hint("Horizontal field of view of the player camera in degrees; 90 is the game's own. Narrow (zoomed) views keep their own value.");
     ImGui::Checkbox("Ultrawide", &s.ultrawide);
     Hint("In a window wider than 16:9, shows more of the scene at the sides instead of black bars. "
          "The HUD and menus are stretched to the window.");

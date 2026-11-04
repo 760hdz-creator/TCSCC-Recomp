@@ -104,7 +104,7 @@ DisplaySettings LoadDisplaySettings(const std::filesystem::path& ini)
         else if (key == "fov")
         {
             int v = atoi(value.c_str());
-            if (v >= 60 && v <= 110)
+            if (v >= 70 && v <= 120)
                 s.fov = uint32_t(v);
         }
         else if (key == "antialiasing")
