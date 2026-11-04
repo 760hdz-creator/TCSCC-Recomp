@@ -3500,8 +3500,10 @@ D3D11_VIEWPORT D3D11Renderer::PresentViewport()
     static const bool ultrawide = getenv("SCDA_ULTRAWIDE") != nullptr;
     constexpr float kAspect = 16.0f / 9.0f;
     const float w = float(m_width), h = float(m_height);
+    // SCDA_ULTRAWIDE_FROM=<present>: Hor+ only from that present on (A/B in one run: HUD marker test).
+    static const uint64_t ultrawideFrom = getenv("SCDA_ULTRAWIDE_FROM") ? strtoull(getenv("SCDA_ULTRAWIDE_FROM"), nullptr, 10) : 0;
     if (m_height)
-        CameraSetDisplayAspect(w / h, ultrawide);
+        CameraSetDisplayAspect(w / h, ultrawide && m_presented >= ultrawideFrom);
     if (stretch || CameraHorPlusFactor() > 1.0f || !m_width || !m_height || std::abs(w / h / kAspect - 1.0f) < 0.01f)
         return { 0, 0, w, h, 0, 1 };
     const float vw = std::min(w, std::round(h * kAspect)), vh = std::min(h, std::round(w / kAspect));
