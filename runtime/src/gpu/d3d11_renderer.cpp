@@ -14,6 +14,7 @@
 #include <vector>
 #include <wrl/client.h>
 #include <gpu/d3d11_renderer.h>
+#include "../camera.h"
 #include <gpu/draw_state.h>
 #include <prompts.h>
 #include <gpu/gamma_ramp.h>
@@ -3495,9 +3496,13 @@ D3D11_VIEWPORT D3D11Renderer::PresentViewport()
     // The 360 scaler shows the frontbuffer at 16:9 (Conviction's 1040x576 included). SCDA_STRETCH=1:
     // old (stretched to the window).
     static const bool stretch = getenv("SCDA_STRETCH") != nullptr;
+    // SCDA_ULTRAWIDE=1: Hor+ (camera.cpp widens the FOV, the frame fills a wider window).
+    static const bool ultrawide = getenv("SCDA_ULTRAWIDE") != nullptr;
     constexpr float kAspect = 16.0f / 9.0f;
     const float w = float(m_width), h = float(m_height);
-    if (stretch || !m_width || !m_height || std::abs(w / h / kAspect - 1.0f) < 0.01f)
+    if (m_height)
+        CameraSetDisplayAspect(w / h, ultrawide);
+    if (stretch || CameraHorPlusFactor() > 1.0f || !m_width || !m_height || std::abs(w / h / kAspect - 1.0f) < 0.01f)
         return { 0, 0, w, h, 0, 1 };
     const float vw = std::min(w, std::round(h * kAspect)), vh = std::min(h, std::round(w / kAspect));
     const float black[4] = { 0, 0, 0, 1 };

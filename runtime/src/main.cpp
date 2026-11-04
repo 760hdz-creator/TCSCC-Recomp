@@ -1,3 +1,4 @@
+#include <bit>
 // tcscc.exe: hosts the statically recompiled Splinter Cell Conviction default.xex.
 // Boot: reserve guest memory, fill the function table, load the image,
 // fill data imports, build the main thread's PCR/TLS/TEB/stack, call _xstart.
@@ -290,6 +291,14 @@ static DWORD WINAPI TitleThread(void*)
     WatchdogRegisterThread(1, ctx);
     TitleThreadRegister(1);
     RuntimeLog("[thread] 1 (main) host %lu\n", GetCurrentThreadId());
+    // SCDA_ASPECT=<w/h float>: overwrite the title's only 16/9 float (rodata 0x820016FC; loaded by
+    // sub_824B5B50, sub_824F4318, sub_82CFDD50, sub_82EDA228, sub_82EDA830) - aspect experiment.
+    if (const char* a = getenv("SCDA_ASPECT"))
+        if (const float v = float(atof(a)); v > 0.5f && v < 5.0f)
+        {
+            GuestStore32(0x820016FC, std::bit_cast<uint32_t>(v));
+            RuntimeLog("[boot] aspect constant 0x820016FC = %f\n", v);
+        }
     RuntimeLog("[boot] calling _xstart (r1=0x%08X r13=0x%08X)\n", ctx->r1.u32, ctx->r13.u32);
     _xstart(*ctx, g_base);
     RuntimeLog("[boot] _xstart returned r3=0x%08X\n", ctx->r3.u32);
@@ -345,7 +354,7 @@ int main(int argc, char** argv)
         snprintf(msg, sizeof(msg), "default.img: %s, expected sha256 %s, got %s",
             ImageLoadResultName(loaded), SCDA_EXPECTED_IMAGE_SHA256, sha.empty() ? "-" : sha.c_str());
         RuntimeLog("[fatal] %s (%s)\n", msg, imagePath);
-        MessageBoxA(nullptr, msg, "Splinter Cell: Double Agent Recomp", MB_ICONERROR);
+        MessageBoxA(nullptr, msg, "Splinter Cell: Conviction Recomp", MB_ICONERROR);
         return 2;
     }
     RuntimeLog("[loader] %s: sha256 %s\n", imagePath, sha.c_str());

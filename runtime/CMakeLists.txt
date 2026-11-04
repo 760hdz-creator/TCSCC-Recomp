@@ -109,6 +109,7 @@ add_executable(scda
     src/fs.cpp
     src/kernel.cpp
     src/gfx_log.cpp
+    src/camera.cpp
     src/l3d_trace.cpp
     src/pawn_trace.cpp
     src/pawn_hooks.cpp
