@@ -35,6 +35,11 @@ Real fix: PS memexport in the translator (UAV write of eM0 to eA address, format
 - Default now: GPU bytes for the main list. The light-list bytes are cleared at their lock (= what FF gave). With the GPU light bytes the menu Sams and the mission go near black; same without depth resolves, so not the shadow maps. Open: what those lights break (SCDA_VISBUF_LIGHTS=gpu).
 - Speed: draws ~2.7x fewer than FF (mission ~3.5k vs ~9.5k), but gameplay still ~85 ms/frame at ~9 us/draw: profile next.
 
+## Light-list darkening (open, 2026-11-03)
+- Reference (user screenshot, emulator capture of the 360 game; PortForward ch.1): the cafe is at night, dark street, warm lamp pools, no bloom. Default (light list cleared) = hard daylight, blown out; SCDA_VISBUF_LIGHTS=gpu = hard-edged black light volumes.
+- Pixel watch (frame 4500, 01_market_walk): black comes from draw 1078, light volume (36 verts) VS 6259ce44 / PS 6372c96fdc69aa06, blend 00080008 (src x DST_COLOR mask). PS = 8-tap PCF: shadowmap(slot 14, 00532000 k_24_8 880x880) >= receiver depth; receiver from slot 15 00D6A000 (k_16_16_FLOAT G-buffer, decoded x - 2^floor(log2 x) * c254.x), projected by c1-c3.
+- SCDA_DEPTH_FETCH_ONE=1 (all k_24_8 fetches = 1.0): still black, so the receiver depth is > 1 or NaN: G-buffer value / decode / light projection, not the shadow maps.
+
 ## Dead ends
 - `sub_82EFD598` (lists "DrawVisibleOpaque"/"DrawVisibleTransparent") is the SONAR pass. Its gate byte R+24456 = S+432 is the sonar-goggle flag (`sub_82D8BF68`, set by the "Gadget_SonarGoogle" handlers `sub_82BC7000` / cleared `sub_82BC6BF0`). Forcing it gives a white screen.
 - Draw 60 (VS e66e371ea23144fd, 512 vertices, mask 0) has no memory alloc: dummy draw, not the writer.

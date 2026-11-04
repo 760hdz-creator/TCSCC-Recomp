@@ -1597,6 +1597,13 @@ void D3D11Renderer::BindRegisterState(const RegisterFile& regs, uint32_t texSlot
         // A depth-source resolve's destination fetched as k_24_8 / k_24_8_FLOAT: the depth pyramid
         // (ExecuteResolve). Same address can also hold a colour resolve of another format (the menu
         // frame reuses 00532000 for the HDR scene), so this goes first and by format.
+        // SCDA_DEPTH_FETCH_ONE=1: A/B, every k_24_8 fetch reads 1.0 (far: no shadow, no Hi-Z occlusion).
+        static const bool depthOne = getenv("SCDA_DEPTH_FETCH_ONE") != nullptr;
+        if ((t.format == 22 || t.format == 23) && depthOne && r.white)
+        {
+            srvs[slot] = r.white.Get();
+            continue;
+        }
         if (t.format == 22 || t.format == 23)
             if (auto z = r.depthPyramids.find(t.physical & 0x1FFFF000); z != r.depthPyramids.end() && z->second.srv)
             {

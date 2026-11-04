@@ -35,7 +35,7 @@
 ## Xenia reference (`_run\xenia`, copy of SCDA build)
 - Screenshot: focus window, Alt+D then T -> `screenshots\5553080B\`. Keyboard (`--keyboard_mode=1`): START=X, A=';'. After logos stays black even with START: weak reference.
 ## Next
-1. Open: GPU light-list bytes darken the scene (cleared for now, `SCDA_VISBUF_LIGHTS=gpu`; `docs/l3d_visibility.md`). Bloom/exposure looks strong in the cafe: compare with a reference.
+1. Lighting vs reference (night cafe): GPU light-list lights = black volumes from PS 6372c96f shadow test; receiver depth > 1 / NaN (SCDA_DEPTH_FETCH_ONE=1 still black): check the 00D6A000 k_16_16_FLOAT G-buffer value and its decode. `docs/l3d_visibility.md`.
 2. Overexposure: 01_Market washes out to white. Reference (PortForward walkthrough ch.1 Merchant's Street Market, Xbox 360): the cafe is at NIGHT, dark street lit by warm lamps/string lights, no heavy bloom. Our GPU-light-list run (`SCDA_VISBUF_LIGHTS=gpu`) looked closer than the default: re-check that darkening vs exposure (luminance chain 1x1 fmt 29 from fmt 32 resolve).
 3. tx_coord_denorm at internal scale > 1: pass guest texture size instead of host Dims2D.
 4. Save icon: reload the HUD_Saving movie instead of clearing it. Corrupted save check; Bink colour; review HEURISTIC jump tables.
