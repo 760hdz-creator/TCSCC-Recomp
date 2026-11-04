@@ -174,6 +174,8 @@ void Scan(uint64_t frame, float radius)
 }
 } // namespace
 
+namespace { uint32_t FindCamera(float px, float py); }
+
 // Called once per input poll with the current frame number.
 void PawnTraceTick(uint64_t frame)
 {
@@ -205,17 +207,26 @@ void PawnTraceTick(uint64_t frame)
         }
         return c;
     }();
-    // SCDA_TRACE_SPEED=1: once per wall second, frames presented, the game clock (0x401AAB48, raw and as a
-    // float) and the listener Location: game speed at different frame rates (60 fps check).
-    static const bool traceSpeed = getenv("SCDA_TRACE_SPEED") != nullptr;
-    static ULONGLONG nextSpeed = 0;
-    if (traceSpeed && GetTickCount64() >= nextSpeed)
+    // SCDA_TRACE_SPEED=1|<ms>: every second (or <ms>), frames presented, the game clock (0x401AAB48, raw and
+    // as a float), the listener Location and the nearest camera's yaw: game speed / look rate at
+    // different frame rates (60 fps check). The camera is searched again every 2 s.
+    static const char* speedSpec = getenv("SCDA_TRACE_SPEED");
+    static const ULONGLONG speedMs = speedSpec ? std::max<ULONGLONG>(atoi(speedSpec) > 1 ? atoi(speedSpec) : 1000, 10) : 0;
+    static ULONGLONG nextSpeed = 0, nextCamera = 0;
+    static uint32_t camera = 0;
+    if (speedMs && GetTickCount64() >= nextSpeed)
     {
-        nextSpeed = GetTickCount64() + 1000;
+        nextSpeed = GetTickCount64() + speedMs;
         const uint32_t lis = GuestLoad32(kListenerPtr), clock = GuestLoad32(0x401AAB48);
-        RuntimeLog("[speed] t %.3f frame %llu clock %08X %.4f lis %.1f %.1f %.1f\n", double(GetTickCount64()) / 1000.0,
-            (unsigned long long)frame, clock, double(std::bit_cast<float>(clock)), lis ? F(lis + kLisLoc) : 0.f,
-            lis ? F(lis + kLisLoc + 4) : 0.f, lis ? F(lis + kLisLoc + 8) : 0.f);
+        const float lx = lis ? F(lis + kLisLoc) : 0.f, ly = lis ? F(lis + kLisLoc + 4) : 0.f;
+        if (lis && GetTickCount64() >= nextCamera)
+        {
+            nextCamera = GetTickCount64() + 2000;
+            camera = FindCamera(lx, ly);
+        }
+        RuntimeLog("[speed] t %.3f frame %llu clock %08X %.4f lis %.1f %.1f %.1f yaw %d\n", double(GetTickCount64()) / 1000.0,
+            (unsigned long long)frame, clock, double(std::bit_cast<float>(clock)), lx, ly, lis ? F(lis + kLisLoc + 8) : 0.f,
+            camera ? int32_t(GuestLoad32(camera + 0xA4)) : 0);
     }
     static uint64_t last = ~0ull;
     if (frame == last)
