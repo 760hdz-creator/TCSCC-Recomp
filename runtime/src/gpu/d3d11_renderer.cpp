@@ -1754,19 +1754,6 @@ void D3D11Renderer::BindRegisterState(const RegisterFile& regs, uint32_t texSlot
                     RuntimeLog("[convert] present %llu fetch %08X fmt %u %ux%u tiled %d mips %u bytes %u had %d stable %u hash %016llx was %016llx\n",
                         m_presented, t.physical, t.format, t.width, t.height, t.tiled, t.mipMaxLevel, guestBytes, cached.srv ? 1 : 0, cached.stable,
                         (unsigned long long)hash, (unsigned long long)cached.hash);
-                if (traceConvert >= 0 && (long long)m_presented >= traceConvert && (long long)m_presented < traceConvert + 3) // TEMP
-                {
-                    std::string mips;
-                    for (uint32_t level = 1; level <= t.mipMaxLevel && HasGuestMips(t); level++)
-                    {
-                        const TextureFetch m = TextureMipLevel(t, level);
-                        char buf[64];
-                        snprintf(buf, sizeof(buf), " L%u %08X+%X/%u,%u:%04x", level, m.physical, cached.levelBytes[level], m.offsetX, m.offsetY,
-                            uint32_t(HashBytes(PhysicalPtr(m.physical), cached.levelBytes[level])) & 0xFFFF);
-                        mips += buf;
-                    }
-                    RuntimeLog("[convert]   L0 %04x%s\n", uint32_t(HashBytes(guest, guestBytes)) & 0xFFFF, mips.c_str());
-                }
                 std::vector<float> floats = isFloat ? ConvertTextureFloat(t, guest) : std::vector<float>();
                 std::vector<uint32_t> texels = isFloat ? std::vector<uint32_t>() : ConvertTexture(t, guest);
                 if (promptStyle != PromptStyle::Xbox && PromptRedraw(cached.icon, promptStyle, texels, t.width, t.height))
