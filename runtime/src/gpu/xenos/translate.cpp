@@ -50,6 +50,14 @@ float4 TexExp(float4 v, uint t)
     const int e = int(g_Fetch[d >> 2][d & 3] << 13) >> 26;
     return e ? v * asfloat(0x3F800000 + (e << 23)) : v;
 }
+// Guest size of fetch constant t (dword 2: width - 1 @0-12, height - 1 @13-25): tx_coord_denorm
+// coordinates are guest texels, also when the bound host texture is a scaled resolve copy.
+float2 GuestDims2D(uint t)
+{
+    const uint d = 6 * t + 2;
+    const uint s = g_Fetch[d >> 2][d & 3];
+    return float2((s & 0x1FFF) + 1, ((s >> 13) & 0x1FFF) + 1);
+}
 // Fetch-constant swizzle for textures bound raw (resolve copies): 0-3 = X-W, 4 = 0, 5 = 1.
 float4 TexSwizzle(float4 v, uint t)
 {

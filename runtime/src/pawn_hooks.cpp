@@ -36,19 +36,31 @@ PPC_FUNC(sub_82C1EAC8)
     }
 }
 
-// sub_82CE28A8(progress, campaign, mission): 1 when the mission is not locked (state @+260 != 1).
-// Scene Select drops missions it returns 0 for (GetMissionList sub_82E7EB80).
-// SCDA_UNLOCK_ALL=1 (test aid): every in-range mission counts as unlocked.
+// sub_82CE28A8(progress, campaign, mission): 1 when the mission is not locked. Mission object =
+// *(*(*(progress+116) + 4*campaign) + 24) + 4*mission), state @+260 (1 = locked); campaign +28 = count.
+// Scene Select drops missions it returns 0 for (GetMissionList sub_82E7EB80); the level start path
+// reads the state too (a faked return alone starts locked missions as 01_Market).
+// SCDA_UNLOCK_ALL=1 (test aid): locked missions get mission 0's state (written to guest memory, so
+// a later save keeps it: test with a copy of the profile).
 extern "C" PPC_FUNC(__imp__sub_82CE28A8);
 PPC_FUNC(sub_82CE28A8)
 {
     static const bool all = getenv("SCDA_UNLOCK_ALL") != nullptr;
     const uint32_t p = ctx.r3.u32;
     const int32_t c = ctx.r4.s32, m = ctx.r5.s32;
+    if (all && c >= 0 && m >= 0 && c < int32_t(GuestLoad32(p + 120)))
+    {
+        const uint32_t camp = GuestLoad32(GuestLoad32(p + 116) + 4 * uint32_t(c));
+        if (m < int32_t(GuestLoad32(camp + 28)))
+        {
+            const uint32_t missions = GuestLoad32(camp + 24), mi = GuestLoad32(missions + 4 * uint32_t(m));
+            const uint32_t first = GuestLoad32(GuestLoad32(missions) + 260);
+            if (GuestLoad32(mi + 260) == 1 && first != 1)
+            {
+                RuntimeLog("[unlock] campaign %d mission %d state 1 -> %u\n", c, m, first);
+                GuestStore32(mi + 260, first);
+            }
+        }
+    }
     __imp__sub_82CE28A8(ctx, base);
-    if (!all || ctx.r3.u32 || c < 0 || m < 0 || c >= int32_t(GuestLoad32(p + 120)))
-        return;
-    const uint32_t camp = GuestLoad32(GuestLoad32(p + 116) + 4 * uint32_t(c));
-    if (m < int32_t(GuestLoad32(camp + 28)))
-        ctx.r3.u64 = 1;
 }
