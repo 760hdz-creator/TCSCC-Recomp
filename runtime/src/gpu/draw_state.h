@@ -102,6 +102,7 @@ TextureFetch TextureMipLevel(const TextureFetch& t, uint32_t level);
 // Bytes per element (texel, or 4x4 block for DXT) for the formats ConvertTexture supports
 // (k_8, k_8_8_8_8, DXT1, DXT2_3, DXT4_5) and IsFloatTextureFormat ones; 0 = unsupported.
 uint32_t TextureElementBytes(uint32_t format);
+bool IsBlockCompressed(uint32_t format); // 4x4-texel blocks: formats 18-20 (DXT1, DXT2/3, DXT4/5)
 // Guest bytes the texture occupies (tiled: 32x32 elements aligned).
 uint32_t TextureGuestBytes(const TextureFetch& t);
 uint32_t TextureCubeFaceBytes(const TextureFetch& t); // stride between the 6 faces of a cube texture

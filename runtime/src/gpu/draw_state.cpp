@@ -194,7 +194,7 @@ bool GuestRangeReadable(const uint8_t* p, size_t n)
     return true;
 }
 
-static bool IsBlockCompressed(uint32_t format);
+bool IsBlockCompressed(uint32_t format);
 static uint32_t Log2Ceil(uint32_t v) { return v > 1 ? uint32_t(std::bit_width(v - 1)) : 0; }
 
 bool HasGuestMips(const TextureFetch& t) { return t.dimension == 1 && !t.stacked; }
@@ -336,7 +336,7 @@ bool IsFloatTextureFormat(uint32_t format)
     return format == 25 || format == 26 || (format >= 30 && format <= 32) || (format >= 36 && format <= 38);
 }
 
-static bool IsBlockCompressed(uint32_t format) { return format >= 18 && format <= 20; }
+bool IsBlockCompressed(uint32_t format) { return format >= 18 && format <= 20; }
 static uint32_t Align32(uint32_t v) { return (v + 31) & ~31u; }
 static uint32_t Log2(uint32_t v) { return v >= 16 ? 4 : v >= 8 ? 3 : v >= 4 ? 2 : v >= 2 ? 1 : 0; }
 
@@ -371,9 +371,14 @@ uint32_t TextureGuestBytes(const TextureFetch& t)
     }
     // Small elements interleave past the 32x32 tile (8 bpp: up to 2.5x), so take the highest
     // element index of the last macro-tile row.
-    uint32_t log2 = Log2(bytes), last = 0, rows = Align32(height);
-    for (uint32_t y = rows - 32; y < rows; y++)
-        for (uint32_t x = 0; x < Align32(pitch); x++)
+    // Only the elements the level uses (its rect, offset in a packed tail), like Xenia's level
+    // extent: the 32-aligned pitch x rows reached into tile padding and past packed tails, where
+    // Conviction keeps live data (per-frame bounding boxes), so ~200 textures hashed new every
+    // frame and were converted again (half the render thread).
+    const uint32_t b = IsBlockCompressed(t.format) ? 4 : 1, xEnd = t.offsetX + (t.width + b - 1) / b;
+    uint32_t log2 = Log2(bytes), last = 0;
+    for (uint32_t y = std::max(t.offsetY, (height - 1) & ~31u); y < height; y++)
+        for (uint32_t x = t.offsetX; x < xEnd; x++)
             last = std::max(last, TiledTexelIndex(x, y, pitch, log2));
     return (last + 1) * bytes;
 }

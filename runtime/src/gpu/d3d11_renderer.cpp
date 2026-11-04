@@ -967,6 +967,32 @@ static uint64_t HashBytes(const uint8_t* p, size_t n)
     return r | 1;
 }
 
+// Hash of one mip level's guest bytes. A tiled level that does not fill its 32x32-element tiles
+// (narrow mips, packed-tail sublevels at an offset) hashes only its own elements: the other tile
+// slots are not texture data, and Conviction keeps live data there (the contiguous range hashed
+// new every frame, ~200 conversions per present).
+static uint64_t HashLevel(const TextureFetch& m, const uint8_t* g, size_t n)
+{
+    const uint32_t bytes = TextureElementBytes(m.format), b = IsBlockCompressed(m.format) ? 4 : 1;
+    const uint32_t wb = (m.width + b - 1) / b, hb = (m.height + b - 1) / b;
+    if (!m.tiled || !bytes || (!m.offsetX && !m.offsetY && wb % 32 == 0 && hb % 32 == 0))
+        return HashBytes(g, n);
+    const uint32_t pitch = (m.pitch + b - 1) / b, log2 = uint32_t(std::countr_zero(bytes));
+    const uint32_t xEnd = m.offsetX + wb, yEnd = m.offsetY + hb;
+    uint64_t h = 0xCBF29CE484222325ull;
+    for (uint32_t y = m.offsetY; y < yEnd; y++)
+        for (uint32_t x = m.offsetX; x < xEnd; x++)
+        {
+            const size_t o = size_t(TiledTexelIndex(x, y, pitch, log2)) << log2;
+            if (o + bytes > n)
+                continue;
+            uint64_t w[2] = {};
+            memcpy(w, g + o, std::min<uint32_t>(bytes, 16));
+            h = ((h ^ w[0]) * 0x100000001B3ull ^ w[1]) * 0x100000001B3ull;
+        }
+    return h | 1;
+}
+
 // Per-present texture check: first and last 4 KB plus 16 strided 256-byte runs (all of small ones); never 0.
 static uint64_t ProbeBytes(const uint8_t* p, size_t n)
 {
@@ -1681,7 +1707,7 @@ void D3D11Renderer::BindRegisterState(const RegisterFile& regs, uint32_t texSlot
             g_texHash.skips += probeOnly;
             if (!probeOnly || compare)
             {
-                hash = readable ? HashBytes(guest, guestBytes) : 0;
+                hash = readable ? HashLevel(t, guest, guestBytes) : 0;
                 g_texHash.bytes += guestBytes;
                 // Authored mip levels (2D only): part of the hash; unreadable ones fall back to generated mips.
                 guestMips = hash && t.mipMaxLevel && HasGuestMips(t);
@@ -1691,7 +1717,7 @@ void D3D11Renderer::BindRegisterState(const RegisterFile& regs, uint32_t texSlot
                     const uint32_t n = cached.levelBytes[level];
                     guestMips = GuestRangeReadable(g, n);
                     if (guestMips)
-                        hash = (hash ^ HashBytes(g, n)) * 1099511628211ull;
+                        hash = (hash ^ HashLevel(TextureMipLevel(t, level), g, n)) * 1099511628211ull;
                     g_texHash.bytes += n;
                 }
                 if (probeOnly && hash != cached.hash)
@@ -1722,6 +1748,25 @@ void D3D11Renderer::BindRegisterState(const RegisterFile& regs, uint32_t texSlot
             else if (hash)
             {
                 const bool isFloat = IsFloatTextureFormat(t.format);
+                // SCDA_TRACE_CONVERT=<present>: log every texture conversion of that present and the next 2 (re-conversion hunting).
+                static const long long traceConvert = getenv("SCDA_TRACE_CONVERT") ? atoll(getenv("SCDA_TRACE_CONVERT")) : -1;
+                if (traceConvert >= 0 && (long long)m_presented >= traceConvert && (long long)m_presented < traceConvert + 3)
+                    RuntimeLog("[convert] present %llu fetch %08X fmt %u %ux%u tiled %d mips %u bytes %u had %d stable %u hash %016llx was %016llx\n",
+                        m_presented, t.physical, t.format, t.width, t.height, t.tiled, t.mipMaxLevel, guestBytes, cached.srv ? 1 : 0, cached.stable,
+                        (unsigned long long)hash, (unsigned long long)cached.hash);
+                if (traceConvert >= 0 && (long long)m_presented >= traceConvert && (long long)m_presented < traceConvert + 3) // TEMP
+                {
+                    std::string mips;
+                    for (uint32_t level = 1; level <= t.mipMaxLevel && HasGuestMips(t); level++)
+                    {
+                        const TextureFetch m = TextureMipLevel(t, level);
+                        char buf[64];
+                        snprintf(buf, sizeof(buf), " L%u %08X+%X/%u,%u:%04x", level, m.physical, cached.levelBytes[level], m.offsetX, m.offsetY,
+                            uint32_t(HashBytes(PhysicalPtr(m.physical), cached.levelBytes[level])) & 0xFFFF);
+                        mips += buf;
+                    }
+                    RuntimeLog("[convert]   L0 %04x%s\n", uint32_t(HashBytes(guest, guestBytes)) & 0xFFFF, mips.c_str());
+                }
                 std::vector<float> floats = isFloat ? ConvertTextureFloat(t, guest) : std::vector<float>();
                 std::vector<uint32_t> texels = isFloat ? std::vector<uint32_t>() : ConvertTexture(t, guest);
                 if (promptStyle != PromptStyle::Xbox && PromptRedraw(cached.icon, promptStyle, texels, t.width, t.height))
