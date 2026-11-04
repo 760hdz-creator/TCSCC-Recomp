@@ -2234,6 +2234,42 @@ void D3D11Renderer::ExecuteDraw(const DrawCall& d, const Frame& frame)
                     std::bit_cast<float>(r.regs[kRegAluConstants + c * 4 + 1]), std::bit_cast<float>(r.regs[kRegAluConstants + c * 4 + 2]),
                     std::bit_cast<float>(r.regs[kRegAluConstants + c * 4 + 3]), r.regs[kRegAluConstants + c * 4], r.regs[kRegAluConstants + c * 4 + 1],
                     r.regs[kRegAluConstants + c * 4 + 2], r.regs[kRegAluConstants + c * 4 + 3]);
+        // SCDA_TRACE_VFETCH=<slot>,<dwords>: those VS draws also log vertex fetch constant <slot> (2 dwords at
+        // kRegFetchConstants + 2 * slot) and the first <dwords> dwords it points at, from the draw's memory snapshot.
+        if (static const char* vf = getenv("SCDA_TRACE_VFETCH"); vf && std::find(traceVscList.begin(), traceVscList.end(), d.vs->hash) != traceVscList.end())
+        {
+            unsigned slot = 0, dwords = 0;
+            if (sscanf(vf, "%u,%u", &slot, &dwords) == 2 && slot < 96)
+            {
+                const uint32_t f0 = r.regs[kRegFetchConstants + slot * 2], f1 = r.regs[kRegFetchConstants + slot * 2 + 1];
+                const uint32_t pa = f0 & 0x1FFFFFFCu;
+                // The draw's own snapshot of guest memory (what the VS reads); live memory is reused by then.
+                const uint8_t* src = nullptr;
+                for (uint32_t index : d.memory)
+                    if (index < frame.memory.size())
+                    {
+                        const Frame::Snapshot& snap = frame.memory[index];
+                        const uint32_t base = uint32_t(snap.key >> 32), bytes = uint32_t(snap.key);
+                        if (pa >= base && pa + dwords * 4 <= base + bytes)
+                            src = snap.Bytes().data() + (pa - base);
+                    }
+                RuntimeLog("[rtrace]   vfetch%u %08X %08X -> %08X, index offset %u%s\n", slot, f0, f1, pa, r.regs[0x2102] & 0xFFFFFF,
+                    src ? "" : " (no snapshot)");
+                std::string line;
+                for (uint32_t i = 0; src && i < dwords && i < 256; i++)
+                {
+                    const uint32_t v = _byteswap_ulong(*reinterpret_cast<const uint32_t*>(src + i * 4)); // big-endian guest dword
+                    char buf[48];
+                    snprintf(buf, sizeof(buf), " %08X(%g)", v, std::bit_cast<float>(v));
+                    line += buf;
+                    if (i % 11 == 10 || i + 1 == dwords)
+                    {
+                        RuntimeLog("[rtrace]    v%s\n", line.c_str());
+                        line.clear();
+                    }
+                }
+            }
+        }
         // SCDA_TRACE_PS=<ps hash hex>[,..]: draws with one of those PS also log PS c0-c7 and blend control.
         static const std::vector<uint64_t> tracePsList = []
         {

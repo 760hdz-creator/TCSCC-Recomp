@@ -215,8 +215,12 @@ void ShaderRecompiler::recompile(const VertexFetchInstruction& instr, uint32_t a
         const int expAdjust = oldSign ? 0 : int(instr.expAdjust);
         if (expAdjust)
             out += "(";
-        print("FetchVertex({}, r{}.{}, {}, {}, {}, {}, {})", instr.constIndex * 3 + instr.constIndexSelect,
-            uint32_t(instr.srcRegister), kComp[instr.srcSwizzle & 3], int32_t(instr.offset), uint32_t(instr.stride),
+        // The float index is floored unless the instruction rounds it (is_index_rounded, Xenia
+        // dxbc_shader_translator_fetch). Always rounding read the next record for Conviction's particle
+        // quads (index = vertex id * 0.25: corners 2 and 3 of each quad joined the next particle -> the
+        // hard-edged light wedges at the 01_Market lamps).
+        print("FetchVertex({}, floor(r{}.{}{}), {}, {}, {}, {}, {})", instr.constIndex * 3 + instr.constIndexSelect,
+            uint32_t(instr.srcRegister), kComp[instr.srcSwizzle & 3], instr.isIndexRounded ? " + 0.5" : "", int32_t(instr.offset), uint32_t(instr.stride),
             uint32_t(instr.format), uint32_t(isSigned ? 1 : 0), uint32_t(instr.numFormatAll ? 0 : 1));
         if (expAdjust)
             print(" * {})", std::ldexp(1.0, expAdjust));

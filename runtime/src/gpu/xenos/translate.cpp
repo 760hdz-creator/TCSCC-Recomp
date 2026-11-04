@@ -246,7 +246,7 @@ float4 FetchVertex(uint slot, float index, int offset, uint stride, uint format,
     uint4 g = g_Fetch[slot >> 1];
     uint2 fc = (slot & 1) ? g.zw : g.xy;
     uint endian = fc.y & 3;
-    uint addr = (fc.x & 0x1FFFFFFC) + (uint(max(index, 0.0) + 0.5) * stride + uint(offset)) * 4;
+    uint addr = (fc.x & 0x1FFFFFFC) + (uint(max(index, 0.0)) * stride + uint(offset)) * 4; // index: floored/rounded by the caller
     uint4 d;
     d.x = SwapDword(g_Memory.Load(addr), endian);
     d.y = SwapDword(g_Memory.Load(addr + 4), endian);

@@ -15,7 +15,7 @@
 #include <gpu/xenos/translate.h>
 
 // Bump when the translator or shader_common changes: old disk entries are then ignored.
-static constexpr uint32_t kTranslatorVersion = 33; // v33: setp_*_push p0 from src.w, result from src.x (Xenia); v32: tx_coord_denorm normalizes by the guest size (GuestDims2D); v31: vfetch_mini inherits the previous vfetch_full's stride/source/constant; v30: texture fetch exp_adjust (TexExp); v29: colour exponent bias (g_ColorExpBias); v28: param-gen position = integer pixel; v26: PS memexport (MemExport, u7 window); v25: tx_coord_denorm fetches normalized; v24: sky nudge only for w > 0 (behind-camera vertices); v22: user clip planes (v21: far-only sky depth nudge in XenosViewport; v20: PRED_SET_INV 1 -> 0)
+static constexpr uint32_t kTranslatorVersion = 34; // v34: vfetch index floored unless is_index_rounded (was always rounded); v33: setp_*_push p0 from src.w, result from src.x (Xenia); v32: tx_coord_denorm normalizes by the guest size (GuestDims2D); v31: vfetch_mini inherits the previous vfetch_full's stride/source/constant; v30: texture fetch exp_adjust (TexExp); v29: colour exponent bias (g_ColorExpBias); v28: param-gen position = integer pixel; v26: PS memexport (MemExport, u7 window); v25: tx_coord_denorm fetches normalized; v24: sky nudge only for w > 0 (behind-camera vertices); v22: user clip planes (v21: far-only sky depth nudge in XenosViewport; v20: PRED_SET_INV 1 -> 0)
 static constexpr uint32_t kCacheMagic = 0x53444353; // "SCDS"
 
 struct CacheHeader
