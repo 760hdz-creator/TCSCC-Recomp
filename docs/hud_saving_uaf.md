@@ -12,7 +12,7 @@ No refcount or keep path protects the borrowed pointer, so the reason real hardw
 
 ## Fix (gfx_log.cpp)
 The `sub_83427FD8` hook records wrappers. The dtor hook clears +4 of every live wrapper (vtable still 0x82403000) that points to the dying movie. `sub_83427D78` null-checks +4, so the save icon is skipped. Log: `[gfx] HUD_Saving wrapper ... pointer cleared`.
-Open: the save icon does not show after the first mission load. A real fix would reload the movie instead.
+2026-11-04: `sub_82D0F9F0` (release by name) hook skips the release at the teardown loop call site (lr 0x82D112E4) while a live wrapper holds the movie, so the wrapper keeps a valid movie (the movie+120 keep flag does not help: this teardown passes keep = 0). Skipping other callers hangs (they retry until the movie is gone). The dtor hook stays as a safety net. `SCDA_NO_SAVING_KEEP=1` = old behaviour.
 
 ## Tools
 `SCDA_TRACE_GFX=1` logs movie ctor/dtor with the guest call chain, plus the wrapper lookup result and its registry list.
