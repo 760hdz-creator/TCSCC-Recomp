@@ -77,6 +77,8 @@ public:
     // Writes completed occlusion query results into guest memory (also called while no frame is
     // queued: a title waiting for a result swaps no frame until it lands).
     void PollQueries();
+    // A fence is held back until earlier host queries answer (the title is likely waiting on it).
+    bool HasPendingFences() const;
 
 private:
     void CreateBackBufferView();

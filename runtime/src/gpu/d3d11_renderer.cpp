@@ -3077,6 +3077,8 @@ void D3D11Renderer::ExecuteFence(const Fence& f)
     r.pendingFences.push_back({ f, r.querySeq });
 }
 
+bool D3D11Renderer::HasPendingFences() const { return m_draw && !m_draw->pendingFences.empty(); }
+
 void D3D11Renderer::WritePendingFences()
 {
     DrawResources& r = *m_draw;

@@ -182,9 +182,18 @@ static void RenderThread(DisplaySettings s)
         {
             // The title may be waiting for a query result before it swaps: run the queries it has
             // issued so far (partial frame), then collect results.
-            Frames().FlushOpenIfWaiting();
+            const bool flushed = Frames().FlushOpenIfWaiting();
             renderer.PollQueries();
-            Sleep(1);
+            if (flushed)
+                continue; // the partial is queued: run it now
+            // SCDA_IDLE_SLEEP=1: old idle loop (Sleep(1) between polls).
+            static const bool oldIdle = getenv("SCDA_IDLE_SLEEP") != nullptr;
+            if (oldIdle)
+                Sleep(1);
+            else if (renderer.HasPendingFences())
+                SwitchToThread(); // a fence waits on host query results: collect them as soon as they land
+            else
+                Frames().WaitForFrame(std::chrono::microseconds(500));
             continue;
         }
         // SCDA_TRACE_FRAME=<n>: log every draw and resolve of the first frame >= n (renderer development).

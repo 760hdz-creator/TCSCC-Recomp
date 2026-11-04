@@ -269,7 +269,11 @@ SCDA_IMPORT(XamInputGetState)
         FilterMenuShortcut(g, script.empty() && GameWindowFocused() && KeyDown(VK_ESCAPE), wait);
         g_waitRelease = wait;
     }
-    AutoPressApply(script, uint32_t(Frames().FramesEnded()), g);
+    // SCDA_AUTOPRESS_WALL=1: the script clock counts 30 fps frames of wall time since the first poll,
+    // not presented frames (A/B runs at different frame rates reach the same scene; the game is delta-time).
+    static const bool wallClock = getenv("SCDA_AUTOPRESS_WALL") != nullptr;
+    static const ULONGLONG firstPoll = GetTickCount64();
+    AutoPressApply(script, wallClock ? uint32_t((GetTickCount64() - firstPoll) * 3 / 100) : uint32_t(Frames().FramesEnded()), g);
     PawnTraceTick(Frames().FramesEnded());
     PeekTick(Frames().FramesEnded());
     AutopilotApply(Frames().FramesEnded(), g);

@@ -292,3 +292,25 @@ TEST(late_query_gets_provisional_visible_after_one_frame)
     CHECK_EQ(GuestLoad32(a + 16), __builtin_bswap32(kOcclusionFallbackSamples));
     CHECK_EQ(GuestLoad32(b + 16), __builtin_bswap32(7u));
 }
+
+// The idle renderer waits on the queue instead of Sleep(1): a frame ended on another thread wakes it
+// at once; with nothing queued it returns after the timeout.
+TEST(frame_queue_wait_wakes_on_end_frame)
+{
+    FrameQueue q(3);
+    auto t0 = std::chrono::steady_clock::now();
+    q.WaitForFrame(std::chrono::microseconds(2000));
+    CHECK(std::chrono::steady_clock::now() - t0 >= std::chrono::microseconds(1500));
+    std::thread producer([&]
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        q.AddDraw(DrawCall{}, none);
+        q.EndFrame();
+    });
+    t0 = std::chrono::steady_clock::now();
+    q.WaitForFrame(std::chrono::seconds(5));
+    CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::seconds(2));
+    producer.join();
+    Frame f;
+    CHECK(q.PopFrame(f));
+}

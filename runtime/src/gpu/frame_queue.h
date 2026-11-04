@@ -3,6 +3,7 @@
 #pragma once
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -297,6 +298,7 @@ public:
         m_latest.clear();
         m_openSync = 0;
         m_lastActivity = std::chrono::steady_clock::now();
+        m_frameReady.notify_one();
         // SCDA_DROP_FRAMES=<n>: drop every n-th finished frame (reproduces a renderer that falls
         // behind): its register writes lead the next frame, like a frame dropped below.
         static const long dropEvery = getenv("SCDA_DROP_FRAMES") ? atol(getenv("SCDA_DROP_FRAMES")) : 0;
@@ -318,6 +320,12 @@ public:
                 Drop(dropped, m_done.empty() ? m_open : m_done.front());
             } while (!m_done.empty() && m_done.front().stats.frame == n);
         }
+    }
+    // Renderer idle wait: returns once a Frame is queued or after timeout (no Sleep(1) latency).
+    void WaitForFrame(std::chrono::microseconds timeout)
+    {
+        std::unique_lock lock(m_mutex);
+        m_frameReady.wait_for(lock, timeout, [&] { return !m_done.empty(); });
     }
     bool PopFrame(Frame& out)
     {
@@ -370,6 +378,7 @@ private:
         m_latest.clear();
         m_openSync = 0;
         m_lastActivity = now;
+        m_frameReady.notify_one();
     }
     void TouchEpochLocked() { m_epoch = (m_epoch | 1ull << 63) + (1ull << 32); }
     // Query latency cap: an end issued in guest frame F whose block still holds the title's marker
@@ -446,6 +455,7 @@ private:
     }
 
     mutable std::mutex m_mutex;
+    std::condition_variable m_frameReady; // m_done got a Frame (WaitForFrame)
     size_t m_max;
     Frame m_open;
     struct Latest
