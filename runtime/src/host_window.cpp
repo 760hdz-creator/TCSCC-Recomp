@@ -192,6 +192,7 @@ static void RenderThread(DisplaySettings s)
                 Sleep(1);
             else if (renderer.HasPendingFences())
                 SwitchToThread(); // a fence waits on host query results: collect them as soon as they land
+            // shortcut: spins a core until the query answers (a lost one: up to the 2 s fallback).
             else
                 Frames().WaitForFrame(std::chrono::microseconds(500));
             continue;

@@ -61,6 +61,17 @@ bool VsyncForTest(PPCContext& ctx) { return Vsync(ctx); }
 
 // A title thread (title.h): it stops with the title and InterruptsStart runs it again for the next
 // instance, on the same guest context (service region, allocated once).
+// SCDA_VSYNC_HZ=<n>: vblank rate (default 60, FPS60 setting 120). The title flips every Nth vblank
+// (presentation interval), so 120 doubles a 30 fps cap.
+static const long g_vblankEnv = [] { const char* v = getenv("SCDA_VSYNC_HZ"); long n = v ? atol(v) : 0; return n >= 30 && n <= 480 ? n : 0; }();
+static std::atomic<LONGLONG> g_vblankHz{ g_vblankEnv ? g_vblankEnv : 60 };
+
+void InterruptsSetVblankRate(uint32_t hz)
+{
+    if (!g_vblankEnv && hz >= 30 && hz <= 480)
+        g_vblankHz = hz;
+}
+
 static DWORD WINAPI InterruptThread(void*)
 {
     static PPCContext* ctx;
@@ -77,12 +88,9 @@ static DWORD WINAPI InterruptThread(void*)
     LARGE_INTEGER freq, next, now;
     QueryPerformanceFrequency(&freq);
     QueryPerformanceCounter(&next);
-    // SCDA_VSYNC_HZ=<n>: vblank rate (default 60). The title flips every Nth vblank (presentation
-    // interval), so 120 doubles a 30 fps cap if the cap is the interval.
-    static const LONGLONG hz = [] { const char* v = getenv("SCDA_VSYNC_HZ"); long n = v ? atol(v) : 0; return LONGLONG(n >= 30 && n <= 480 ? n : 60); }();
-    const LONGLONG period = freq.QuadPart / hz;
     for (;;)
     {
+        const LONGLONG period = freq.QuadPart / g_vblankHz.load(std::memory_order_relaxed);
         if (g_paused)
         {
             TitleSleep(1);

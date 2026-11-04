@@ -16,6 +16,7 @@
 #include <pad.h>
 #include <prompts.h>
 #include <fov.h>
+#include <interrupts.h>
 #include <runtime.h>
 #include "overlay.h"
 #include "updater.h"
@@ -79,6 +80,7 @@ void Apply(const DisplaySettings& s)
     g_renderer->SetCleanGoggles(s.cleanGoggles);
     g_renderer->SetDrawBackFaces(s.drawBackFaces);
     SetFovOverride(float(s.fov));
+    InterruptsSetVblankRate(s.fps60 ? 120 : 60);
 }
 
 // Writes the keys that changed.
@@ -98,6 +100,8 @@ void Save(const DisplaySettings& before, const DisplaySettings& after)
         save("CleanGoggles", after.cleanGoggles ? "1" : "0");
     if (before.fov != after.fov)
         save("FOV", std::to_string(after.fov));
+    if (before.fps60 != after.fps60)
+        save("FPS60", after.fps60 ? "1" : "0");
     if (before.drawBackFaces != after.drawBackFaces)
         save("DrawBackFaces", after.drawBackFaces ? "1" : "0");
     if (before.antiAliasing != after.antiAliasing)
@@ -149,6 +153,9 @@ void DisplayTab(DisplaySettings& s)
     if (ImGui::SliderInt("Field of view", &fov, 60, 110, fov == 75 ? "%d (default)" : "%d"))
         s.fov = uint32_t(fov);
     Hint("Camera field of view in degrees; 75 is the game's own. Zoom (binoculars, sniper, cameras) keeps its own value.");
+    ImGui::Checkbox("60 FPS", &s.fps60);
+    Hint("Unlocks the game's 30 fps cap to 60. Game speed is unchanged (the game runs on wall time). "
+         "Menus may run below 60.");
     ImGui::Checkbox("Clean goggles", &s.cleanGoggles);
     Hint("Night, thermal and EMF vision without the scanlines and noise.");
     // [General] Language (X_LANGUAGE id), saved at once, read at startup (GameLanguage).

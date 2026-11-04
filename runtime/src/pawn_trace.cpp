@@ -205,6 +205,18 @@ void PawnTraceTick(uint64_t frame)
         }
         return c;
     }();
+    // SCDA_TRACE_SPEED=1: once per wall second, frames presented, the game clock (0x401AAB48, raw and as a
+    // float) and the listener Location: game speed at different frame rates (60 fps check).
+    static const bool traceSpeed = getenv("SCDA_TRACE_SPEED") != nullptr;
+    static ULONGLONG nextSpeed = 0;
+    if (traceSpeed && GetTickCount64() >= nextSpeed)
+    {
+        nextSpeed = GetTickCount64() + 1000;
+        const uint32_t lis = GuestLoad32(kListenerPtr), clock = GuestLoad32(0x401AAB48);
+        RuntimeLog("[speed] t %.3f frame %llu clock %08X %.4f lis %.1f %.1f %.1f\n", double(GetTickCount64()) / 1000.0,
+            (unsigned long long)frame, clock, double(std::bit_cast<float>(clock)), lis ? F(lis + kLisLoc) : 0.f,
+            lis ? F(lis + kLisLoc + 4) : 0.f, lis ? F(lis + kLisLoc + 8) : 0.f);
+    }
     static uint64_t last = ~0ull;
     if (frame == last)
         return;

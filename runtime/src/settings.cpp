@@ -88,6 +88,8 @@ DisplaySettings LoadDisplaySettings(const std::filesystem::path& ini)
         }
         else if (key == "cleangoggles")
             s.cleanGoggles = Truthy(value);
+        else if (key == "fps60")
+            s.fps60 = Truthy(value);
         else if (key == "drawbackfaces")
             s.drawBackFaces = Truthy(value);
         else if (key == "fov")

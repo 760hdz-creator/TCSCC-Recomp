@@ -19,6 +19,10 @@ struct DisplaySettings
     bool drawBackFaces = false;
     // Field of view in degrees ([Display] FOV=60..110). 75 is the game's own (nothing is changed).
     uint32_t fov = 75;
+    // 60 fps ([Display] FPS60=1): the guest vblank runs at 120 Hz, so the title's every-2nd-vblank flip
+    // caps at 60 instead of 30. The game clock is wall time (0x401AAB48 tracks it 1:1 at both rates,
+    // movement matches, 01_Market 2026-11-04). Default off (authentic).
+    bool fps60 = false;
     // Post-processing on the presented frame (F1 menu, Graphics). Defaults leave the image as the
     // console made it. The game's own 4x MSAA is always on.
     enum AntiAliasing { AaOff, AaFxaa } antiAliasing = AaOff; // [Display] AntiAliasing=Off|FXAA
