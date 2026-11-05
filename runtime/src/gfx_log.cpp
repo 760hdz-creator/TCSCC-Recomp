@@ -329,3 +329,15 @@ PPC_FUNC(sub_825283A0)
     WaitOnAddress(&GpuWriteSeq(), &expected, sizeof(expected), 1);
     lastPending = std::chrono::steady_clock::now();
 }
+
+// Sleep(ms) wrapper sub_82F50BE8. The stream worker pass sub_82AB6528 calls Sleep(0) (lr 82AB660C)
+// when a pass found no work, then runs the next pass: ~20k passes/s, a host core busy in its event
+// set/clear. Idle passes sleep 1 ms instead. SCDA_STREAM_SPIN=1: old Sleep(0).
+extern "C" PPC_FUNC(__imp__sub_82F50BE8);
+PPC_FUNC(sub_82F50BE8)
+{
+    static const bool spin = getenv("SCDA_STREAM_SPIN") != nullptr;
+    if (!spin && ctx.r3.u32 == 0 && uint32_t(ctx.lr) == 0x82AB660C)
+        ctx.r3.u64 = 1;
+    __imp__sub_82F50BE8(ctx, base);
+}
