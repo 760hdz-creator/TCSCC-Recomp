@@ -87,6 +87,7 @@ Everything new is **off by default**, so the game looks and runs like the consol
 ## Patch notes
 
 ### 2026-11-04: draw distance, field of view
+- **Fixed: robotic voices** in streamed dialogue (e.g. the first mission's cafe call) and glitches in the music.
 - **Fixed: no music.** The menu music, the music during missions and the sound of mission intro cutscenes stopped after a few seconds (streamed audio got stuck).
 - **Fixed: the Field of view slider did nothing.** It now widens or narrows the player camera (default 90).
 - **New: Draw distance option.** On the console, about half the small-object tests in the market hide the object.
