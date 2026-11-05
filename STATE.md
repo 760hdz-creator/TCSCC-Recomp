@@ -33,7 +33,7 @@
 - 2026-11-05 RECOMP SETTINGS (main_menu.cpp + recomp_page.cpp): UPLAY entry relabelled (StartUPlay launched UPlayBrowser.xex = exit); travels to the empty MarketPage (game title + swing), rows drawn by the overlay, input via XamInputGetState; B = game Back rewritten to TRAVEL_C_A IndexPage. F1 only in game (GuestInFrontEnd; SCDA_MENU_ANYWHERE=1). Rows incl. ONLINE. | 2026-11-04 LANGUAGE FIXED: disc check now Default\loc-<int|deu|fra|esp|ita>.umd (was SC:DA Packages\Texts). French verified.
 ## Online (details + test recipe: docs/online.md)
 - Steps 1-3 DONE: Steam transport (app 480, helper process), virtual Xbox sockets/XNet, System Link over Steam lobbies. Verified 2 loopback instances: co-op + FACE-OFF PvP load and run. Two Steam accounts: not yet tested (user + friend).
-- Step 4 IN PROGRESS (paused 2026-11-05, uncommitted, builds): Xbox LIVE PLAYER MATCH = XSession (no Ubisoft servers). LIVE identity = Steam name; xsession.cpp + matchmaking.cpp written, two-instance test not yet run.
+- Step 4 DONE on loopback 2026-11-05: Xbox LIVE PLAYER MATCH = XSession (no Ubisoft servers), LIVE identity = Steam name. Two instances: search finds host, join, lobby, ready, co-op Banya plays on both.
 ## User playtest 2026-11-04 (installer build) — open
 - Sam's eyes look strange in cutscenes (user 2026-11-04; unseen).
 - Crash: sub_82511D28 (D3D SetTexture-like, r3 dev 0x40102080, stage r4 0) got texture ptr r5=1 -> read 0x31; after content enumerate (checkpoint). Not reproduced.
@@ -44,7 +44,7 @@
 - Occlusion queries, camera, timebase, GPU predication, CP packet drops; 26 patch ops + vsel128/eqv/frsqrte/mulhd/vandc/vcmpbfp correct. sub_82EFD598 = SONAR pass. Light-list black volumes not PS 6372c96f / Hi-Z / shadow maps (docs/light_list.md).
 ## Debug switches: docs/debug_switches.md
 ## Next
-0. ONLINE step 4 (resume): two-instance Player Match test, then QoS / Join Game for Player Match (docs/online.md "Step 4"). Then user + friend Steam test of System Link / Face-Off / Player Match.
+0. ONLINE: user + friend Steam test of System Link / Face-Off / Player Match. Then Steam Join Game / Private Match invites for Player Match (docs/online.md "Step 4").
 1. User playtest items above (eyes, white climb box, DOF blur, execute arrows, SetTexture crash).
 2. 60 fps polish: menus 38-50 fps at 120 Hz; soak FPS60 on more maps.
 3. GitLab remote `gitlab` (PRIVATE, main at f972b9d 2026-11-04): NEVER push game files (audit tree + history first). Gemini bridge still 503.

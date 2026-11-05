@@ -34,7 +34,7 @@ port, `C:\ttt2\port\src\runtime\kernel`), `online_identity.cpp`, `main_menu.cpp`
 - PvP: FACE-OFF works unchanged (lobby: A on MATCH SETTINGS, A on Game Mode -> CO-OP STORY / HUNTER / LAST STAND /
   FACE-OFF). Verified loopback: Face-Off St. Petersburg Banya on both, timers in step 3+ min.
 
-## Step 4 - Xbox LIVE PLAYER MATCH (IN PROGRESS, uncommitted at pause 2026-11-05)
+## Step 4 - Xbox LIVE PLAYER MATCH (works on loopback, 2026-11-05)
 - Without LIVE sign-in: "You need to be signed into Xbox LIVE". Online on -> signed in to LIVE (state 2), privileges
   granted, gamertag = Steam persona (printable ASCII, 15 max; loopback "Player <n>"), online XUID
   0x0009'0000'0000'0000 | peer & 0xFFFFFFFFFFFF (`online_identity.h`, set in xnet EnsureTransport; transport now
@@ -50,10 +50,11 @@ port, `C:\ttt2\port\src\runtime\kernel`), `online_identity.cpp`, `main_menu.cpp`
   %TEMP%\TCSCCRecomp\sessions\<id>.ses heartbeat 2 s / stale 10 s), xam.cpp XMsgStartIORequest app 0xFB ->
   registered XGI handler (searches async on a copy of the block; failures = ERROR_FUNCTION_FAILED + HRESULT at
   XOVERLAPPED+0x18).
-- Next: two-instance test (A: Player Match, Start at 1300; B: Start at 1900; look for B finding A's session, both
-  lobbies, match start). Likely needed after: XNetQosLookup (hosts probed before joining), XSessionGetDetails /
-  other unhandled 0xB00xx (logged "[xsession] XGI message ... not handled"), Steam Join Game for SCL1 records
-  (mm::QueueInvite + XN_LIVE_INVITE_ACCEPTED / XInviteGetAcceptedInfo), Private Match invites.
+- Verified 2026-11-05 (two loopback instances): A Start -> 0 sessions -> creates + publishes; B Start -> finds A,
+  XSessionJoinRemote, both in the XBOX LIVE lobby (Archer + Kestrel); X on both -> READY -> LOADING MATCH IN ->
+  XSessionStart -> co-op St. Petersburg Banya loads and plays on both. No unhandled XGI messages logged.
+- Still open: Steam Join Game / invites for SCL1 records (mm::QueueInvite + XN_LIVE_INVITE_ACCEPTED /
+  XInviteGetAcceptedInfo), Private Match invites, XNetQosLookup (not called so far), two Steam accounts.
 - Test runs: `SCDA_ONLINE=1 SCDA_NET=loopback`, second instance from scratchpad `inst2` with its own LOCALAPPDATA
   copy (`lad2`) and `"G:\Project Zero\_install\game\default.img"` as argument. Each PowerShell call starts with a
   clean environment (set every variable in the same call).
