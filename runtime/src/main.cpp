@@ -326,6 +326,7 @@ static DWORD WINAPI ForceRelaunchThread(void* list)
 
 namespace steamnet { int RunBridge(int argc, char** argv); } // online/steam_bridge.cpp
 void NetSelfTestStart();                                      // online/net_selftest.cpp
+namespace xnet { void OnlineStartEarly(); }                  // online/xnet.cpp
 
 int main(int argc, char** argv)
 {
@@ -346,6 +347,7 @@ int main(int argc, char** argv)
     g_log = fopen((std::string(exeDir) + "\\scda.log").c_str(), "w");
     AddVectoredExceptionHandler(1, CrashHandler);
     NetSelfTestStart(); // SCDA_NET_SELFTEST=1 only
+    xnet::OnlineStartEarly();
 
     if (!InitMemory())
     {

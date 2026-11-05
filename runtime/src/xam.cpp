@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstring>
 #include <deque>
+#include <thread>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -127,11 +128,58 @@ SCDA_IMPORT(XamEnumerate)
     ctx.r3.u64 = result;
 }
 
+// The XGI service (app 0xFB: XSession, user contexts / properties): online/xsession.cpp registers it
+// when online play is on. Returns an HRESULT; `handled` false = not one of its messages.
+using XgiHandler = uint32_t (*)(uint32_t msg, uint32_t buffer, uint32_t length, bool& handled);
+static XgiHandler g_xgi;
+void XamSetXgiHandler(XgiHandler handler) { g_xgi = handler; }
+
+// An XOVERLAPPED done with an HRESULT: ERROR_FUNCTION_FAILED + the HRESULT as extended error (+0x18) on failure.
+static void CompleteXgi(uint32_t ov, uint32_t hr)
+{
+    GuestStore32(ov + 0x18, hr);
+    CompleteOverlapped(ov, hr ? 0x65B : kErrorSuccess, 0);
+}
+
 // XMsgStartIORequest(App, Message, XOVERLAPPED*, Buffer, BufferSize)
 SCDA_IMPORT(XMsgStartIORequest)
 {
+    const uint32_t app = ctx.r3.u32, msg = ctx.r4.u32, ov = ctx.r5.u32, buffer = ctx.r6.u32, length = ctx.r7.u32;
+    if (app == 0xFB && g_xgi)
+    {
+        // Session searches may wait seconds on Steam's lobby list: answered from a worker thread on a copy
+        // of the parameter block (the XDK wrappers build it on their stack and return while it is pending).
+        const bool search = msg == 0x000B0016 || msg == 0x000B001C || msg == 0x000B001B;
+        if (search && ov && buffer && length && length <= 0x100)
+        {
+            const uint32_t copy = GuestAllocVirtual(0x100, 0x10);
+            memcpy(g_base + copy, g_base + buffer, length);
+            GuestStore32(ov + 4, 0);
+            GuestStore32(ov + 0x18, 0);
+            GuestStore32(ov, kErrorIoPending);
+            std::thread([ov, msg, copy, length] {
+                bool handled = false;
+                CompleteXgi(ov, g_xgi(msg, copy, length, handled));
+            }).detach();
+            ctx.r3.u64 = kErrorIoPending;
+            return;
+        }
+        bool handled = false;
+        const uint32_t hr = g_xgi(msg, buffer, length, handled);
+        if (handled)
+        {
+            if (ov)
+            {
+                CompleteXgi(ov, hr);
+                ctx.r3.u64 = kErrorIoPending;
+                return;
+            }
+            ctx.r3.u64 = hr;
+            return;
+        }
+    }
     RuntimeLog("[xam] XMsgStartIORequest app 0x%X msg 0x%X\n", ctx.r3.u32, ctx.r4.u32);
-    if (uint32_t ov = ctx.r5.u32)
+    if (ov)
     {
         CompleteOverlapped(ov, kErrorSuccess, 0);
         ctx.r3.u64 = kErrorIoPending;

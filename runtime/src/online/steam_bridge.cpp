@@ -12,7 +12,7 @@
 //   game -> helper: SEND u64 peer, u8 reliable, data | PUBLISH u64 session, record | REMOVE u64 session |
 //                   LIST u32 request, i32 max, i32 timeoutMs | FRIENDS u32 request |
 //                   INVITE u32 request, u64 session, u64 friend
-//   helper -> game: READY u8 ok, u64 steamId | RECV u64 peer, u8 reliable, data |
+//   helper -> game: READY u8 ok, u64 steamId, persona name | RECV u64 peer, u8 reliable, data |
 //                   LIST_RESULT u32 request, u32 n, n x (u32 size, record) | JOIN record |
 //                   FRIENDS_RESULT u32 request, u32 n, n x (u64 id, u8 in game, u16 name size, name) |
 //                   INVITE_RESULT u32 request, u8 sent
@@ -111,6 +111,7 @@ Writer g_out; // game: to the helper; helper: to the game
 bool g_inproc = false; // SCDA_STEAM_INPROC=1
 std::atomic<bool> g_running{ false };
 std::atomic<uint64_t> g_local{ 0 };
+std::string g_localName; // under g_mutex
 Receiver g_receiver = nullptr;
 HANDLE g_in = INVALID_HANDLE_VALUE; // from the helper
 HANDLE g_helper = nullptr;
@@ -165,6 +166,7 @@ void Reader(HANDLE in, uint32_t generation)
             g_ready = p[0] ? 1 : -1;
             g_readyFrame = true;
             g_local = Get64(p.data() + 1);
+            g_localName.assign(p.begin() + 9, p.end());
             g_cv.notify_all();
         }
         else if (type == kListResult && p.size() >= 8)
@@ -426,6 +428,13 @@ bool Start(Receiver receiver)
 
 bool Running() { return g_inproc ? direct::Running() : g_running.load(); }
 uint64_t LocalId() { return g_inproc ? direct::LocalId() : g_local.load(); }
+std::string LocalName()
+{
+    if (g_inproc)
+        return direct::LocalName();
+    std::lock_guard l(g_mutex);
+    return g_localName;
+}
 
 bool Send(uint64_t peer, bool reliable, const void* data, size_t size)
 {
@@ -630,7 +639,8 @@ int RunBridge(int argc, char** argv)
     InstallCrashReports(); // again: Steam may have put its own filter in
     uint8_t ready[9] = { uint8_t(ok ? 1 : 0) };
     Put64(ready + 1, ok ? (fake ? kFakeId : direct::LocalId()) : 0);
-    g_out.Frame(kReady, ready, 9);
+    const std::string name = ok && !fake ? direct::LocalName() : std::string(fake ? "FakeSteam" : "");
+    g_out.Frame(kReady, ready, 9, name.data(), name.size());
     if (!ok)
         return 1;
     std::thread([] {

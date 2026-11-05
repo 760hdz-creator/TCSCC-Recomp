@@ -14,6 +14,7 @@ namespace xnet {
 bool Enabled();
 // Starts the transport on first use; false when it cannot start.
 bool EnsureTransport();
+void OnlineStartEarly();
 uint64_t LocalPeer();
 uint32_t AddrOfPeer(uint64_t peer); // host order
 uint64_t PeerOfAddr(uint32_t addr); // 0 when unknown

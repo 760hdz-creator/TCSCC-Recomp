@@ -3,7 +3,6 @@
 
 SCDA_IMPORT(KeInitializeDpc) { ImportStub("KeInitializeDpc", ctx); }
 SCDA_IMPORT(__C_specific_handler) { ImportStub("__C_specific_handler", ctx); }
-SCDA_IMPORT(XamUserCheckPrivilege) { ImportStub("XamUserCheckPrivilege", ctx); }
 SCDA_IMPORT(XamVoiceHeadsetPresent) { ImportStub("XamVoiceHeadsetPresent", ctx); }
 SCDA_IMPORT(XamVoiceClose) { ImportStub("XamVoiceClose", ctx); }
 SCDA_IMPORT(XMsgCancelIORequest) { ImportStub("XMsgCancelIORequest", ctx); }
@@ -61,5 +60,3 @@ SCDA_IMPORT(XeCryptMd5Final) { ImportStub("XeCryptMd5Final", ctx); }
 SCDA_IMPORT(XeCryptMd5Update) { ImportStub("XeCryptMd5Update", ctx); }
 SCDA_IMPORT(XeCryptMd5Init) { ImportStub("XeCryptMd5Init", ctx); }
 SCDA_IMPORT(RtlComputeCrc32) { ImportStub("RtlComputeCrc32", ctx); }
-SCDA_IMPORT(XamSessionRefObjByHandle) { ImportStub("XamSessionRefObjByHandle", ctx); }
-SCDA_IMPORT(XamSessionCreateHandle) { ImportStub("XamSessionCreateHandle", ctx); }

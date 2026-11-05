@@ -332,6 +332,11 @@ bool Start(Receiver receiver)
 
 bool Running() { return g_running.load(); }
 uint64_t LocalId() { return g_local.load(); }
+std::string LocalName()
+{
+    const char* n = g_running ? SteamFriends()->GetPersonaName() : nullptr;
+    return n ? n : "";
+}
 
 bool Send(uint64_t peer, bool reliable, const void* data, size_t size)
 {
@@ -490,6 +495,7 @@ namespace steamnet::direct {
 bool Start(Receiver) { return false; }
 bool Running() { return false; }
 uint64_t LocalId() { return 0; }
+std::string LocalName() { return ""; }
 bool Send(uint64_t, bool, const void*, size_t) { return false; }
 void PublishLobby(uint64_t, const std::vector<uint8_t>&) {}
 void RemoveLobby(uint64_t) {}

@@ -21,6 +21,7 @@ struct FriendInfo { uint64_t id = 0; std::string name; bool inGame = false; };
 bool Start(Receiver receiver);
 bool Running();
 uint64_t LocalId(); // our SteamID (0 when not running)
+std::string LocalName(); // our Steam persona name ("" when not running)
 bool Send(uint64_t peer, bool reliable, const void* data, size_t size);
 
 // Lobbies: one per hosted session, carrying `record` (opaque bytes; starts with "SCC1" + u64 session id,
@@ -47,6 +48,7 @@ namespace direct {
 bool Start(Receiver receiver);
 bool Running();
 uint64_t LocalId();
+std::string LocalName();
 bool Send(uint64_t peer, bool reliable, const void* data, size_t size);
 void PublishLobby(uint64_t sessionId, const std::vector<uint8_t>& record);
 void RemoveLobby(uint64_t sessionId);

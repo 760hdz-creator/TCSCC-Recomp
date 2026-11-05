@@ -10,6 +10,7 @@
 #include <thread>
 #include <runtime.h>
 #include <settings.h>
+#include <online_identity.h>
 #include <title.h>
 #include <algorithm>
 #include <atomic>
@@ -163,10 +164,33 @@ bool EnsureTransport()
         return false;
     static std::once_flag once;
     std::call_once(once, [] {
+        // The profile's LIVE identity: the Steam name as gamertag (printable ASCII, 15 at most), or
+        // "Player <n>" on loopback (instance n); the online XUID from the peer id.
+        online::Identity id;
+        id.live = true;
+        const uint64_t peer = net::LocalPeer();
+        std::string name;
+        if (Steam())
+            for (char c : steamnet::LocalName())
+                if (c >= 0x20 && c < 0x7F && name.size() < 15)
+                    name += c;
+        if (name.empty())
+            name = Steam() ? "Player" : "Player " + std::to_string(int(peer & 0xFFFF) - 28200 + 1);
+        id.gamertag = name;
+        id.onlineXuid = 0x0009000000000000ull | (peer & 0x0000FFFFFFFFFFFFull);
+        online::SetIdentity(id);
+        RuntimeLog("[online] signed in to LIVE as \"%s\" (online XUID %016llX)\n", id.gamertag.c_str(), (unsigned long long)id.onlineXuid);
         if (Steam())
             std::thread(Discovery).detach();
     });
     return true;
+}
+
+// main.cpp: online play starts before the game (its first sign-in queries see the LIVE identity).
+void OnlineStartEarly()
+{
+    if (Enabled())
+        EnsureTransport();
 }
 
 void HostStarted()

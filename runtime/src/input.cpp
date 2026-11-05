@@ -12,6 +12,8 @@
 #include <gpu/frame_queue.h>
 #include <input.h>
 #include <recomp_page.h>
+#include <online_identity.h>
+#include <string>
 #include <pad.h>
 #include <prompts.h>
 #include <runtime.h>
@@ -344,13 +346,28 @@ SCDA_IMPORT(XamInputSetState)
     ctx.r3.u64 = kErrorSuccess;
 }
 
-// XamUserGetSigninState(UserIndex): 1 = signed in locally.
+// User 0's identity (online_identity.h): a local profile "Player", or with online play on (RECOMP SETTINGS >
+// ONLINE) signed in to Xbox LIVE with the Steam name as gamertag and an online XUID; privileges granted.
+// XamUserGetSigninState(UserIndex): 1 = signed in locally, 2 = signed in to LIVE.
 SCDA_IMPORT(XamUserGetSigninState)
 {
-    ctx.r3.u64 = ctx.r3.u32 == 0 ? 1 : 0;
+    ctx.r3.u64 = ctx.r3.u32 == 0 ? (online::GetIdentity().live ? 2 : 1) : 0;
 }
 
-// XamUserGetXUID(UserIndex, TypeMask, u64* Xuid)
+// XamUserCheckPrivilege(UserIndex, PrivilegeType, BOOL* Result): granted when signed in to LIVE
+// (offline the result is left as the title set it, as before).
+SCDA_IMPORT(XamUserCheckPrivilege)
+{
+    const bool live = online::GetIdentity().live;
+    static int logged;
+    if (logged++ < 16)
+        RuntimeLog("[xam] XamUserCheckPrivilege(user %u, privilege 0x%X)%s\n", ctx.r3.u32, ctx.r4.u32, live ? " -> granted" : "");
+    if (live && ctx.r5.u32)
+        GuestStore32(ctx.r5.u32, 1);
+    ctx.r3.u64 = 0;
+}
+
+// XamUserGetXUID(UserIndex, TypeMask (1 offline, 2 online), u64* Xuid)
 SCDA_IMPORT(XamUserGetXUID)
 {
     if (ctx.r3.u32 != 0)
@@ -358,17 +375,15 @@ SCDA_IMPORT(XamUserGetXUID)
         ctx.r3.u64 = kErrorNoSuchUser;
         return;
     }
+    const online::Identity id = online::GetIdentity();
     if (ctx.r5.u32)
-        GuestStore64(ctx.r5.u32, kLocalXuid);
+        GuestStore64(ctx.r5.u32, id.live && ctx.r4.u32 == 2 ? id.onlineXuid : kLocalXuid);
     ctx.r3.u64 = kErrorSuccess;
 }
 
-// Local profile name for XamUserGetName / XamUserGetSigninInfo.
-static constexpr char kLocalName[] = "Player";
-
 // XamUserGetSigninInfo(UserIndex, Flags, X_USER_SIGNIN_INFO*): 0x28 bytes (Xenia): u64 xuid,
-// u32 flags, u32 signin state, u32 x2, char name[16]. Was a stub that left the struct unwritten:
-// Conviction's START handler read garbage from it and crashed (sub_82C2BBD0, guest 0x140).
+// u32 flags, u32 signin state, u32 guest number, u32 sponsor, char name[16]. Was a stub that left the
+// struct unwritten: Conviction's START handler read garbage from it and crashed (sub_82C2BBD0, guest 0x140).
 SCDA_IMPORT(XamUserGetSigninInfo)
 {
     const uint32_t user = ctx.r3.u32, info = ctx.r5.u32;
@@ -383,9 +398,11 @@ SCDA_IMPORT(XamUserGetSigninInfo)
         ctx.r3.u64 = kErrorNoSuchUser;
         return;
     }
-    GuestStore64(info, kLocalXuid);
-    GuestStore32(info + 0xC, 1); // signed in locally
-    memcpy(GuestPtr(info + 0x18), kLocalName, sizeof(kLocalName));
+    const online::Identity id = online::GetIdentity();
+    GuestStore64(info, id.live && (ctx.r4.u32 & 2) ? id.onlineXuid : kLocalXuid); // 2: XUSER_GET_SIGNIN_INFO_ONLINE_XUID_ONLY
+    GuestStore32(info + 0xC, id.live ? 2 : 1);
+    const std::string name = id.gamertag.substr(0, 15);
+    memcpy(GuestPtr(info + 0x18), name.c_str(), name.size() + 1);
     ctx.r3.u64 = kErrorSuccess;
 }
 
@@ -400,8 +417,9 @@ SCDA_IMPORT(XamUserGetName)
     }
     if (buffer && size)
     {
-        const uint32_t n = std::min<uint32_t>(size - 1, sizeof(kLocalName) - 1);
-        memcpy(GuestPtr(buffer), kLocalName, n);
+        const std::string name = online::GetIdentity().gamertag;
+        const uint32_t n = std::min<uint32_t>(size - 1, uint32_t(name.size()));
+        memcpy(GuestPtr(buffer), name.data(), n);
         static_cast<char*>(GuestPtr(buffer))[n] = 0;
     }
     ctx.r3.u64 = kErrorSuccess;
