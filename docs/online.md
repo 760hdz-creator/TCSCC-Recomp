@@ -60,6 +60,29 @@ port, `C:\ttt2\port\src\runtime\kernel`), `online_identity.cpp`, `main_menu.cpp`
   copy (`lad2`) and `"G:\Project Zero\_install\game\default.img"` as argument. Each PowerShell call starts with a
   clean environment (set every variable in the same call).
 
+## Step 5 - Steam invites for Player Match (IN PROGRESS, 2026-11-05)
+- Goal: a friend's Steam "Join Game" (or "Invite to game") on a Player Match host joins its XBOX LIVE lobby,
+  as Join Game already does for System Link (SCC1 -> host becomes a LAN peer).
+- Written: Steam join request with an SCL1 record (xnet.cpp Discovery) -> `AcceptInvite`: mm::QueueInvite +
+  TakeInvite (= mm::AcceptedInvite) + XN_LIVE_INVITE_ACCEPTED 0x02000002 (Xenia kXNotificationLiveInviteAccepted)
+  param user 0. XInviteGetAcceptedInfo = XLiveBase app 0xFC msg 0x00058023 (Xenia xlivebase_app.cc): handler in
+  xsession.cpp (XLiveBaseDispatch, routed from XMsgStartIORequest / XMsgInProcessCall), fills XINVITE_INFO 0x54
+  (invitee, inviter XUID, title 5553080B, XSESSION_INFO from the record, fFromGameInvite 1); block assumed
+  {u32 user, XINVITE_INFO*}, logged ("[xsession] XInviteGetAcceptedInfo block ...").
+- FIXED on the way: BroadcastNotification area = id bits 25-30 (was 16-24 = version): LIVE notifications reached
+  no listener.
+- Title side: notify poll sub_824F7428 -> switch sub_824F7278 maps 0x02000001/2/3 -> events 8/9/10; per-event
+  callback arrays at 0x836E6EF8 (16 bytes per event: +0 array, +4 count). Event 9 has ONE callback, 0x82503158.
+- Result so far (two loopback instances, `SCDA_TEST_INVITE=55` on B = accept the newest listed session after 55 s):
+  A hosts (matchmaking finds 0 -> creates + publishes); B gets the invite, then only XUserSetContext(8001 = 0) and
+  XamUserCheckPrivilege(0xFE) -> granted, and stays on the main menu. XInviteGetAcceptedInfo is NEVER called.
+- Next: read sub_82503158 (what it checks after the privilege; maybe a flag the menu polls, a
+  presence/ Flash call, or a required XNotify order such as SYSUI), then why the accepted-info call is skipped.
+- Test: scratchpad invite_test.ps1 pattern: A = _install\tcscc_fresh.exe, script
+  `240:START,480:DOWN:3,520:DOWN:3,560:DOWN:3,640:A:4,900:A:4,1150:START:4` (COOP & MULTIPLAYER > XBOX LIVE
+  PLAYER MATCH > FIND MATCH > Start); B = a copy in another dir, `240:START` + SCDA_TEST_INVITE=55; both
+  SCDA_ONLINE=1 SCDA_NET=loopback, own LOCALAPPDATA copies, image path as argument.
+
 ## Not done
 - Voice chat (XamVoice* / XHV stubs), XUserReadStats (leaderboards), in-game Steam invites, QoS, lag behaviour of
   LAN-speed-designed matches over the internet.

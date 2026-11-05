@@ -461,12 +461,51 @@ uint32_t XgiDispatch(uint32_t msg, uint32_t b, uint32_t length, bool& handled)
     }
 }
 
+// XLiveBase (app 0xFC) 0x00058023 = XInviteGetAcceptedInfo (Xenia xlivebase_app.cc): the invite the player
+// accepted (Steam Join Game of a Player Match lobby, xnet.cpp AcceptInvite). XINVITE_INFO (0x54): u64
+// invitee, u64 inviter, u32 title id, XSESSION_INFO (0x3C, as the host published it), BOOL fFromGameInvite.
+// The message block: u32 user index, XINVITE_INFO* (or the struct itself when the block is that big).
+uint32_t XLiveBaseDispatch(uint32_t msg, uint32_t buffer, uint32_t length, bool& handled)
+{
+    handled = false;
+    if (msg != 0x00058023 || !buffer)
+        return E_FAIL_;
+    handled = true;
+    uint32_t info = 0;
+    if (length >= 8)
+    {
+        const uint32_t p = GuestLoad32(buffer + 4);
+        if (p >= 0x10000 && p < 0xF0000000u)
+            info = p;
+    }
+    if (!info && length >= 0x54)
+        info = buffer;
+    mm::SessionRecord r;
+    RuntimeLog("[xsession] XInviteGetAcceptedInfo block %08X len %u (%08X %08X) -> info %08X%s\n", buffer, length,
+        length >= 4 ? GuestLoad32(buffer) : 0, length >= 8 ? GuestLoad32(buffer + 4) : 0, info,
+        mm::AcceptedInvite(r) ? "" : " (no accepted invite)");
+    if (!info || !mm::AcceptedInvite(r))
+        return E_FAIL_;
+    std::memset(g_base + info, 0, 0x54);
+    Write64(info + 0x00, online::GetIdentity().onlineXuid);
+    Write64(info + 0x08, r.hostXuid);
+    GuestStore32(info + 0x10, 0x5553080Bu);
+    std::memcpy(g_base + info + 0x14, r.info, 0x3C);
+    GuestStore32(info + 0x50, 1);
+    return S_OK_;
+}
+
 // Registered with xam.cpp's XMsgStartIORequest; online play off = not ours (as before: completed empty).
 void XamSetXgiHandler(uint32_t (*handler)(uint32_t, uint32_t, uint32_t, bool&));
+void XamSetXLiveBaseHandler(uint32_t (*handler)(uint32_t, uint32_t, uint32_t, bool&));
 static const bool g_registered = [] {
     XamSetXgiHandler([](uint32_t msg, uint32_t buffer, uint32_t length, bool& handled) -> uint32_t {
         handled = false;
         return xnet::Enabled() ? XgiDispatch(msg, buffer, length, handled) : 0x80004005u;
+    });
+    XamSetXLiveBaseHandler([](uint32_t msg, uint32_t buffer, uint32_t length, bool& handled) -> uint32_t {
+        handled = false;
+        return xnet::Enabled() ? XLiveBaseDispatch(msg, buffer, length, handled) : 0x80004005u;
     });
     return true;
 }();

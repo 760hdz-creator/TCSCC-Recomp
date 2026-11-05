@@ -34,6 +34,8 @@ bool Find(uint64_t id, SessionRecord& out); // also sessions seen in a list or a
 // A friend's Steam "Join Game" of a Player Match session: the session to join, once.
 bool TakeInvite(SessionRecord& out);
 void QueueInvite(const SessionRecord& record);
+// The invite the game accepted last (XInviteGetAcceptedInfo; the title may ask more than once).
+bool AcceptedInvite(SessionRecord& out);
 // A Steam lobby record of this kind ("SCL1").
 bool IsRecord(const std::vector<uint8_t>& bytes);
 bool Parse(const std::vector<uint8_t>& bytes, SessionRecord& out);

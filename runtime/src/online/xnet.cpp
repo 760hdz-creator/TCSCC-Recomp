@@ -7,6 +7,7 @@
 #include "xnet.h"
 #include "net_transport.h"
 #include "steam_net.h"
+#include "matchmaking.h"
 #include <thread>
 #include <runtime.h>
 #include <settings.h>
@@ -23,6 +24,8 @@
 void XSocketReceive(uint64_t from, net::Channel channel, const uint8_t* data, size_t size); // xsocket.cpp
 void XSocketResendBroadcasts(uint64_t peer);                                                 // xsocket.cpp
 extern thread_local uint32_t g_wsaError;                                                  // xsocket.cpp
+
+void BroadcastNotification(uint32_t id, uint32_t param); // xam.cpp
 
 namespace {
 constexpr uint32_t kVirtualNet = 0x0A4E0000u; // 10.78.x.y: never routed, our sockets resolve it
@@ -53,6 +56,19 @@ std::vector<uint8_t> Record(uint64_t self)
 
 // Background (Steam only): while a search ran in the last 20 s the lobby list is refreshed every 3 s; new
 // hosts get the recent broadcasts. Steam "Join Game" requests are picked up all the time.
+// A Player Match ("SCL1") session to join as an accepted Xbox LIVE invite: queued for
+// XInviteGetAcceptedInfo (xsession.cpp), then XN_LIVE_INVITE_ACCEPTED (0x02000002) for user 0; the title
+// maps it to its invite event (notification switch sub_824F7278) and joins the session.
+void AcceptInvite(const mm::SessionRecord& r)
+{
+    mm::QueueInvite(r);
+    mm::SessionRecord taken;
+    mm::TakeInvite(taken); // becomes the accepted one
+    BroadcastNotification(0x02000002, 0);
+    RuntimeLog("[online] invite accepted: Player Match session %016llX of host %016llX\n", (unsigned long long)r.id,
+        (unsigned long long)r.hostPeer);
+}
+
 void Discovery()
 {
     for (;;)
@@ -69,6 +85,12 @@ void Discovery()
                     g_invited[host] = GetTickCount64();
                 }
                 RuntimeLog("[online] Steam Join Game: host %016llX - its match shows in COOP & MULTIPLAYER > SYSTEM LINK\n", (unsigned long long)host);
+            }
+            else if (mm::IsRecord(record))
+            {
+                mm::SessionRecord r;
+                if (mm::Parse(record, r))
+                    AcceptInvite(r);
             }
         if (GetTickCount64() - g_lastBroadcast.load() < 20000)
         {
@@ -185,6 +207,19 @@ bool EnsureTransport()
         RuntimeLog("[online] signed in to LIVE as \"%s\" (online XUID %016llX)\n", id.gamertag.c_str(), (unsigned long long)id.onlineXuid);
         if (Steam())
             std::thread(Discovery).detach();
+        // SCDA_TEST_INVITE=<s>: after s seconds, "accept an invite" to the newest Player Match session listed
+        // (loopback tests of the invite path without Steam's Join Game).
+        if (const char* t = getenv("SCDA_TEST_INVITE"))
+            std::thread([delay = atoi(t)] {
+                Sleep(DWORD(std::max(delay, 0)) * 1000);
+                for (int i = 0; i < 60; i++, Sleep(500))
+                    if (const auto list = mm::List(1); !list.empty())
+                    {
+                        AcceptInvite(list[0]);
+                        return;
+                    }
+                RuntimeLog("[online] SCDA_TEST_INVITE: no Player Match session to accept\n");
+            }).detach();
     });
     return true;
 }

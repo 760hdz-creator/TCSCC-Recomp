@@ -133,6 +133,9 @@ SCDA_IMPORT(XamEnumerate)
 using XgiHandler = uint32_t (*)(uint32_t msg, uint32_t buffer, uint32_t length, bool& handled);
 static XgiHandler g_xgi;
 void XamSetXgiHandler(XgiHandler handler) { g_xgi = handler; }
+// XLiveBase (app 0xFC: XInviteGetAcceptedInfo, xsession.cpp), same contract.
+static XgiHandler g_xlivebase;
+void XamSetXLiveBaseHandler(XgiHandler handler) { g_xlivebase = handler; }
 
 // An XOVERLAPPED done with an HRESULT: ERROR_FUNCTION_FAILED + the HRESULT as extended error (+0x18) on failure.
 static void CompleteXgi(uint32_t ov, uint32_t hr)
@@ -178,6 +181,22 @@ SCDA_IMPORT(XMsgStartIORequest)
             return;
         }
     }
+    if (app == 0xFC && g_xlivebase)
+    {
+        bool handled = false;
+        const uint32_t hr = g_xlivebase(msg, buffer, length, handled);
+        if (handled)
+        {
+            if (ov)
+            {
+                CompleteXgi(ov, hr);
+                ctx.r3.u64 = kErrorIoPending;
+                return;
+            }
+            ctx.r3.u64 = hr;
+            return;
+        }
+    }
     RuntimeLog("[xam] XMsgStartIORequest app 0x%X msg 0x%X\n", ctx.r3.u32, ctx.r4.u32);
     if (ov)
     {
@@ -204,6 +223,16 @@ SCDA_IMPORT(XMsgInProcessCall)
     constexpr uint32_t kAppXmp = 0xFA, kXmpGetStatus = 0x00070009, kXmpStateIdle = 0;
     constexpr uint32_t kXmpGetPlaybackController = 0x0007001B, kXmpControllerTitle = 0;
     const bool getStatus = ctx.r3.u32 == kAppXmp && ctx.r4.u32 == kXmpGetStatus;
+    if (ctx.r3.u32 == 0xFC && g_xlivebase)
+    {
+        bool handled = false;
+        const uint32_t hr = g_xlivebase(ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, handled);
+        if (handled)
+        {
+            ctx.r3.u64 = hr;
+            return;
+        }
+    }
     if (!getStatus) // XMPGetStatus is polled every few frames: handled silently
         RuntimeLog("[xam] XMsgInProcessCall app 0x%X msg 0x%X\n", ctx.r3.u32, ctx.r4.u32);
     if (getStatus && ctx.r5.u32)
@@ -427,12 +456,13 @@ SCDA_IMPORT(XamNotifyCreateListener)
     ctx.r3.u64 = handle;
 }
 
-// Queues a notification on every listener whose mask covers its area (id bits 16-24).
+// Queues a notification on every listener whose mask covers its area (id bits 25-30; 16-24 are the
+// version, Xenia XNotificationKey): XN_SYS_* area 0, XN_LIVE_* (0x020000xx) area 1.
 void BroadcastNotification(uint32_t id, uint32_t param)
 {
     std::lock_guard lock(g_notifyMutex);
     for (auto& [handle, l] : g_listeners)
-        if (l.mask & (1ull << ((id >> 16) & 0x1FF)))
+        if (l.mask & (1ull << ((id >> 25) & 0x3F)))
         {
             l.queue.push_back({ id, param });
             SetEvent(l.event);

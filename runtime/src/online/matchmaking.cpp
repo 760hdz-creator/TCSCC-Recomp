@@ -264,6 +264,9 @@ bool Find(uint64_t id, SessionRecord& out)
     return false;
 }
 
+SessionRecord g_accepted; // under g_mutex
+bool g_hasAccepted = false;
+
 bool TakeInvite(SessionRecord& out)
 {
     std::lock_guard l(g_mutex);
@@ -271,6 +274,17 @@ bool TakeInvite(SessionRecord& out)
         return false;
     out = std::move(g_invites.front());
     g_invites.pop_front();
+    g_accepted = out;
+    g_hasAccepted = true;
+    return true;
+}
+
+bool AcceptedInvite(SessionRecord& out)
+{
+    std::lock_guard l(g_mutex);
+    if (!g_hasAccepted)
+        return false;
+    out = g_accepted;
     return true;
 }
 
