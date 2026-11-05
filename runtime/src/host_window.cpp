@@ -42,8 +42,42 @@ static void HoldCursor(HWND hwnd, bool hold)
     g_cursorHeld = hold;
 }
 
+constexpr UINT kSetModeMessage = WM_APP + 3; // wp = DisplaySettings::Mode
+static std::atomic<int> g_windowMode{-1};      // the mode the window is in (-1 before it exists)
+static RECT g_windowedRect;                    // window rect to return to from full screen
+
+// Borderless full screen covers the monitor the window is on; windowed restores the last windowed rect.
+static void ApplyWindowMode(HWND hwnd, DisplaySettings::Mode mode)
+{
+    const bool full = mode != DisplaySettings::Windowed;
+    if (g_windowMode.load() == int(DisplaySettings::Windowed) && full)
+        GetWindowRect(hwnd, &g_windowedRect);
+    g_windowMode = int(mode);
+    SetWindowLongW(hwnd, GWL_STYLE, (full ? WS_POPUP : WS_OVERLAPPEDWINDOW) | WS_VISIBLE);
+    RECT r = g_windowedRect;
+    if (full)
+    {
+        MONITORINFO mi{ sizeof(mi) };
+        GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mi);
+        r = mi.rcMonitor;
+    }
+    SetWindowPos(hwnd, HWND_TOP, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+}
+
+void HostWindowSetMode(DisplaySettings::Mode mode)
+{
+    if (HWND hwnd = g_hwnd.load(); hwnd && g_windowMode.load() != int(mode) && g_windowMode.load() >= 0)
+        PostMessageW(hwnd, kSetModeMessage, WPARAM(mode), 0);
+}
+
 static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
+    if (msg == kSetModeMessage)
+    {
+        if (g_windowMode.load() != int(wp))
+            ApplyWindowMode(hwnd, DisplaySettings::Mode(wp));
+        return 0;
+    }
     // F1 or L3+R3 (kOverlayToggleMessage) opens and closes the Extra Settings menu (Esc closes it too);
     // while it is open the cursor is free and mouse/keyboard messages go to the menu, not the game.
     if ((msg == WM_KEYDOWN && !(lp & (1 << 30)) && (wp == VK_F1 || (wp == VK_ESCAPE && OverlayOpen()))) || msg == kOverlayToggleMessage ||
@@ -142,6 +176,19 @@ static void WindowThread(DisplaySettings s)
     HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"Splinter Cell: Conviction Recomp", style, x, y,
         r.right - r.left, r.bottom - r.top, nullptr, nullptr, inst, nullptr);
     ShowWindow(hwnd, SW_SHOW);
+    if (s.mode == DisplaySettings::Windowed)
+        GetWindowRect(hwnd, &g_windowedRect);
+    else
+    {
+        // Windowed rect to come back to: the default windowed size, centred in the work area.
+        RECT w{ 0, 0, LONG(cw), LONG(ch) };
+        AdjustWindowRect(&w, WS_OVERLAPPEDWINDOW, FALSE);
+        const LONG ww = w.right - w.left, wh = w.bottom - w.top;
+        g_windowedRect = { work.left + (work.right - work.left - ww) / 2, work.top + (work.bottom - work.top - wh) / 2, 0, 0 };
+        g_windowedRect.right = g_windowedRect.left + ww;
+        g_windowedRect.bottom = g_windowedRect.top + wh;
+    }
+    g_windowMode = int(s.mode);
     // Scripted runs (SCDA_AUTOPRESS) never take the mouse: an unattended window must not trap the cursor.
     g_mouseLook = LoadInputSettings(SettingsPath()).mouseLook && !getenv("SCDA_AUTOPRESS");
     if (g_mouseLook)

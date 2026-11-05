@@ -8,6 +8,7 @@
 #include <vector>
 #include <xinput.h>
 #include <imgui.h>
+#include "host_window.h"
 #include <backends/imgui_impl_dx11.h>
 #include <backends/imgui_impl_win32.h>
 #include <gpu/d3d11_renderer.h>
@@ -82,6 +83,7 @@ void Apply(const DisplaySettings& s)
     g_renderer->SetDrawBackFaces(s.drawBackFaces);
     SetFovOverride(float(s.fov));
     SetDrawDistance(int(s.drawDistance));
+    HostWindowSetMode(s.mode);
     InterruptsSetVblankRate(s.fps60 ? 120 : 60);
 }
 
@@ -138,7 +140,7 @@ void DisplayTab(DisplaySettings& s)
     int mode = s.mode;
     if (ImGui::Combo("Window mode", &mode, kModeNames, 3))
         s.mode = DisplaySettings::Mode(mode);
-    Hint("Applies the next time the game starts.");
+    Hint("Applies at once. Borderless and Fullscreen both fill the monitor the window is on (borderless, so Alt+Tab and this menu keep working).");
     ImGui::Checkbox("VSync", &s.vsync);
     ImGui::BeginDisabled(s.upscaling != DisplaySettings::UpOff);
     int scale = int(s.scale);
@@ -269,7 +271,7 @@ void Menu()
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     const float em = ImGui::GetFontSize();
     ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x * 0.5f, vp->WorkPos.y + vp->WorkSize.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(em * 40.0f, em * 22.0f), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(em * 40.0f, em * 26.0f), ImGuiCond_Always);
     if (ImGui::Begin("Extra Settings - Splinter Cell: Conviction Recomp", nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse))
     {
         const DisplaySettings before = g_settings;
@@ -283,40 +285,49 @@ void Menu()
             g_openTab = (current + g_tabStep + kTabs) % kTabs;
         g_tabStep = 0;
         // Widgets leave room for the longest label and its (?) on the right.
-        ImGui::PushItemWidth(-em * 15.0f);
+        // Tab contents scroll in a child above the footer (they used to run under it: the Display tab
+        // is taller than the window).
+        const ImGuiStyle& st = ImGui::GetStyle();
+        const float footer = ImGui::GetTextLineHeightWithSpacing() * 2.0f + st.ItemSpacing.y * 2.0f + st.WindowPadding.y;
+        auto body = [footer](void (*fn)()) {
+            if (ImGui::BeginChild("tab", ImVec2(0, -footer)))
+            {
+                ImGui::PushItemWidth(-ImGui::GetFontSize() * 15.0f);
+                fn();
+                ImGui::PopItemWidth();
+            }
+            ImGui::EndChild();
+        };
         if (ImGui::BeginTabBar("tabs"))
         {
             auto tab = [](int i) { return g_openTab == i ? ImGuiTabItemFlags_SetSelected : 0; };
             if (ImGui::BeginTabItem("Display", nullptr, tab(0)))
             {
                 current = 0;
-                DisplayTab(g_settings);
+                body([] { DisplayTab(g_settings); });
                 ImGui::EndTabItem();
             }
             if (ImGui::BeginTabItem("Graphics", nullptr, tab(1)))
             {
                 current = 1;
-                GraphicsTab(g_settings);
+                body([] { GraphicsTab(g_settings); });
                 ImGui::EndTabItem();
             }
             if (ImGui::BeginTabItem("Update", nullptr, tab(2)))
             {
                 current = 2;
-                UpdateTab();
+                body([] { UpdateTab(); });
                 ImGui::EndTabItem();
             }
             ImGui::EndTabBar();
             g_openTab = -1;
         }
-        ImGui::PopItemWidth();
         Save(before, g_settings);
         // Footer: the controls of the device in use (prompts.h), two short lines.
         const PromptStyle style = CurrentPromptStyle();
         const bool ps = style == PromptStyle::PS4 || style == PromptStyle::PS5;
         const char* tabs = style == PromptStyle::Keyboard ? "Q / E" : ps ? "L1 / R1" : "LB / RB";
         const char* close = style == PromptStyle::Keyboard ? "F1 / Esc" : ps ? "OPTIONS / L3+R3" : "Start / L3+R3";
-        ImGui::SetCursorPosY(ImGui::GetWindowHeight() - ImGui::GetStyle().WindowPadding.y - ImGui::GetTextLineHeightWithSpacing() * 2.0f -
-                             ImGui::GetStyle().ItemSpacing.y * 2.0f);
         ImGui::Separator();
         ImGui::TextDisabled("Switch tabs: %s    Close: %s", tabs, close);
         ImGui::TextDisabled("Changes save at once.");
