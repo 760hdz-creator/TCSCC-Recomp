@@ -1,4 +1,4 @@
-#include <recomp_page.h>
+﻿#include <recomp_page.h>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -251,6 +251,10 @@ void RecompPageDraw(ImFont* title, ImFont* body)
     const DisplaySettings s = OverlaySettings();
     const int selected = g_selected;
     constexpr float kTop = 128.0f, kRowH = 25.0f, kLeft = 120.0f, kRight = 540.0f, kName = 134.0f, kValue = 360.0f;
+    // Our own panel behind the rows, grown to fit all of them: the page's panel (and its scroll arrows,
+    // x ~573) ends at y ~400, 11 rows; it is covered from its top down to the last row.
+    const float panelBottom = kTop + kRowH * float(Rows().size()) + 3.0f;
+    dl->AddRectFilled(P(kLeft - 4, kTop - 6), P(585, panelBottom), col(8, 8, 8, 0.96f));
     for (size_t i = 0; i < Rows().size(); i++)
     {
         const Row& r = Rows()[i];

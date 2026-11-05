@@ -122,6 +122,17 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         if (g_cursorHeld)
             HoldCursor(hwnd, true);
         return 0;
+    case WM_DPICHANGED:
+        // Moved to a monitor with another scale: windowed takes the size Windows suggests, borderless
+        // covers the new monitor.
+        if (g_windowMode.load() == int(DisplaySettings::Windowed))
+        {
+            const RECT* r = reinterpret_cast<const RECT*>(lp);
+            SetWindowPos(hwnd, nullptr, r->left, r->top, r->right - r->left, r->bottom - r->top, SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+        else if (g_windowMode.load() >= 0)
+            ApplyWindowMode(hwnd, DisplaySettings::Mode(g_windowMode.load()));
+        return 0;
     case WM_ACTIVATE:
         if (g_mouseLook)
             HoldCursor(hwnd, LOWORD(wp) != WA_INACTIVE && !OverlayOpen());
@@ -163,7 +174,7 @@ static void WindowThread(DisplaySettings s)
     RECT frame{ 0, 0, 0, 0 };
     AdjustWindowRect(&frame, style, FALSE);
     auto [cw, ch] = WindowClientSize(uint32_t(work.right - work.left - (frame.right - frame.left)),
-                                     uint32_t(work.bottom - work.top - (frame.bottom - frame.top)));
+                                     uint32_t(work.bottom - work.top - (frame.bottom - frame.top)), GetDpiForSystem());
     // SCDA_WINDOW_SIZE=<w>x<h>: client size of a windowed run (aspect tests, e.g. 1680x720 = 21:9).
     if (const char* ws = getenv("SCDA_WINDOW_SIZE"); ws && s.mode == DisplaySettings::Windowed)
         if (unsigned w = 0, h = 0; sscanf(ws, "%ux%u", &w, &h) == 2 && w >= 320 && h >= 180)
@@ -464,9 +475,9 @@ static void RenderThread(DisplaySettings s)
     }
 }
 
-std::pair<uint32_t, uint32_t> WindowClientSize(uint32_t workW, uint32_t workH)
+std::pair<uint32_t, uint32_t> WindowClientSize(uint32_t workW, uint32_t workH, uint32_t dpi)
 {
-    uint32_t w = 1280, h = 720;
+    uint32_t w = std::max<uint32_t>(dpi, 96) * 1280 / 96 / 16 * 16, h = w * 9 / 16;
     if (w > workW || h > workH)
     {
         w = std::min(workW, workH * 16 / 9) / 16 * 16;

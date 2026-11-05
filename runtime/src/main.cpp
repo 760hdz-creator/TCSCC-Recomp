@@ -330,6 +330,10 @@ namespace xnet { void OnlineStartEarly(); }                  // online/xnet.cpp
 
 int main(int argc, char** argv)
 {
+    // Per-monitor DPI aware: on a scaled display (e.g. 4K at 150%) the window, the back buffer and the
+    // Upscaling=Native internal resolution are the monitor's real pixels, not Windows' scaled-up
+    // logical size (the game rendered 2560x1440 on a 3840x2160 monitor).
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     // The Steam helper process (online/steam_bridge.cpp): this exe again, before anything of the game.
     if (argc >= 2 && strcmp(argv[1], "--steam-bridge") == 0)
         return steamnet::RunBridge(argc, argv);
