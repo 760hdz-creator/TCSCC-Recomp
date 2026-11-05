@@ -18,6 +18,11 @@ constexpr UINT kOverlayOpenMessage = WM_APP + 2;
 // Any thread (the game's OPTIONS > EXTRA SETTINGS button, menu_hooks.cpp): open the menu.
 void OverlayRequestOpen();
 
+// Any thread (the main menu's RECOMP SETTINGS page, main_menu.cpp): the display settings as the
+// menu has them, and a change to them (applied and saved to settings.ini on the next frame).
+DisplaySettings OverlaySettings();
+void OverlayChangeSettings(const DisplaySettings& s);
+
 // Window thread. F1 (and Esc while open) toggles the menu; returns the new state. The menu never
 // opens by itself.
 bool OverlayToggle();

@@ -13,6 +13,25 @@
 #include <runtime.h>
 #include <prompts.h>
 #include <settings.h>
+#include <atomic>
+
+// Front end = the last map package opened is UMDs\menu.umd (title screen and main menus), or none yet.
+// Packages loaded with every map (Conviction, Sparse*) do not count.
+static std::atomic<bool> g_frontEnd{true};
+bool GuestInFrontEnd() { return g_frontEnd; }
+static void NoteMapOpen(const std::string& guest)
+{
+    std::string p = guest;
+    for (auto& c : p)
+        c = char(tolower(uint8_t(c)));
+    const size_t at = p.find("\\umds\\");
+    if (at == std::string::npos || p.size() < at + 10 || p.compare(p.size() - 4, 4, ".umd") != 0)
+        return;
+    const std::string name = p.substr(at + 6, p.size() - at - 10);
+    if (name.empty() || name == "conviction" || name.rfind("sparse", 0) == 0)
+        return;
+    g_frontEnd = name == "menu";
+}
 
 constexpr uint32_t X_STATUS_SUCCESS = 0;
 constexpr uint32_t X_STATUS_INVALID_HANDLE = 0xC0000008;
@@ -237,6 +256,7 @@ static uint32_t OpenFile(PPCContext& ctx, uint32_t pHandle, uint32_t access, uin
         g_paths[handle] = host;
     }
     RuntimeLog("[fs] open %s -> 0x%X\n", guest.c_str(), handle);
+    NoteMapOpen(guest);
     // SCDA_TRACE_FS_CHAIN=<substring>: guest call chain (saved LR at -8 of each back-chain frame).
     if (const char* want = getenv("SCDA_TRACE_FS_CHAIN"); want && strstr(guest.c_str(), want))
     {

@@ -14,6 +14,8 @@ inline void GuestStore32(uint32_t addr, uint32_t v) { *(uint32_t*)(g_base + addr
 inline void GuestStore16(uint32_t addr, uint16_t v) { *(uint16_t*)(g_base + addr) = __builtin_bswap16(v); }
 inline void GuestStore64(uint32_t addr, uint64_t v) { *(uint64_t*)(g_base + addr) = __builtin_bswap64(v); }
 inline void* GuestPtr(uint32_t addr) { return g_base + addr; }
+// fs.cpp: true while the title screen / main menus run (the last map package opened is menu.umd).
+bool GuestInFrontEnd();
 
 // Guest heaps (guest_heap.h). Virtual: 0x40000000-0x7EFFFFFF. Physical: 0xA0000000-0xBFFFFFFF.
 // Service: 0x7F000000-0x7FBFFFFF, for runtime threads that outlive a title (never reset on relaunch).

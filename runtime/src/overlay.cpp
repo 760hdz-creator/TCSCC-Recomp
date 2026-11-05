@@ -41,6 +41,12 @@ std::vector<Message> g_queue; // window thread -> render thread (ImGui is single
 D3D11Renderer* g_renderer;
 HWND g_hwnd;
 DisplaySettings g_settings; // as shown in the menu and saved to settings.ini
+// Shared with the main menu's RECOMP SETTINGS page (main_menu.cpp, game thread): the settings as last
+// applied, and a change it asks for (applied and saved on the render thread).
+std::mutex g_sharedMutex;
+DisplaySettings g_shared;
+bool g_pending;
+DisplaySettings g_pendingSettings;
 ID3D11Device* g_device;      // the ImGui DX11 backend's (a lost device makes a new one)
 bool g_imgui;
 int g_openTab = -1; // SCDA_MENU=<0-2>: the menu starts open on that tab (unattended checks)
@@ -530,6 +536,7 @@ void OverlayAttach(D3D11Renderer& renderer, HWND hwnd, const DisplaySettings& se
     g_renderer = &renderer;
     g_hwnd = hwnd;
     g_settings = settings;
+    g_shared = settings;
     Apply(g_settings);
     if (const char* menu = getenv("SCDA_MENU"))
     {
@@ -550,7 +557,20 @@ void OverlayAttach(D3D11Renderer& renderer, HWND hwnd, const DisplaySettings& se
             g_settings.scale = uint32_t(std::clamp(atoi(strchr(testScale, ':') ? strchr(testScale, ':') + 1 : "1"), 1, 4));
             testFrame = 0;
         }
+        {
+            std::lock_guard lock(g_sharedMutex);
+            if (g_pending)
+            {
+                Save(g_settings, g_pendingSettings);
+                g_settings = g_pendingSettings;
+                g_pending = false;
+            }
+        }
         Apply(g_settings);
+        {
+            std::lock_guard lock(g_sharedMutex);
+            g_shared = g_settings;
+        }
         PollPadCombo();
         // Nothing to draw: no ImGui frame at all (the plain game image, no cost).
         if (!g_open && !ToastVisible())
@@ -571,6 +591,19 @@ bool OverlayToggle()
 }
 
 bool OverlayOpen() { return g_open; }
+
+DisplaySettings OverlaySettings()
+{
+    std::lock_guard lock(g_sharedMutex);
+    return g_pending ? g_pendingSettings : g_shared;
+}
+
+void OverlayChangeSettings(const DisplaySettings& s)
+{
+    std::lock_guard lock(g_sharedMutex);
+    g_pendingSettings = s;
+    g_pending = true;
+}
 
 void OverlayRequestOpen()
 {

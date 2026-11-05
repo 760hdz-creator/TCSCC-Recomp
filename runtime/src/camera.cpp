@@ -110,7 +110,8 @@ static float UserFovScale(float f)
     static const char* env = getenv("SCDA_FOV");
     const float user = env ? float(atof(env)) : FovOverride();
     constexpr float kGame = 90.0f, kZoom = 60.0f, kRad = 3.14159265f / 180.0f;
-    if (user < 30.0f || user > 160.0f || std::abs(user - kGame) < 0.01f || f <= kZoom)
+    // The main menus' 3D scene keeps its framing (FOV 110 there shrank the menu into the middle).
+    if (user < 30.0f || user > 160.0f || std::abs(user - kGame) < 0.01f || f <= kZoom || GuestInFrontEnd())
         return 1.0f;
     const float s = std::tan(user * 0.5f * kRad) / std::tan(kGame * 0.5f * kRad);
     const float w = std::min((f - kZoom) / (kGame - kZoom), 1.0f);

@@ -114,6 +114,7 @@ add_executable(scda
     src/l3d_trace.cpp
     src/pawn_trace.cpp
     src/pawn_hooks.cpp
+    src/main_menu.cpp
     src/xma_xaudio.cpp
     src/imports_stubs.cpp
     scda.rc)

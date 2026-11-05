@@ -80,8 +80,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     }
     // F1 or L3+R3 (kOverlayToggleMessage) opens and closes the Extra Settings menu (Esc closes it too);
     // while it is open the cursor is free and mouse/keyboard messages go to the menu, not the game.
-    if ((msg == WM_KEYDOWN && !(lp & (1 << 30)) && (wp == VK_F1 || (wp == VK_ESCAPE && OverlayOpen()))) || msg == kOverlayToggleMessage ||
-        (msg == kOverlayOpenMessage && !OverlayOpen()))
+    // In the front end (title screen, main menus) they only close it: settings are the main menu's
+    // RECOMP SETTINGS page there (main_menu.cpp). SCDA_MENU_ANYWHERE=1 lifts that.
+    static const bool anywhere = getenv("SCDA_MENU_ANYWHERE") != nullptr;
+    if (((msg == WM_KEYDOWN && !(lp & (1 << 30)) && (wp == VK_F1 || (wp == VK_ESCAPE && OverlayOpen()))) || msg == kOverlayToggleMessage ||
+         (msg == kOverlayOpenMessage && !OverlayOpen())) &&
+        (OverlayOpen() || msg == kOverlayOpenMessage || anywhere || !GuestInFrontEnd()))
     {
         const bool open = OverlayToggle();
         if (g_mouseLook)
