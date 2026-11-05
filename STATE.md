@@ -38,7 +38,7 @@
 ## User playtest 2026-11-04 (installer build) — open
 - Crash: sub_82511D28 (D3D SetTexture-like, r3 dev 0x40102080, stage r4 0) got texture ptr r5=1 -> read 0x31; after content enumerate (checkpoint). Not reproduced.
 - Climb/vault prompt = white box (Museum). 3 PS failed X3511 (loop unroll) -> fallback 51cafda; failed shaders are SKIPPED not white, so the box may be a mask pass: re-check.
-- Mission 2 (Grim frees Sam) foreground blur pixelated/blocky (DOF upsample?). Car mirror (look under door) black when Sam is dark. Execute arrows not red when marked/ready.
+- Mission 2 (Grim frees Sam) foreground blur pixelated/blocky (DOF upsample?). Car mirror (look under door): user re-test 2026-11-04 on installer build 658eb11 = OK (no capture). Execute arrows not red when marked/ready.
 - FIXED: F1 rows under footer + live Window mode (47715ab); stutters = blocking shader compiles -> async (c3d7316, [hitch] log).
 
 ## Ruled out
