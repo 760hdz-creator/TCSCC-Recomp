@@ -1,4 +1,4 @@
-#include <windows.h>
+﻿#include <windows.h>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -19,6 +19,7 @@
 #include <fov.h>
 #include <interrupts.h>
 #include <runtime.h>
+#include <cstring>
 #include "overlay.h"
 #include "updater.h"
 #include <recomp_page.h>
@@ -94,7 +95,13 @@ void Apply(const DisplaySettings& s)
     SetFovOverride(float(s.fov));
     SetDrawDistance(int(s.drawDistance));
     HostWindowSetMode(s.mode);
-    InterruptsSetVblankRate(s.fps60 ? 120 : 60);
+    // Frame rate cap (settings.h frameRate): guest vblank 2x the cap; above 60 the engine limiter's
+    // minimum frame time (float 0x82002E00, the title's 1/60 otherwise) becomes 1/cap.
+    const float minFrame = s.frameRate > 60 ? 1.0f / float(s.frameRate) : 0.016667f;
+    uint32_t bits;
+    memcpy(&bits, &minFrame, 4);
+    GuestStore32(0x82002E00, bits);
+    InterruptsSetVblankRate(s.frameRate <= 30 ? 60 : s.frameRate * 2);
 }
 
 // Writes the keys that changed.
@@ -116,8 +123,11 @@ void Save(const DisplaySettings& before, const DisplaySettings& after)
         save("FOV", std::to_string(after.fov));
     if (before.ultrawide != after.ultrawide)
         save("Ultrawide", after.ultrawide ? "1" : "0");
-    if (before.fps60 != after.fps60)
-        save("FPS60", after.fps60 ? "1" : "0");
+    if (before.frameRate != after.frameRate)
+    {
+        save("FrameRate", std::to_string(after.frameRate));
+        save("FPS60", after.frameRate >= 60 ? "1" : "0"); // older builds read this
+    }
     if (before.drawDistance != after.drawDistance)
         save("DrawDistance", DrawDistanceName(after.drawDistance));
     if (before.drawBackFaces != after.drawBackFaces)
@@ -176,9 +186,14 @@ void DisplayTab(DisplaySettings& s)
     ImGui::Checkbox("Ultrawide", &s.ultrawide);
     Hint("In a window wider than 16:9, shows more of the scene at the sides instead of black bars. "
          "The HUD and menus are stretched to the window.");
-    ImGui::Checkbox("60 FPS", &s.fps60);
-    Hint("Unlocks the game's 30 fps cap to 60. Game speed is unchanged (the game runs on wall time). "
-         "Menus may run below 60.");
+    int rate = 0;
+    while (rate < 5 && kFrameRates[rate] < s.frameRate)
+        rate++;
+    const char* const rates[] = { "30 (console)", "60", "120", "144", "165", "240" };
+    if (ImGui::Combo("Frame rate cap", &rate, rates, 6))
+        s.frameRate = kFrameRates[rate];
+    Hint("Raises the game's 30 fps cap. Game speed is unchanged (the game runs on wall time). Above 60 needs a "
+         "high-refresh monitor or V-Sync off, and a fast GPU; menus may run lower.");
     int drawDistance = int(s.drawDistance);
     const char* const drawDistances[] = { "Console (default)", "High (2x)", "Ultra (4x)", "Maximum" };
     if (ImGui::Combo("Draw distance", &drawDistance, drawDistances, 4))

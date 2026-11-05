@@ -20,10 +20,12 @@ struct DisplaySettings
     // Horizontal field of view of the player camera in degrees ([Display] FOV=70..120). 90 is the
     // game's own (nothing is changed); zooms (under 60) keep their own value (camera.cpp).
     uint32_t fov = 90;
-    // 60 fps ([Display] FPS60=1): the guest vblank runs at 120 Hz, so the title's every-2nd-vblank flip
-    // caps at 60 instead of 30. The game clock is wall time (0x401AAB48 tracks it 1:1 at both rates,
-    // movement matches, 01_Market 2026-11-04). Default off (authentic).
-    bool fps60 = false;
+    // Frame rate cap ([Display] FrameRate=30|60|120|144|165|240; old FPS60=1 reads as 60). The title
+    // flips every 2nd vblank, so the guest vblank runs at 2x the cap (60 Hz for 30). Above 60 the
+    // engine's own limiter (main loop sub_824E53B0: min frame time float 0x82002E00, 1/60, its only
+    // reader) is set to 1/cap. The game clock is wall time: speed and cutscene timing match at
+    // 30/60/120/144 (Banya + 01_Market, 2026-11-05). Default 30 (authentic).
+    uint32_t frameRate = 30;
     // Ultrawide ([Display] Ultrawide=1): in windows wider than 16:9 the camera widens (Hor+) and the
     // frame fills the window; the HUD and menus are stretched (markers stay on target). Off = 16:9 bars.
     bool ultrawide = false;
@@ -47,6 +49,8 @@ struct DisplaySettings
 // (Native 1, Quality 1.5, Balanced 1.7, Performance 2, Ultra Performance 3), in 720-row steps,
 // rounded, 1..4. UpOff returns manualScale.
 uint32_t UpscalingScale(DisplaySettings::Upscaling mode, uint32_t windowHeight, uint32_t manualScale);
+// FrameRate setting choices.
+inline constexpr uint32_t kFrameRates[] = { 30, 60, 120, 144, 165, 240 };
 const char* UpscalingName(DisplaySettings::Upscaling mode);     // ini value ("UltraPerformance")
 const char* AntiAliasingName(DisplaySettings::AntiAliasing aa); // ini value ("FXAA")
 const char* DrawDistanceName(uint32_t level);                   // ini value ("Console" .. "Maximum")

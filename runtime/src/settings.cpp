@@ -92,7 +92,17 @@ DisplaySettings LoadDisplaySettings(const std::filesystem::path& ini)
         else if (key == "ultrawide")
             s.ultrawide = Truthy(value);
         else if (key == "fps60")
-            s.fps60 = Truthy(value);
+        {
+            if (Truthy(value) && s.frameRate == 30)
+                s.frameRate = 60;
+        }
+        else if (key == "framerate")
+        {
+            const int v = atoi(value.c_str());
+            for (uint32_t r : kFrameRates)
+                if (int(r) == v)
+                    s.frameRate = r;
+        }
         else if (key == "drawdistance")
         {
             for (uint32_t l = 0; l < 4; l++)

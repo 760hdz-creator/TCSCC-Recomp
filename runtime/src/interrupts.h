@@ -13,7 +13,7 @@ void InterruptsQueue(uint32_t source, uint32_t cpu);
 void InterruptsDeliverForTest(PPCContext& ctx, uint32_t source, uint32_t cpu);
 // Host thread with its own guest context: queued interrupts, then a vsync every 1/60 s.
 void InterruptsStart();
-// Guest vblank rate in Hz (60 default; 120 = FPS60 setting). SCDA_VSYNC_HZ=<n> overrides it.
+// Guest vblank rate in Hz (60 default; FrameRate setting = 2x the cap). SCDA_VSYNC_HZ=<n> overrides it.
 void InterruptsSetVblankRate(uint32_t hz);
 
 // One vsync: if a swap is pending, raise MMIO 0x7FC86544 bit 0 for the handler, then complete it.

@@ -72,6 +72,15 @@ TEST(settings_gamma_parsed)
     CHECK_EQ(LoadDisplaySettings(Ini("[Display]\nGamma=10\n")).gamma, 100u);
 }
 
+TEST(settings_frame_rate_parsed)
+{
+    CHECK_EQ(LoadDisplaySettings(Ini("[Display]\n")).frameRate, 30u);
+    CHECK_EQ(LoadDisplaySettings(Ini("[Display]\nFPS60=1\n")).frameRate, 60u);
+    CHECK_EQ(LoadDisplaySettings(Ini("[Display]\nFrameRate=144\n")).frameRate, 144u);
+    CHECK_EQ(LoadDisplaySettings(Ini("[Display]\nFrameRate=100\n")).frameRate, 30u);
+    CHECK_EQ(LoadDisplaySettings(Ini("[Display]\nFPS60=1\nFrameRate=240\n")).frameRate, 240u);
+}
+
 TEST(settings_draw_distance_parsed)
 {
     CHECK_EQ(LoadDisplaySettings(Ini("[Display]\n")).drawDistance, 0u);

@@ -47,8 +47,9 @@ const std::vector<Row>& Rows()
     static const std::vector<Row> rows = {
         { "WINDOW MODE", "Borderless and Fullscreen both fill the monitor the window is on.", { "WINDOWED", "BORDERLESS", "FULLSCREEN" },
           [](const DisplaySettings& s) { return int(s.mode); }, [](DisplaySettings& s, int v) { s.mode = DisplaySettings::Mode(v); } },
-        { "FRAME RATE", "60 FPS unlocks the game's 30 fps cap. Game speed is unchanged. Menus may run below 60.", { "30 FPS", "60 FPS" },
-          [](const DisplaySettings& s) { return int(s.fps60); }, [](DisplaySettings& s, int v) { s.fps60 = v != 0; } },
+        { "FRAME RATE", "Raises the game's 30 fps cap. Game speed is unchanged. Above 60 needs a high-refresh monitor or V-Sync off.",
+          { "30 FPS", "60 FPS", "120 FPS", "144 FPS", "165 FPS", "240 FPS" },
+          [](const DisplaySettings& s) { return StepIndex(kFrameRates, 6, s.frameRate); }, [](DisplaySettings& s, int v) { s.frameRate = kFrameRates[v]; } },
         { "V-SYNC", "Waits for the monitor refresh: no tearing.", { "OFF", "ON" },
           [](const DisplaySettings& s) { return int(s.vsync); }, [](DisplaySettings& s, int v) { s.vsync = v != 0; } },
         { "FIELD OF VIEW", "Horizontal field of view of the player camera in degrees. 90 is the game's own. Zoomed views keep theirs.",
