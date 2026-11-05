@@ -34,6 +34,7 @@
 - 2026-11-05 RECOMP SETTINGS (main_menu.cpp + recomp_page.cpp): UPLAY entry relabelled (StartUPlay launched UPlayBrowser.xex = exit); travels to the empty MarketPage (game title + swing), rows drawn by the overlay, input via XamInputGetState; B = game Back rewritten to TRAVEL_C_A IndexPage. F1 only in game (GuestInFrontEnd; SCDA_MENU_ANYWHERE=1). Rows incl. ONLINE. | 2026-11-04 LANGUAGE FIXED: disc check now Default\loc-<int|deu|fra|esp|ita>.umd (was SC:DA Packages\Texts). French verified.
 ## Online (details + test recipe: docs/online.md)
 - Steps 1-3 DONE: Steam transport (app 480, helper process), virtual Xbox sockets/XNet, System Link over Steam lobbies. Verified 2 loopback instances: co-op + FACE-OFF PvP load and run. Two Steam accounts: not yet tested (user + friend).
+- 2026-11-05: ONLINE on by default (8610281; scripted runs off); [Profile] Name (4f819e0); main-menu player card top right (5fe0356) verified with REAL Steam: avatar + "8gram Labs" + Online - Steam.
 - Step 4 DONE on loopback 2026-11-05: Xbox LIVE PLAYER MATCH = XSession (no Ubisoft servers), LIVE identity = Steam name. Two instances: search finds host, join, lobby, ready, co-op Banya plays on both. User watched it 2026-11-05: OK. User guide = README "Playing online". Online code is adapted from shihabal3amri TTT2 (unlicensed; user has permission, credited in THIRD_PARTY_NOTICES).
 ## User playtest 2026-11-04 (installer build) — open
 - Sam's eyes look strange in cutscenes (user 2026-11-04; unseen).
