@@ -44,7 +44,7 @@
 ## Ruled out (debug switches: docs/debug_switches.md)
 - Occlusion queries, camera, timebase, GPU predication, CP packet drops; 26 patch ops + vsel128/eqv/frsqrte/mulhd/vandc/vcmpbfp correct. sub_82EFD598 = SONAR pass. Light-list black volumes not PS 6372c96f / Hi-Z / shadow maps (docs/light_list.md).
 ## Next
-0. ONLINE: Steam invites for Player Match IN PROGRESS (docs/online.md "Step 5"): SCL1 Join Game -> XN_LIVE_INVITE_ACCEPTED 0x02000002 + XInviteGetAcceptedInfo (0xFC/0x58023) written; title gets it (event 9, callback 0x82503158) but never asks for the info: read sub_82503158 next. Notify area-mask bug fixed. Then user + friend Steam test.
+0. ONLINE: Steam invites for Player Match WORK on loopback 2026-11-05 (signin LIVE flag + XInviteGetAcceptedInfo params layout; docs/online.md Step 5): invitee lands in host lobby. Next: user + friend real Steam test (Join Game, then start match).
 1. User playtest open: eyes, DOF blur (not reproduced; need moment), SetTexture crash; mouse-look/cursor clip after DPI awareness (2f1df83, untested by hand).
 2. Perf: 120/144 cap -> ~105 fps Banya = renderer D3D11 overhead (BindRegisterState, driver thunks ~5 ms/frame). Spins fixed 2026-11-05 (GetData WaitOnAddress `SCDA_GETDATA_SPIN`, stream worker Sleep(1) `SCDA_STREAM_SPIN`, limiter sleep `SCDA_LIMITER_SPIN`): menu 4.07 -> 2.4 cores. Pause menu / Scene Select fps unmeasured. Graphics ideas left: bloom slider (c253.x in PS 09979cb4), centred ultrawide HUD.
 3. Installer: version = fresh hash; local install C:\Games\TCSCC-Recomp updated per build. GitLab remote `gitlab` (PRIVATE, main at c506781 2026-11-05: README complete/test phase + patch notes + screenshots): NEVER push game files (audit tree + history first). Gemini bridge still 503.

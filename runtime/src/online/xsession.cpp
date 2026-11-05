@@ -471,18 +471,19 @@ uint32_t XLiveBaseDispatch(uint32_t msg, uint32_t buffer, uint32_t length, bool&
     if (msg != 0x00058023 || !buffer)
         return E_FAIL_;
     handled = true;
+    // Conviction (XDK wrapper sub_82FBD5E8): XMsgInProcessCall(0xFC, msg, handle, params). params = 16-byte
+    // entries {u32 type 4, pad, u64 value}, count at +512: [0] = &user index, [1] = XINVITE_INFO* (caller stack).
+    // The second argument here is that params block; the first is a handle, not the struct.
     uint32_t info = 0;
-    if (length >= 8)
+    const uint32_t params = length;
+    if (params >= 0x10000 && params < 0xF0000000u && GuestLoad32(params + 512) == 2 && GuestLoad32(params + 16) == 4)
     {
-        const uint32_t p = GuestLoad32(buffer + 4);
+        const uint32_t p = GuestLoad32(params + 16 + 12); // low word of the u64 value (big-endian)
         if (p >= 0x10000 && p < 0xF0000000u)
             info = p;
     }
-    if (!info && length >= 0x54)
-        info = buffer;
     mm::SessionRecord r;
-    RuntimeLog("[xsession] XInviteGetAcceptedInfo block %08X len %u (%08X %08X) -> info %08X%s\n", buffer, length,
-        length >= 4 ? GuestLoad32(buffer) : 0, length >= 8 ? GuestLoad32(buffer + 4) : 0, info,
+    RuntimeLog("[xsession] XInviteGetAcceptedInfo handle %08X params %08X -> info %08X%s\n", buffer, params, info,
         mm::AcceptedInvite(r) ? "" : " (no accepted invite)");
     if (!info || !mm::AcceptedInvite(r))
         return E_FAIL_;

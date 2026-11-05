@@ -400,6 +400,9 @@ SCDA_IMPORT(XamUserGetSigninInfo)
     }
     const online::Identity id = online::GetIdentity();
     GuestStore64(info, id.live && (ctx.r4.u32 & 2) ? id.onlineXuid : kLocalXuid); // 2: XUSER_GET_SIGNIN_INFO_ONLINE_XUID_ONLY
+    // +8 flags: 1 = XUSER_INFO_FLAG_LIVE_ENABLED. Conviction's invite path (UI event 79 -> sub_82502E38) needs it,
+    // else an accepted invite never sets the pending flag and XInviteGetAcceptedInfo is never asked.
+    GuestStore32(info + 0x8, id.live ? 1 : 0);
     GuestStore32(info + 0xC, id.live ? 2 : 1);
     const std::string name = id.gamertag.substr(0, 15);
     memcpy(GuestPtr(info + 0x18), name.c_str(), name.size() + 1);
