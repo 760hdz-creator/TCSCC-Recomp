@@ -105,7 +105,8 @@ project's same version and their own copy of the game.
 ### Set up (every player, once)
 
 1. Start **Steam** and sign in. Keep it running while you play.
-2. In the game's main menu open **RECOMP SETTINGS**, set **ONLINE** to **ON**, then quit and restart the game.
+2. **ONLINE** is on by default (main menu > **RECOMP SETTINGS** > **ONLINE**; turning it off or on applies the
+   next time the game starts). Without Steam running, the game plays offline as usual.
 3. With Online on, you are signed in to "Xbox LIVE" with your **Steam name** as your gamertag. Steam shows you as
    playing *Spacewar*: the project uses Valve's free test app (480) to reach Steam's network.
 

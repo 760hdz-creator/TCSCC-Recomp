@@ -331,7 +331,9 @@ bool SaveSetting(const std::filesystem::path& ini, const std::string& section, c
 
 bool OnlineEnabledSetting()
 {
-    bool on = false;
+    // On by default ([Online] Enabled=0 turns it off). Without a running Steam client the transport is
+    // loopback, so a default-on install with no Steam behaves like offline play.
+    bool on = true;
     ForEachSetting(SettingsPath(), "online", [&](const std::string& key, const std::string& value) {
         if (key == "enabled")
             on = Truthy(value);

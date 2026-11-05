@@ -1,6 +1,7 @@
 # Online play (System Link + Player Match over Steam)
 
-Setting: RECOMP SETTINGS > ONLINE = `[Online] Enabled=1` (read at start; `SCDA_ONLINE=0|1` overrides). Off = the
+Setting: RECOMP SETTINGS > ONLINE = `[Online] Enabled=1`, ON BY DEFAULT since 2026-11-05 (read at start;
+`SCDA_ONLINE=0|1` overrides; SCDA_AUTOPRESS runs default off). Off = the
 offline runtime's "no network" answers, unchanged. Code: `runtime/src/online/` (transport ported from the TTT2
 port, `C:\ttt2\port\src\runtime\kernel`), `online_identity.cpp`, `main_menu.cpp` (CreateSession / LeaveMatch hooks),
 `input.cpp` (XamUser* identity), `xam.cpp` (XMsg app 0xFB -> XGI handler), `kernel.cpp` (timers).

@@ -129,3 +129,14 @@ TEST(save_setting_keeps_other_lines)
     CHECK(s.scale == 2 && s.cleanGoggles && s.sharpening == 25);
     CHECK(!LoadUpdateSettings(p).checkOnStart);
 }
+
+// [Online] Enabled defaults to on; an explicit 0 turns it off (SettingsPath follows SCDA_SETTINGS).
+TEST(online_enabled_by_default)
+{
+    const std::string path = Ini("[Display]\n").string();
+    _putenv_s("SCDA_SETTINGS", path.c_str());
+    CHECK(OnlineEnabledSetting());
+    Ini("[Online]\nEnabled=0\n");
+    CHECK(!OnlineEnabledSetting());
+    _putenv_s("SCDA_SETTINGS", "");
+}

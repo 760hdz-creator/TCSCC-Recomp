@@ -143,10 +143,13 @@ namespace xnet {
 
 bool Enabled()
 {
-    // SCDA_ONLINE=0|1 overrides [Online] Enabled (RECOMP SETTINGS > ONLINE).
+    // SCDA_ONLINE=0|1 overrides [Online] Enabled (RECOMP SETTINGS > ONLINE, on by default). Scripted
+    // runs (SCDA_AUTOPRESS: soaks, A/B tests) stay offline unless SCDA_ONLINE=1.
     static const bool on = [] {
         if (const char* e = getenv("SCDA_ONLINE"))
             return *e == '1';
+        if (getenv("SCDA_AUTOPRESS"))
+            return false;
         return OnlineEnabledSetting();
     }();
     return on;
