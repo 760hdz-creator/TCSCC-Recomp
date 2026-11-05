@@ -30,6 +30,16 @@ template <class Packets> int ReadFrame(Packets&& packet, uint32_t pos, uint8_t* 
     const uint8_t* data = packet(p);
     if (!data)
         return -1;
+    // Fewer than 15 bits left: no frame header fits, the rest is padding and the next frame starts at
+    // the next packet's first frame (its header says offset 0). Reading a length across the header
+    // instead gave garbage (32273 at bit 16378) and the walker lost sync: Conviction's streamed
+    // dialogue and music sounded robotic (01_Market cafe call, 2026-11-04).
+    if (b + 15 > kPacketBits)
+    {
+        const uint8_t* n = packet(p + 1);
+        *next = (p + 1) * kPacketBits + (n ? FirstFrameBit(n) : kHeaderBits);
+        return 0;
+    }
     // Bit reader across packets: skips each next packet's header.
     auto bit = [&](uint32_t& q, uint32_t& o, const uint8_t*& d) -> int {
         if (o == kPacketBits)

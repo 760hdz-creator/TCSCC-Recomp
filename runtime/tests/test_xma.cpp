@@ -1,6 +1,8 @@
 #include "check.h"
 #include "guest_memory.h"
 #include <runtime.h>
+#include <cstring>
+#include "xma_frames.h"
 
 static uint32_t XmaCall(void (*fn)(PPCContext&, uint8_t*), uint32_t a, uint32_t b = 0)
 {
@@ -18,6 +20,23 @@ static void PutFramePacket(uint32_t packet, uint8_t value)
     const uint8_t frame[] = {0, 0, 0, 0, 0x00, 0x40, value, 0}; // header, length 32 bits
     memcpy(g_base + packet, frame, sizeof(frame));
     memset(g_base + packet + sizeof(frame), 0xFF, 2048 - sizeof(frame));
+}
+
+// Fewer than 15 bits left in a packet = padding: the next frame is the next packet's first frame,
+// not a length read across its header (01_Market streams lost sync there and sounded robotic).
+TEST(xma_frame_walker_short_tail_is_padding)
+{
+    static uint8_t packets[2][2048];
+    memset(packets, 0, sizeof(packets));
+    // Packet 1 header: first frame offset 0 (bits 11..25 of the header dword); then a 32-bit frame.
+    packets[1][4] = 0x00;
+    packets[1][5] = 0x40; // length 32
+    auto packet = [](uint32_t n) -> const uint8_t* { return n < 2 ? packets[n] : nullptr; };
+    uint8_t frame[xma::kMaxFrameBits / 8 + 1];
+    uint32_t next = 0;
+    CHECK_EQ(xma::ReadFrame(packet, xma::kPacketBits - 6, frame, &next), 0);
+    CHECK_EQ(next, xma::kPacketBits + 32u);
+    CHECK_EQ(xma::ReadFrame(packet, next, frame, &next), 32);
 }
 
 TEST(xma_context_create_init_and_buffer_state)

@@ -7,7 +7,9 @@
 #include <windows.h>
 #include <xaudio2.h>
 #include <atomic>
+#include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <cstdlib>
 #include <mutex>
 #include <runtime.h>
@@ -203,6 +205,36 @@ SCDA_IMPORT(XAudioSubmitRenderDriverFrame)
     if (ctx.r4.u32 && (g_voice || g_dump))
     {
         AudioConvertFrame(static_cast<const uint8_t*>(GuestPtr(ctx.r4.u32)), six, stereo);
+        // SCDA_AUDIO_CLIENTS=<mask>: mix only these client slots (A/B); SCDA_TRACE_AUDIO_CLIENTS=1: every
+        // 5 s, each client's RMS and the correlation of client 0's and 1's frames in the same tick.
+        static const uint32_t mask = getenv("SCDA_AUDIO_CLIENTS") ? uint32_t(strtoul(getenv("SCDA_AUDIO_CLIENTS"), nullptr, 0)) : ~0u;
+        static const bool traceClients = getenv("SCDA_TRACE_AUDIO_CLIENTS") != nullptr;
+        const uint32_t slot = ctx.r3.u32 - kDriverHandle;
+        if (traceClients && slot < 2)
+        {
+            static double energy[2], cross;
+            static float first[kFrameSamples * kFrameChannels];
+            static ULONGLONG next;
+            for (int i = 0; i < kFrameSamples * kFrameChannels; i++)
+                energy[slot] += double(six[i]) * six[i];
+            if (slot == 0)
+                memcpy(first, six, sizeof(first));
+            else
+                for (int i = 0; i < kFrameSamples * kFrameChannels; i++)
+                    cross += double(first[i]) * six[i];
+            if (GetTickCount64() >= next)
+            {
+                next = GetTickCount64() + 5000;
+                RuntimeLog("[audio] clients energy0 %.3f energy1 %.3f corr %.3f\n", energy[0], energy[1],
+                    energy[0] > 0 && energy[1] > 0 ? cross / sqrt(energy[0] * energy[1]) : 0.0);
+                energy[0] = energy[1] = cross = 0;
+            }
+        }
+        if (slot < 32 && !(mask >> slot & 1))
+        {
+            ctx.r3.u64 = 0;
+            return;
+        }
         for (int i = 0; i < kFrameSamples * kFrameChannels; i++)
             g_mix[i] = g_mixed ? g_mix[i] + six[i] : six[i];
         g_mixed = true;
