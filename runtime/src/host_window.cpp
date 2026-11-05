@@ -394,6 +394,12 @@ static void RenderThread(DisplaySettings s)
         TimelineEvent('r', frame.partial);
         QueryPerformanceCounter(&t1);
         busyTicks += t1.QuadPart - t0.QuadPart;
+        // A frame (or partial) that took over 100 ms to render: log it with the shader counters, so a
+        // reported stutter can be matched to compiles (or ruled out).
+        if (const double ms = 1000.0 * double(t1.QuadPart - t0.QuadPart) / double(qpf.QuadPart); ms > 100.0)
+            RuntimeLog("[hitch] frame %llu render %.0f ms: shaders compiled %u failed %u pending %u, draws %u\n",
+                (unsigned long long)frame.stats.frame, ms, ShaderCompilerCompileCount(), ShaderCompilerFailedCount(),
+                ShaderCompilerPendingCount(), frame.stats.draws);
         busyDraws += renderer.LastDrawn();
         if (frame.partial)
             continue;

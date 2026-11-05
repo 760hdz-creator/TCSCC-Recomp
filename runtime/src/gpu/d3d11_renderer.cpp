@@ -2436,19 +2436,20 @@ void D3D11Renderer::ExecuteDraw(const DrawCall& d, const Frame& frame)
         }
     }
     static const std::filesystem::path cacheDir = DefaultShaderCacheDir();
+    // A shader still compiling in the background (GetCompiledShaderAsync: nullptr) skips the draw.
     auto& vs = r.vs[d.vs->hash];
     if (!vs)
     {
-        const CompiledShader& c = GetCompiledShader(*d.vs, cacheDir);
-        if (c.ok)
-            m_device->CreateVertexShader(c.bytecode.data(), c.bytecode.size(), nullptr, &vs);
+        const CompiledShader* c = GetCompiledShaderAsync(*d.vs, cacheDir);
+        if (c && c->ok)
+            m_device->CreateVertexShader(c->bytecode.data(), c->bytecode.size(), nullptr, &vs);
     }
     auto& ps = r.ps[d.ps->hash];
     if (!ps)
     {
-        const CompiledShader& c = GetCompiledShader(*d.ps, cacheDir);
-        if (c.ok)
-            m_device->CreatePixelShader(c.bytecode.data(), c.bytecode.size(), nullptr, &ps);
+        const CompiledShader* c = GetCompiledShaderAsync(*d.ps, cacheDir);
+        if (c && c->ok)
+            m_device->CreatePixelShader(c->bytecode.data(), c->bytecode.size(), nullptr, &ps);
     }
     if (!vs || !ps)
     {
@@ -3766,7 +3767,13 @@ void D3D11Renderer::Present(const Frame& frame)
                 if (d.ps && !r.ps.count(d.ps->hash))
                     blobs.push_back(d.ps);
             }
-            if (blobs.size() > 1)
+            // Default: queue them all for the background compilers now (no wait); SCDA_SYNC_SHADERS=1:
+            // compile in parallel and wait (the old hitch, never pop-in).
+            static const bool sync = getenv("SCDA_SYNC_SHADERS") != nullptr;
+            if (!sync)
+                for (const ShaderBlob* b : blobs)
+                    GetCompiledShaderAsync(*b, cacheDir);
+            else if (blobs.size() > 1)
                 PrecompileShaders(blobs, cacheDir);
         }
         size_t next = 0, nextQuery = 0, nextFence = 0;

@@ -18,6 +18,13 @@ const CompiledShader& GetCompiledShader(const ShaderBlob& blob, const std::files
 
 // Translates + compiles the blobs not in memory yet on several threads (disk hits just load), so a
 // frame with many new shaders stalls once for the slowest instead of for their sum.
+// Non-blocking lookup (the renderer): memory or disk hit = the shader; otherwise the blob is queued
+// for a background compile and nullptr is returned until it is done (the draw is skipped meanwhile:
+// a few frames of pop-in instead of a hitch when an area brings new shaders). SCDA_SYNC_SHADERS=1:
+// compile on the spot as before.
+const CompiledShader* GetCompiledShaderAsync(const ShaderBlob& blob, const std::filesystem::path& cacheDir);
+uint32_t ShaderCompilerPendingCount();
+
 void PrecompileShaders(const std::vector<const ShaderBlob*>& blobs, const std::filesystem::path& cacheDir);
 
 // Vertex fetch constant slots the vertex shader reads (translated once per blob, cached).

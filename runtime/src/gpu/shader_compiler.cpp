@@ -1,5 +1,6 @@
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -26,7 +27,7 @@ struct CacheHeader
 
 static std::mutex g_mutex;
 static std::unordered_map<uint64_t, std::unique_ptr<CompiledShader>> g_compiled;
-static uint32_t g_compileCount, g_failedCount, g_readyCount;
+static std::atomic<uint32_t> g_compileCount, g_failedCount, g_readyCount; // async workers too
 
 static uint64_t Fnv1a(const uint8_t* p, size_t n)
 {
@@ -81,6 +82,26 @@ static void StoreCached(const ShaderBlob& blob, const std::filesystem::path& pat
     std::filesystem::rename(tmp, path, ec);
 }
 
+// fxc on translated HLSL. A loop fxc cannot unroll because it holds gradient samples (X3511, X3570)
+// is compiled again as a real loop with mip-0 samples (SCDA_LOOP_FALLBACK). Three Conviction PS
+// (Market, Museum) failed without it (climb/vault prompt drawn as a white box, 2026-11-04); the failed
+// attempt takes ~2 s once, then the result is in the disk cache.
+static std::vector<uint8_t> CompileTranslated(const ShaderBlob& blob, const std::string& hlsl, std::string* err)
+{
+    std::vector<uint8_t> code = CompileHlsl(hlsl, blob.type == ShaderType::Pixel, err);
+    if (code.empty() && (err->find("X3511") != std::string::npos || err->find("X3570") != std::string::npos))
+    {
+        std::string err2;
+        code = CompileHlsl("#define SCDA_LOOP_FALLBACK\n" + hlsl, blob.type == ShaderType::Pixel, &err2);
+        if (!code.empty())
+            RuntimeLog("[shader] %016llx.%s: compiled with the loop fallback (mip-0 samples)\n", (unsigned long long)blob.hash,
+                blob.type == ShaderType::Pixel ? "ps" : "vs");
+        else
+            *err += "\nloop fallback: " + err2;
+    }
+    return code;
+}
+
 static void Compile(const ShaderBlob& blob, CompiledShader& out)
 {
     g_compileCount++;
@@ -102,19 +123,7 @@ static void Compile(const ShaderBlob& blob, CompiledShader& out)
         std::ofstream(std::filesystem::path(dir) / name, std::ios::binary).write(t.hlsl.data(), t.hlsl.size());
     }
     std::string err;
-    out.bytecode = CompileHlsl(t.hlsl, blob.type == ShaderType::Pixel, &err);
-    // A loop fxc cannot unroll because it holds gradient samples (X3511, X3570): compile again as a
-    // real loop with mip-0 samples. Three Conviction PS (Market, Museum) failed without it
-    // (climb/vault prompt drawn as a white box, 2026-11-04).
-    if (out.bytecode.empty() && (err.find("X3511") != std::string::npos || err.find("X3570") != std::string::npos))
-    {
-        std::string err2;
-        out.bytecode = CompileHlsl("#define SCDA_LOOP_FALLBACK\n" + t.hlsl, blob.type == ShaderType::Pixel, &err2);
-        if (!out.bytecode.empty())
-            RuntimeLog("[shader] %016llx.%s: compiled with the loop fallback (mip-0 samples)\n", (unsigned long long)blob.hash, stage);
-        else
-            err += "\nloop fallback: " + err2;
-    }
+    out.bytecode = CompileTranslated(blob, t.hlsl, &err);
     out.ok = !out.bytecode.empty();
     if (!out.ok)
     {
@@ -194,7 +203,7 @@ void PrecompileShaders(const std::vector<const ShaderBlob*>& blobs, const std::f
                 TranslateResult t = TranslateShader(*todo[i]);
                 std::string err;
                 if (t.ok)
-                    shader->bytecode = CompileHlsl(t.hlsl, todo[i]->type == ShaderType::Pixel, &err);
+                    shader->bytecode = CompileTranslated(*todo[i], t.hlsl, &err);
                 shader->ok = !shader->bytecode.empty();
                 if (!shader->ok)
                 {
@@ -281,4 +290,88 @@ void ShaderCompilerResetMemory()
     std::lock_guard lock(g_mutex);
     g_compiled.clear();
     g_readyCount = 0;
+}
+
+// Background compiles (GetCompiledShaderAsync): a queue of blobs not on disk, worked by a few
+// threads; finished shaders land in g_compiled like the synchronous path.
+namespace
+{
+std::mutex g_asyncMutex;
+std::condition_variable g_asyncWake;
+std::vector<const ShaderBlob*> g_asyncQueue;
+std::unordered_set<uint64_t> g_asyncPending;
+std::filesystem::path g_asyncCacheDir;
+bool g_asyncStarted;
+
+void AsyncWorker()
+{
+    for (;;)
+    {
+        const ShaderBlob* blob;
+        {
+            std::unique_lock lock(g_asyncMutex);
+            g_asyncWake.wait(lock, [] { return !g_asyncQueue.empty(); });
+            blob = g_asyncQueue.back(); // newest first: what the current frame needs
+            g_asyncQueue.pop_back();
+        }
+        auto shader = std::make_unique<CompiledShader>();
+        Compile(*blob, *shader);
+        if (shader->ok)
+            StoreCached(*blob, CachePath(*blob, g_asyncCacheDir), shader->bytecode);
+        {
+            std::lock_guard lock(g_mutex);
+            if (shader->ok)
+                g_readyCount++;
+            g_compiled.emplace(blob->hash, std::move(shader));
+        }
+        std::lock_guard lock(g_asyncMutex);
+        g_asyncPending.erase(blob->hash);
+    }
+}
+}
+
+const CompiledShader* GetCompiledShaderAsync(const ShaderBlob& blob, const std::filesystem::path& cacheDir)
+{
+    static const bool sync = getenv("SCDA_SYNC_SHADERS") || getenv("SCDA_HLSL_OVERRIDE") || getenv("SCDA_DUMP_HLSL");
+    if (sync)
+        return &GetCompiledShader(blob, cacheDir);
+    {
+        std::lock_guard lock(g_mutex);
+        auto it = g_compiled.find(blob.hash);
+        if (it != g_compiled.end())
+            return it->second.get();
+    }
+    {
+        std::lock_guard lock(g_asyncMutex);
+        if (g_asyncPending.count(blob.hash))
+            return nullptr;
+    }
+    // A disk hit is a quick read: load it now.
+    auto shader = std::make_unique<CompiledShader>();
+    if (LoadCached(blob, CachePath(blob, cacheDir), shader->bytecode))
+    {
+        shader->ok = true;
+        std::lock_guard lock(g_mutex);
+        g_readyCount++;
+        return g_compiled.emplace(blob.hash, std::move(shader)).first->second.get();
+    }
+    std::lock_guard lock(g_asyncMutex);
+    if (!g_asyncStarted)
+    {
+        g_asyncStarted = true;
+        g_asyncCacheDir = cacheDir;
+        const unsigned threads = std::max(1u, std::min(4u, std::thread::hardware_concurrency() / 2));
+        for (unsigned i = 0; i < threads; i++)
+            std::thread(AsyncWorker).detach();
+    }
+    if (g_asyncPending.insert(blob.hash).second)
+        g_asyncQueue.push_back(&blob);
+    g_asyncWake.notify_one();
+    return nullptr;
+}
+
+uint32_t ShaderCompilerPendingCount()
+{
+    std::lock_guard lock(g_asyncMutex);
+    return uint32_t(g_asyncPending.size());
 }
