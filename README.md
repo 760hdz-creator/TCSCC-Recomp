@@ -16,8 +16,8 @@
 </div>
 
 > [!NOTE]
-> **Work in progress.** The game boots to the title screen, menus work, and the first missions load and play
-> with sound and saves. There is no installer release yet.
+> **Work in progress.** All 11 story chapters load and play with sound and saves, Deniable Ops plays, and co-op /
+> Face-Off work online over Steam (System Link and Xbox LIVE Player Match). There is no installer release yet.
 
 > [!IMPORTANT]
 > **No game files are included, and none ever will be.** You need your own copy of the Xbox 360 game
@@ -49,6 +49,8 @@ and the runtime started as a fork of it, but every engine-specific fix has been 
 
 | | |
 |:-:|:-:|
+| <img src="docs/images/player_match.jpg" width="400"><br>Xbox LIVE Player Match lobby, over Steam | <img src="docs/images/coop_banya.jpg" width="400"><br>Co-op in St. Petersburg Banya, two players |
+| <img src="docs/images/recomp_settings.jpg" width="400"><br>RECOMP SETTINGS, in the game's own menu | <img src="docs/images/faceoff.jpg" width="400"><br>Face-Off (PvP) over System Link |
 | <img src="docs/images/menu.jpg" width="400"><br>Main menu | <img src="docs/images/market_cafe.jpg" width="400"><br>Malta market, the cafe at night |
 | <img src="docs/images/market_square.jpg" width="400"><br>Market square | <img src="docs/images/market_alley.jpg" width="400"><br>Market alley, soft shadows |
 
@@ -63,15 +65,19 @@ and the runtime started as a fork of it, but every engine-specific fix has been 
 | Area | State |
 |-|-|
 | Boot, logos, title screen, menus (Scaleform UI) | Works |
-| First chapters: `01_Market` (Malta), `02_Museum`, `03_Airfield`, `04_FB-Coste` | Load and play |
+| Story: all 11 chapters (`01_Market` .. `11_WhiteHouse_A`), also from Scene Select | Load and play |
 | Deniable Ops (tested: Hunter, St. Petersburg Banya) | Plays |
-| In-mission audio (XMA) | Works |
-| Saves and profiles | Work (a new profile no longer shows *Corrupted Data*) |
+| Audio: sound effects, dialogue, music, cutscenes (XMA) | Works |
+| Saves and profiles | Work |
 | Bink videos | Work |
-| Later chapters picked in Scene Select | Not yet: they start the first chapter |
+| Languages: English, French, German, Italian, Spanish | Work (RECOMP SETTINGS > LANGUAGE) |
+| Online co-op and Face-Off: System Link over Steam | Works (tested with two copies on one PC) |
+| Online co-op and Face-Off: Xbox LIVE Player Match over Steam | Works (tested with two copies on one PC) |
+| Steam invites to a Player Match, Private Match, voice chat, leaderboards | Not yet |
 
-## Options (F1 / L3+R3 in game)
+## Options (RECOMP SETTINGS in the main menu, or F1 / L3+R3 in game)
 
+The main menu's UPLAY entry is replaced by **RECOMP SETTINGS**, a settings page in the game's own style.
 Everything new is **off by default**, so the game looks and runs like the console unless you choose otherwise.
 
 | Option | What it does |
@@ -83,10 +89,77 @@ Everything new is **off by default**, so the game looks and runs like the consol
 | Internal resolution | Renders at 1x-4x and filters down (supersampling). The game itself renders at 1040x576. |
 | Upscaling, FXAA, sharpening, anisotropic filtering | Image quality options. |
 | VSync, window mode | Display options. |
+| Online | Play co-op and Face-Off over Steam (see [Playing online](#playing-online)). |
+| Language | Menu, subtitle and voice language (needs that language on your disc). |
+
+## Playing online
+
+Online play goes through **Steam**: no Ubisoft or Xbox LIVE servers are needed (they are long gone). Steam carries
+the game's network traffic over Valve's relays, so **no port forwarding** is needed. All players need this
+project's same version and their own copy of the game.
+
+> [!WARNING]
+> So far online play has only been tested between two copies of the game on one PC. Playing between two
+> PCs with different Steam accounts hasn't been tested yet. Please report how it goes.
+
+### Set up (every player, once)
+
+1. Start **Steam** and sign in. Keep it running while you play.
+2. In the game's main menu open **RECOMP SETTINGS**, set **ONLINE** to **ON**, then quit and restart the game.
+3. With Online on, you are signed in to "Xbox LIVE" with your **Steam name** as your gamertag. Steam shows you as
+   playing *Spacewar*: the project uses Valve's free test app (480) to reach Steam's network.
+
+Everything below is under **COOP & MULTIPLAYER** in the main menu.
+
+### System Link (host and join a friend directly)
+
+**Host:**
+1. Open **SYSTEM LINK** and press **X** (Create).
+2. In the lobby, choose **MATCH SETTINGS > Game Mode**: CO-OP STORY, HUNTER, LAST STAND or FACE-OFF (PvP), and
+   the map.
+3. Wait for *Waiting for another player to join* to change when your friend joins.
+
+**Join:**
+- Open **SYSTEM LINK**. The host's match shows in the list (press **Refresh** if it's empty, a new match can take
+  a few seconds to show). Pick it with **A**.
+- Or, in your Steam friends list, right-click the host and choose **Join Game**, then open **SYSTEM LINK**.
+
+**Start:** both players press **X** (Toggle Status) to set themselves to READY. The match loads when both are ready.
+
+### Xbox LIVE Player Match (matchmaking)
+
+1. Open **XBOX LIVE PLAYER MATCH**, pick your settings, and press **Start** to search.
+2. If someone else is searching or waiting with the same Game Mode and difficulty, you join their match.
+   If nobody is, your game creates a match and waits for the next player who searches.
+3. In the lobby, both players press **X** to READY. The match loads when both are ready.
+
+Matches are found among everyone playing this project online. To play with a specific friend, agree on the same
+Game Mode and difficulty and search at about the same time, or use System Link.
+Private Match (Y) and Steam invites to a Player Match don't work yet.
+
+### Troubleshooting
+
+- *You need to be signed into Xbox LIVE*: ONLINE is off, or the game wasn't restarted after turning it on.
+- Nothing is found: check that Steam is running and that both players have ONLINE on.
+- Send `scda.log` and `steam_helper.log` (next to `tcscc.exe`) with a bug report.
 
 ## Patch notes
 
-### 2026-11-04: draw distance, field of view
+### 2026-11-05: online play
+- **New: online co-op and Face-Off over Steam.** System Link finds other players' matches through Steam, and
+  Steam's Join Game works. Xbox LIVE Player Match matchmaking works without Ubisoft's servers. Your Steam name
+  is your gamertag.
+- **New: RECOMP SETTINGS** in the main menu (it replaces UPLAY, which quit the game). All the PC options, in the
+  game's own menu style.
+- **Fixed: Language setting** (French, German, Italian and Spanish now load).
+- **Fixed: stutters** when entering new areas. Shaders now compile in the background.
+- **Fixed:** shaders with loops the compiler couldn't unroll were missing.
+- **Fixed:** the F1 menu's rows ran under its footer. Changing Window mode applies at once.
+- New app icon.
+
+### 2026-11-04: all chapters, draw distance, field of view
+- **Fixed: Scene Select** reaches all 11 chapters (all tested, no crash).
+- **Fixed: crash in 07_LincolnMemorial** (a rendering race).
 - **Fixed: robotic voices** in streamed dialogue (e.g. the first mission's cafe call) and glitches in the music.
 - **Fixed: no music.** The menu music, the music during missions and the sound of mission intro cutscenes stopped after a few seconds (streamed audio got stuck).
 - **Fixed: the Field of view slider did nothing.** It now widens or narrows the player camera (default 90).
@@ -126,8 +199,10 @@ You need your own game disc image. Nothing from the game is in this repository.
 3. Extract `default.xex` from your disc into `assets/` and make the flat image with `tools/xex_dump`
    (its SHA-256 must match `config/expected_image.txt`).
 4. Recompile the game code: `sh tools/recomp.sh` (writes `generated/`, which is git-ignored).
-5. Build the runtime: `tools/build_runtime.bat` -> `runtime/build/tcscc.exe`.
-6. Run it from a folder holding the game's files. Its log is `scda.log`.
+5. Optional, for online play: put the [Steamworks SDK](https://partner.steamgames.com/downloads/list) 1.65 in
+   `external/steamworks_sdk_165` (its `sdk` folder inside). Without it the build has no Steam support.
+6. Build the runtime: `tools/build_runtime.bat` -> `runtime/build/tcscc.exe` (and `steam_api64.dll` next to it).
+7. Run it from a folder holding the game's files. Its log is `scda.log`.
 
 Tests: `python -I -m unittest discover -s tools/tests -t .` and `tools/test_runtime.bat`.
 

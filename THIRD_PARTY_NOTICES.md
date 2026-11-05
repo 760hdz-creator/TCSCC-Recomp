@@ -17,7 +17,13 @@ TCSCC Recomp is licensed under GPL-3.0 (see `LICENSE`). It builds on or adapts:
 | Dear ImGui (v1.91.9) | MIT | Extra Settings menu (F1 / L3+R3), vendored unmodified in `runtime/thirdparty/imgui/` | https://github.com/ocornut/imgui |
 | AMD FidelityFX CAS | MIT | Sharpening filter math, reimplemented in `kPostPs` (`runtime/src/gpu/d3d11_renderer.cpp`) | https://github.com/GPUOpen-Effects/FidelityFX-CAS |
 
-The Tekken Tag Tournament 2 PC port (https://github.com/shihabal3amri/tekken-tag-tournament-2-pc)
-is used as a design reference only. No code from it is included: it has no license.
+The online code in `runtime/src/online/` (packet transport, Steam helper, virtual Xbox sockets, XSession and
+matchmaking) is adapted from the Tekken Tag Tournament 2 PC port by shihabal3amri
+(https://github.com/shihabal3amri/tekken-tag-tournament-2-pc), used with the author's permission, via
+8gram Labs's TTT2-Recomp fork. That project has no license file. Ask its author before reusing the code
+in other projects.
+
+Online play needs the Steamworks SDK (Valve, Steamworks SDK license), which isn't included: the build looks for
+it in `external/steamworks_sdk_165`, and `steam_api64.dll` from it ships next to the program.
 
 Tom Clancy's Splinter Cell: Conviction is the property of Ubisoft. This project contains no game data.
