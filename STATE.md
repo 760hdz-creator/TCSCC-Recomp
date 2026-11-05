@@ -33,7 +33,7 @@
 - 2026-11-05 RECOMP SETTINGS (main_menu.cpp + recomp_page.cpp): UPLAY entry relabelled (StartUPlay launched UPlayBrowser.xex = exit); travels to the empty MarketPage (game title + swing), rows drawn by the overlay, input via XamInputGetState; B = game Back rewritten to TRAVEL_C_A IndexPage. F1 only in game (GuestInFrontEnd; SCDA_MENU_ANYWHERE=1). Rows incl. ONLINE. | 2026-11-04 LANGUAGE FIXED: disc check now Default\loc-<int|deu|fra|esp|ita>.umd (was SC:DA Packages\Texts). French verified.
 ## Online (details + test recipe: docs/online.md)
 - Steps 1-3 DONE: Steam transport (app 480, helper process), virtual Xbox sockets/XNet, System Link over Steam lobbies. Verified 2 loopback instances: co-op + FACE-OFF PvP load and run. Two Steam accounts: not yet tested (user + friend).
-- Step 4 DONE on loopback 2026-11-05: Xbox LIVE PLAYER MATCH = XSession (no Ubisoft servers), LIVE identity = Steam name. Two instances: search finds host, join, lobby, ready, co-op Banya plays on both.
+- Step 4 DONE on loopback 2026-11-05: Xbox LIVE PLAYER MATCH = XSession (no Ubisoft servers), LIVE identity = Steam name. Two instances: search finds host, join, lobby, ready, co-op Banya plays on both. User watched it 2026-11-05: OK. User guide = README "Playing online". Online code is adapted from shihabal3amri TTT2 (unlicensed; user has permission, credited in THIRD_PARTY_NOTICES).
 ## User playtest 2026-11-04 (installer build) — open
 - Sam's eyes look strange in cutscenes (user 2026-11-04; unseen).
 - Crash: sub_82511D28 (D3D SetTexture-like, r3 dev 0x40102080, stage r4 0) got texture ptr r5=1 -> read 0x31; after content enumerate (checkpoint). Not reproduced.
@@ -47,4 +47,4 @@
 0. ONLINE: user + friend Steam test of System Link / Face-Off / Player Match. Then Steam Join Game / Private Match invites for Player Match (docs/online.md "Step 4").
 1. User playtest items above (eyes, white climb box, DOF blur, execute arrows, SetTexture crash).
 2. 60 fps polish: menus 38-50 fps at 120 Hz; soak FPS60 on more maps.
-3. GitLab remote `gitlab` (PRIVATE, main at 05216c4 2026-11-05: online guide + screenshots): NEVER push game files (audit tree + history first). Gemini bridge still 503.
+3. GitLab remote `gitlab` (PRIVATE, main at 58d9265 2026-11-05: online guide + screenshots): NEVER push game files (audit tree + history first). Gemini bridge still 503.
