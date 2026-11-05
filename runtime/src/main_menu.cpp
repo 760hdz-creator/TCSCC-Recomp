@@ -204,6 +204,8 @@ PPC_FUNC(sub_82E85358)
         strcpy(reinterpret_cast<char*>(base + back), "EVENT=TRAVEL_C_A PAGE=IndexPage");
         ctx.r5.u64 = back;
     }
+    if (AsciiIs(ctx.r4.u32, "TRAVEL_MENU"))
+        MainMenuSetIndexPage(GuestText(ctx.r5.u32).find("PAGE=IndexPage") != std::string::npos);
     __imp__sub_82E85358(ctx, base);
 }
 

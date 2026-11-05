@@ -39,7 +39,8 @@ namespace steamnet {
 namespace {
 
 enum : uint8_t { kSend = 1, kPublish = 2, kRemove = 3, kList = 4, kFriends = 7, kInvite = 8,
-                 kReady = 101, kRecv = 102, kListResult = 103, kJoin = 104, kFriendsResult = 106, kInviteResult = 107 };
+                 kReady = 101, kRecv = 102, kListResult = 103, kJoin = 104, kFriendsResult = 106, kInviteResult = 107,
+                 kAvatar = 108 }; // kAvatar: u32 width, u32 height, RGBA (helper -> game, once)
 constexpr uint32_t kMaxFrame = 16u << 20;
 
 void Put32(uint8_t* p, uint32_t v) { std::memcpy(p, &v, 4); }
@@ -112,6 +113,8 @@ bool g_inproc = false; // SCDA_STEAM_INPROC=1
 std::atomic<bool> g_running{ false };
 std::atomic<uint64_t> g_local{ 0 };
 std::string g_localName; // under g_mutex
+std::vector<uint8_t> g_avatar; // under g_mutex: RGBA, g_avatarW x g_avatarH (kAvatar)
+uint32_t g_avatarW = 0, g_avatarH = 0;
 Receiver g_receiver = nullptr;
 HANDLE g_in = INVALID_HANDLE_VALUE; // from the helper
 HANDLE g_helper = nullptr;
@@ -168,6 +171,17 @@ void Reader(HANDLE in, uint32_t generation)
             g_local = Get64(p.data() + 1);
             g_localName.assign(p.begin() + 9, p.end());
             g_cv.notify_all();
+        }
+        else if (type == kAvatar && p.size() >= 8)
+        {
+            const uint32_t w = Get32(p.data()), h = Get32(p.data() + 4);
+            if (w && h && w <= 256 && h <= 256 && p.size() == 8 + size_t(w) * h * 4)
+            {
+                std::lock_guard l(g_mutex);
+                g_avatar.assign(p.begin() + 8, p.end());
+                g_avatarW = w;
+                g_avatarH = h;
+            }
         }
         else if (type == kListResult && p.size() >= 8)
         {
@@ -436,6 +450,19 @@ std::string LocalName()
     return g_localName;
 }
 
+bool LocalAvatar(std::vector<uint8_t>& rgba, uint32_t& width, uint32_t& height)
+{
+    if (g_inproc)
+        return direct::LocalAvatar(rgba, width, height);
+    std::lock_guard l(g_mutex);
+    if (g_avatar.empty())
+        return false;
+    rgba = g_avatar;
+    width = g_avatarW;
+    height = g_avatarH;
+    return true;
+}
+
 bool Send(uint64_t peer, bool reliable, const void* data, size_t size)
 {
     if (g_inproc)
@@ -643,6 +670,22 @@ int RunBridge(int argc, char** argv)
     g_out.Frame(kReady, ready, 9, name.data(), name.size());
     if (!ok)
         return 1;
+    if (!fake)
+        std::thread([] {
+            // Our avatar for the main menu's player card: Steam may still be downloading it (-1).
+            for (int tries = 0; tries < 40; ++tries, Sleep(500))
+            {
+                std::vector<uint8_t> rgba;
+                uint32_t w = 0, h = 0;
+                if (!direct::LocalAvatar(rgba, w, h))
+                    continue;
+                uint8_t head[8];
+                Put32(head, w);
+                Put32(head + 4, h);
+                g_out.Frame(kAvatar, head, 8, rgba.data(), rgba.size());
+                return;
+            }
+        }).detach();
     std::thread([] {
         for (;;)
         {

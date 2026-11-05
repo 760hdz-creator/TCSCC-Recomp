@@ -116,6 +116,7 @@ add_executable(scda
     src/pawn_hooks.cpp
     src/main_menu.cpp
     src/recomp_page.cpp
+    src/player_card.cpp
     src/online/net_transport.cpp
     src/online/steam_net.cpp
     src/online/steam_bridge.cpp

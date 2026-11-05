@@ -53,6 +53,7 @@ ID3D11Device* g_device;      // the ImGui DX11 backend's (a lost device makes a 
 bool g_imgui;
 ImFont* g_pageTitle; // RECOMP SETTINGS page fonts (null: the default font)
 ImFont* g_pageBody;
+OverlayPlayerCard g_playerCard; // player_card.cpp (game build only)
 int g_openTab = -1; // SCDA_MENU=<0-2>: the menu starts open on that tab (unattended checks)
 constexpr int kTabs = 3;
 int g_tabStep = 0;  // L1/R1 (LB/RB) pressed in the menu: -1 previous tab, +1 next
@@ -592,6 +593,11 @@ void Draw()
         ImFont* def = ImGui::GetIO().Fonts->Fonts[0];
         RecompPageDraw(g_pageTitle ? g_pageTitle : def, g_pageBody ? g_pageBody : def);
     }
+    else if (g_playerCard && !open && MainMenuOnIndexPage() && GuestInFrontEnd())
+    {
+        ImFont* def = ImGui::GetIO().Fonts->Fonts[0];
+        g_playerCard(g_pageBody ? g_pageBody : def, g_renderer->Device());
+    }
     ImGui::Render();
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
 }
@@ -640,7 +646,7 @@ void OverlayAttach(D3D11Renderer& renderer, HWND hwnd, const DisplaySettings& se
         }
         PollPadCombo();
         // Nothing to draw: no ImGui frame at all (the plain game image, no cost).
-        if (!g_open && !ToastVisible() && !RecompPageIsOpen())
+        if (!g_open && !ToastVisible() && !RecompPageIsOpen() && !(g_playerCard && MainMenuOnIndexPage() && GuestInFrontEnd()))
             return;
         if (!g_imgui)
             InitImGui();
@@ -671,6 +677,8 @@ void OverlayChangeSettings(const DisplaySettings& s)
     g_pendingSettings = s;
     g_pending = true;
 }
+
+void OverlaySetPlayerCard(OverlayPlayerCard draw) { g_playerCard = draw; }
 
 void OverlayRequestOpen()
 {

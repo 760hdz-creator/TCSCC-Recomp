@@ -6,6 +6,13 @@
 #include <settings.h>
 
 class D3D11Renderer;
+struct ImFont;
+struct ID3D11Device;
+
+// Drawn over the main menu page (inside the ImGui frame, render thread): the player card
+// (player_card.cpp registers it; the test build has none).
+using OverlayPlayerCard = void (*)(ImFont* body, ID3D11Device* device);
+void OverlaySetPlayerCard(OverlayPlayerCard draw);
 
 // Render thread, once the renderer is up: applies the settings (scale, post-processing) and draws
 // the menu / notification over every presented frame.

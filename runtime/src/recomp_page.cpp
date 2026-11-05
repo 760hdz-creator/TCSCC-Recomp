@@ -221,6 +221,10 @@ void RecompPageInput(const XINPUT_GAMEPAD& g)
     }
 }
 
+static std::atomic<bool> g_indexPage{false};
+void MainMenuSetIndexPage(bool on) { g_indexPage = on; }
+bool MainMenuOnIndexPage() { return g_indexPage.load(); }
+
 void RecompPageDraw(ImFont* title, ImFont* body)
 {
     if (!g_open)

@@ -338,6 +338,18 @@ std::string LocalName()
     return n ? n : "";
 }
 
+bool LocalAvatar(std::vector<uint8_t>& rgba, uint32_t& w, uint32_t& h)
+{
+    if (!g_running)
+        return false;
+    // 0 = no avatar set, -1 = still downloading (the helper asks again).
+    const int image = SteamFriends()->GetMediumFriendAvatar(SteamUser()->GetSteamID());
+    if (image <= 0 || !SteamUtils()->GetImageSize(image, &w, &h) || !w || !h || w > 256 || h > 256)
+        return false;
+    rgba.resize(size_t(w) * h * 4);
+    return SteamUtils()->GetImageRGBA(image, rgba.data(), int(rgba.size()));
+}
+
 bool Send(uint64_t peer, bool reliable, const void* data, size_t size)
 {
     if (!g_running || size + 1 > 512 * 1024)
@@ -496,6 +508,7 @@ bool Start(Receiver) { return false; }
 bool Running() { return false; }
 uint64_t LocalId() { return 0; }
 std::string LocalName() { return ""; }
+bool LocalAvatar(std::vector<uint8_t>&, uint32_t&, uint32_t&) { return false; }
 bool Send(uint64_t, bool, const void*, size_t) { return false; }
 void PublishLobby(uint64_t, const std::vector<uint8_t>&) {}
 void RemoveLobby(uint64_t) {}

@@ -16,3 +16,7 @@ bool RecompPageTakeBack();
 void RecompPageInput(const XINPUT_GAMEPAD& g); // game thread, every input poll
 // Render thread, inside an ImGui frame: fonts baked at title / body pixel sizes for this window.
 void RecompPageDraw(ImFont* title, ImFont* body);
+// The main menu's own page (IndexPage) is the current one: main_menu.cpp sets it from every
+// TRAVEL_MENU event; the player card (player_card.cpp) shows only there.
+void MainMenuSetIndexPage(bool on);
+bool MainMenuOnIndexPage();

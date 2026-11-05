@@ -22,6 +22,8 @@ bool Start(Receiver receiver);
 bool Running();
 uint64_t LocalId(); // our SteamID (0 when not running)
 std::string LocalName(); // our Steam persona name ("" when not running)
+// Our Steam avatar (medium, 64x64 RGBA) once the helper has sent it; false until then / without Steam.
+bool LocalAvatar(std::vector<uint8_t>& rgba, uint32_t& width, uint32_t& height);
 bool Send(uint64_t peer, bool reliable, const void* data, size_t size);
 
 // Lobbies: one per hosted session, carrying `record` (opaque bytes; starts with "SCC1" + u64 session id,
@@ -49,6 +51,7 @@ bool Start(Receiver receiver);
 bool Running();
 uint64_t LocalId();
 std::string LocalName();
+bool LocalAvatar(std::vector<uint8_t>& rgba, uint32_t& width, uint32_t& height);
 bool Send(uint64_t peer, bool reliable, const void* data, size_t size);
 void PublishLobby(uint64_t sessionId, const std::vector<uint8_t>& record);
 void RemoveLobby(uint64_t sessionId);
