@@ -403,6 +403,9 @@ SCDA_IMPORT(XamUserGetSigninInfo)
     GuestStore32(info + 0xC, id.live ? 2 : 1);
     const std::string name = id.gamertag.substr(0, 15);
     memcpy(GuestPtr(info + 0x18), name.c_str(), name.size() + 1);
+    static std::atomic<bool> logged{ false };
+    if (!logged.exchange(true))
+        RuntimeLog("[profile] signed in as \"%s\" (%s)\n", name.c_str(), id.live ? "LIVE" : "local");
     ctx.r3.u64 = kErrorSuccess;
 }
 

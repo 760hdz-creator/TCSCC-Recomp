@@ -172,8 +172,8 @@ bool EnsureTransport()
         online::Identity id;
         id.live = true;
         const uint64_t peer = net::LocalPeer();
-        std::string name;
-        if (Steam())
+        std::string name = ProfileNameSetting(); // [Profile] Name first, then the Steam name
+        if (name.empty() && Steam())
             for (char c : steamnet::LocalName())
                 if (c >= 0x20 && c < 0x7F && name.size() < 15)
                     name += c;

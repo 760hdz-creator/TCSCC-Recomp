@@ -89,3 +89,7 @@ bool SaveSetting(const std::filesystem::path& ini, const std::string& section, c
 std::filesystem::path SettingsPath();
 // [Online] Enabled=1: System Link over Steam (online/xnet.cpp), read at startup. Default off.
 bool OnlineEnabledSetting();
+// [Profile] Name: the profile name / gamertag (F1 Display > Profile name), case kept; "" = not set
+// (offline "Player", online the Steam name). SanitizeProfileName: printable ASCII, trimmed, 15 at most.
+std::string ProfileNameSetting();
+std::string SanitizeProfileName(const std::string& name);

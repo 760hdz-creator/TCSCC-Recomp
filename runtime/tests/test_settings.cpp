@@ -140,3 +140,16 @@ TEST(online_enabled_by_default)
     CHECK(!OnlineEnabledSetting());
     _putenv_s("SCDA_SETTINGS", "");
 }
+
+// [Profile] Name keeps its case; printable ASCII, trimmed, 15 characters at most.
+TEST(profile_name_setting)
+{
+    CHECK(SanitizeProfileName("  Sam Fisher  ") == "Sam Fisher");
+    CHECK(SanitizeProfileName("TestPlayer1234_long") == "TestPlayer1234_");
+    const std::string path = Ini("[Profile]\nName=TestPlayer1234\n").string();
+    _putenv_s("SCDA_SETTINGS", path.c_str());
+    CHECK(ProfileNameSetting() == "TestPlayer1234");
+    Ini("[Display]\n");
+    CHECK(ProfileNameSetting().empty());
+    _putenv_s("SCDA_SETTINGS", "");
+}

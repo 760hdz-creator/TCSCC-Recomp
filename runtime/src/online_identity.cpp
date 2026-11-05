@@ -1,5 +1,6 @@
 #include <online_identity.h>
 #include <mutex>
+#include <settings.h>
 
 namespace online {
 namespace {
@@ -10,6 +11,15 @@ Identity g_identity;
 Identity GetIdentity()
 {
     std::lock_guard l(g_mutex);
+    // The local profile name ([Profile] Name), read once at the first XamUser* call.
+    static bool loaded = false;
+    if (!loaded)
+    {
+        loaded = true;
+        if (!g_identity.live)
+            if (std::string n = ProfileNameSetting(); !n.empty())
+                g_identity.gamertag = n;
+    }
     return g_identity;
 }
 

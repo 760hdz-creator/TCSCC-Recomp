@@ -189,6 +189,23 @@ void DisplayTab(DisplaySettings& s)
         s.textureSharpness = uint32_t(sharp);
     Hint("Picks more detailed texture mip levels at a distance (mip LOD bias). Sharper can shimmer on fine patterns; "
          "higher internal resolutions already sharpen textures.");
+    // Profile name ([Profile] Name), saved when the field is left; the game reads it at sign-in.
+    static char profileName[16] = {};
+    static bool profileLoaded = false;
+    if (!profileLoaded)
+    {
+        profileLoaded = true;
+        snprintf(profileName, sizeof(profileName), "%s", ProfileNameSetting().c_str());
+    }
+    ImGui::InputTextWithHint("Profile name", "Player", profileName, sizeof(profileName));
+    if (ImGui::IsItemDeactivatedAfterEdit())
+    {
+        const std::string n = SanitizeProfileName(profileName);
+        snprintf(profileName, sizeof(profileName), "%s", n.c_str());
+        SaveSetting(SettingsPath(), "Profile", "Name", n);
+    }
+    Hint("Your profile name / gamertag (up to 15 letters, numbers and symbols). Empty: \"Player\" offline, your Steam "
+         "name online. Applies the next time the game starts.");
     int fov = int(s.fov);
     if (ImGui::SliderInt("Field of view", &fov, 70, 120, fov == 90 ? "%d (default)" : "%d"))
         s.fov = uint32_t(fov);

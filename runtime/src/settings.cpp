@@ -329,6 +329,40 @@ bool SaveSetting(const std::filesystem::path& ini, const std::string& section, c
     return MoveFileExW(tmp.c_str(), ini.c_str(), MOVEFILE_REPLACE_EXISTING) != 0;
 }
 
+std::string SanitizeProfileName(const std::string& name)
+{
+    std::string out;
+    for (char c : name)
+        if (c >= 0x20 && c < 0x7F && out.size() < 15)
+            out += c;
+    while (!out.empty() && out.front() == ' ')
+        out.erase(out.begin());
+    while (!out.empty() && out.back() == ' ')
+        out.pop_back();
+    return out;
+}
+
+std::string ProfileNameSetting()
+{
+    // Own reader: ForEachSetting lowercases values, the name keeps its case.
+    std::ifstream in(SettingsPath());
+    std::string line, section, name;
+    while (std::getline(in, line))
+    {
+        if (!line.empty() && line.back() == '\r')
+            line.pop_back();
+        if (line.size() > 2 && line.front() == '[')
+        {
+            section = Lower(line.substr(1, line.find(']') - 1));
+            continue;
+        }
+        const size_t eq = line.find('=');
+        if (section == "profile" && eq != std::string::npos && Lower(line.substr(0, eq)) == "name")
+            name = SanitizeProfileName(line.substr(eq + 1));
+    }
+    return name;
+}
+
 bool OnlineEnabledSetting()
 {
     // On by default ([Online] Enabled=0 turns it off). Without a running Steam client the transport is
