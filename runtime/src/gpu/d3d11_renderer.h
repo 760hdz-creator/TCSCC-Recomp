@@ -61,6 +61,7 @@ public:
     struct PostFx
     {
         bool fxaa = false;
+        bool smaa = false; // SMAA 1x instead of FXAA (gpu/smaa.h)
         bool upscale = false;
         float sharpness = 0.0f;
     };

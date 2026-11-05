@@ -127,6 +127,7 @@ DisplaySettings LoadDisplaySettings(const std::filesystem::path& ini)
         {
             if (value == "off") s.antiAliasing = DisplaySettings::AaOff;
             else if (value == "fxaa") s.antiAliasing = DisplaySettings::AaFxaa;
+            else if (value == "smaa") s.antiAliasing = DisplaySettings::AaSmaa;
         }
         else if (key == "sharpening")
         {
@@ -166,7 +167,10 @@ const char* DrawDistanceName(uint32_t level)
     return names[std::min(level, 3u)];
 }
 
-const char* AntiAliasingName(DisplaySettings::AntiAliasing aa) { return aa == DisplaySettings::AaFxaa ? "FXAA" : "Off"; }
+const char* AntiAliasingName(DisplaySettings::AntiAliasing aa)
+{
+    return aa == DisplaySettings::AaFxaa ? "FXAA" : aa == DisplaySettings::AaSmaa ? "SMAA" : "Off";
+}
 
 uint32_t UpscalingScale(DisplaySettings::Upscaling mode, uint32_t windowHeight, uint32_t manualScale)
 {

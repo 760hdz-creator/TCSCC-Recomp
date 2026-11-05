@@ -38,7 +38,7 @@ struct DisplaySettings
     uint32_t drawDistance = 0;
     // Post-processing on the presented frame (F1 menu, Graphics). Defaults leave the image as the
     // console made it. The game's own 4x MSAA is always on.
-    enum AntiAliasing { AaOff, AaFxaa } antiAliasing = AaOff; // [Display] AntiAliasing=Off|FXAA
+    enum AntiAliasing { AaOff, AaFxaa, AaSmaa } antiAliasing = AaOff; // [Display] AntiAliasing=Off|FXAA|SMAA
     uint32_t sharpening = 0;                                    // [Display] Sharpening=0..100 (percent)
     // [Display] Gamma=50..200 (percent): display gamma on top of the game's own brightness (the title's
     // gamma ramp is remapped, gamma_ramp.h WithUserGamma). 100 = unchanged, higher = brighter midtones.

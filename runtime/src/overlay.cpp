@@ -81,6 +81,7 @@ void Apply(const DisplaySettings& s)
 {
     D3D11Renderer::PostFx fx;
     fx.fxaa = s.antiAliasing == DisplaySettings::AaFxaa;
+    fx.smaa = s.antiAliasing == DisplaySettings::AaSmaa;
     fx.upscale = s.upscaling != DisplaySettings::UpOff;
     fx.sharpness = float(s.sharpening) / 100.0f;
     g_renderer->SetPostFx(fx);
@@ -247,10 +248,11 @@ void GraphicsTab(DisplaySettings& s)
     Hint("Ultra supersamples above the window resolution: the heaviest setting, not measured on every map.");
     ImGui::Separator();
     int aa = s.antiAliasing;
-    const char* const aaNames[] = { "Off", "FXAA" };
-    if (ImGui::Combo("Anti-aliasing", &aa, aaNames, 2))
+    const char* const aaNames[] = { "Off", "FXAA", "SMAA" };
+    if (ImGui::Combo("Anti-aliasing", &aa, aaNames, 3))
         s.antiAliasing = DisplaySettings::AntiAliasing(aa);
-    Hint("FXAA smooths edges after the frame is drawn, at the internal resolution. The game's own 4x MSAA "
+    Hint("FXAA and SMAA smooth edges after the frame is drawn, at the internal resolution; SMAA keeps text and "
+         "fine detail sharper. The game's own 4x MSAA "
          "is always on; higher internal resolutions add supersampling.");
     ImGui::TextDisabled("MSAA: 4x (the game's own, always on)");
     int sharpen = int(s.sharpening);

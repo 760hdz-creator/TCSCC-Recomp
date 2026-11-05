@@ -18,6 +18,7 @@
 #include <gpu/draw_state.h>
 #include <prompts.h>
 #include <gpu/gamma_ramp.h>
+#include <gpu/smaa.h>
 #include <gpu/shader_compiler.h>
 #include <gpu/xenos/translate.h>
 #include <gpu_state.h>
@@ -424,6 +425,7 @@ struct DrawResources
     ComPtr<ID3D11PixelShader> blitPs;
     // PostFx (kPostPs): its constants and two intermediate targets, (re)made at the size a pass needs.
     ComPtr<ID3D11PixelShader> postPs;
+    Smaa smaa; // AntiAliasing=SMAA (optional: not ready = FXAA-less plain path)
     ComPtr<ID3D11Buffer> postConstants;
     struct PostTarget
     {
@@ -673,6 +675,8 @@ bool D3D11Renderer::CreateDrawResources()
             printf("[d3d11] post shader: %s\n", error.c_str());
             r->postPs.Reset();
         }
+        if (!r->smaa.Init(m_device, &error))
+            RuntimeLog("[d3d11] SMAA unavailable: %s\n", error.c_str());
     }
     {
         D3D11_TEXTURE2D_DESC gd{};
@@ -3486,7 +3490,7 @@ void D3D11Renderer::Blit(ID3D11ShaderResourceView* source)
             e |= 3u << 30;
         m_context->UpdateSubresource(r.gammaRamp.Get(), 0, nullptr, entries.data(), sizeof(entries), 0);
     }
-    if (r.postPs && (m_postFx.fxaa || m_postFx.upscale || m_postFx.sharpness > 0.0f))
+    if (r.postPs && (m_postFx.fxaa || m_postFx.smaa || m_postFx.upscale || m_postFx.sharpness > 0.0f))
     {
         BlitPost(source);
         return;
@@ -3565,7 +3569,7 @@ void D3D11Renderer::PostPass(ID3D11ShaderResourceView* source, ID3D11RenderTarge
     // The draws bind their own constant buffers per frame (Present), slot 0 included.
 }
 
-// FXAA at the source size, then scaling to the window (box filter down, Lanczos up when enabled,
+// FXAA or SMAA at the source size, then scaling to the window (box filter down, Lanczos up when enabled,
 // else bilinear), then CAS + gamma ramp into the back buffer. Each pass after the first reads the
 // previous one's intermediate target (FP16, so the ramp still sees the unclamped values).
 void D3D11Renderer::BlitPost(ID3D11ShaderResourceView* source)
@@ -3599,7 +3603,17 @@ void D3D11Renderer::BlitPost(ID3D11ShaderResourceView* source)
     if (ComPtr<ID3D11Texture2D> tex; SUCCEEDED(res.As(&tex)))
         tex->GetDesc(&sd);
     ID3D11ShaderResourceView* cur = source;
-    if (m_postFx.fxaa && sd.Width && sd.Height)
+    if (m_postFx.smaa && r.smaa.Ready() && sd.Width && sd.Height)
+    {
+        if (auto& t = target(0, sd.Width, sd.Height); t.rtv)
+        {
+            r.smaa.Run(m_context, cur, t.rtv.Get(), t.width, t.height);
+            r.bound = false;
+            r.srvShadow = false;
+            cur = t.srv.Get();
+        }
+    }
+    else if (m_postFx.fxaa && sd.Width && sd.Height)
         if (auto& t = target(0, sd.Width, sd.Height); t.rtv)
         {
             PostPass(cur, t.rtv.Get(), t.width, t.height, 2, false);

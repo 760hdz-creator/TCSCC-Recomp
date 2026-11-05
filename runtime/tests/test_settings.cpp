@@ -88,6 +88,12 @@ TEST(settings_texture_sharpness_parsed)
     CHECK_EQ(LoadDisplaySettings(Ini("[Display]\nTextureSharpness=3\n")).textureSharpness, 0u);
 }
 
+TEST(settings_smaa_parsed)
+{
+    CHECK(LoadDisplaySettings(Ini("[Display]\nAntiAliasing=SMAA\n")).antiAliasing == DisplaySettings::AaSmaa);
+    CHECK(std::string(AntiAliasingName(DisplaySettings::AaSmaa)) == "SMAA");
+}
+
 TEST(settings_draw_distance_parsed)
 {
     CHECK_EQ(LoadDisplaySettings(Ini("[Display]\n")).drawDistance, 0u);

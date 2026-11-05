@@ -16,6 +16,7 @@ TCSCC Recomp is licensed under GPL-3.0 (see `LICENSE`). It builds on or adapts:
 | FFmpeg (n7.1) | LGPL-2.1+ | XMA audio decoding: libavutil + WMA Pro/XMA2 decoder subset, built unmodified from `external/ffmpeg` (`tools/ffmpeg/`, `runtime/ffmpeg_xma.cmake`) | https://ffmpeg.org |
 | Dear ImGui (v1.91.9) | MIT | Extra Settings menu (F1 / L3+R3), vendored unmodified in `runtime/thirdparty/imgui/` | https://github.com/ocornut/imgui |
 | AMD FidelityFX CAS | MIT | Sharpening filter math, reimplemented in `kPostPs` (`runtime/src/gpu/d3d11_renderer.cpp`) | https://github.com/GPUOpen-Effects/FidelityFX-CAS |
+| SMAA (Jimenez, Echevarria, Masia, Navarro, Gutierrez) | MIT-style (`runtime/src/gpu/smaa/LICENSE.txt`) | `SMAA.hlsl`, `AreaTex.h`, `SearchTex.h` vendored unmodified in `runtime/src/gpu/smaa/` (commit 71c806a); anti-aliasing option | https://github.com/iryoku/smaa |
 
 The online code in `runtime/src/online/` (packet transport, Steam helper, virtual Xbox sockets, XSession and
 matchmaking) is adapted from the Tekken Tag Tournament 2 PC port by shihabal3amri
