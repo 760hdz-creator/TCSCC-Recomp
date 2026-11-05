@@ -1,5 +1,5 @@
 // Keyboard/mouse bindings (keybinds.h). Defaults follow Conviction's controls (CONTROLLER LAYOUT page):
-// A action, B attack, X gadget, Y execute, LT cover, RT shoot, LB crouch, RB mark, RS click zoom,
+// A action, B attack, X gadget, Y execute, LT cover, RT shoot, LB crouch, RB mark, L3 reload, R3 aim,
 // d-pad up sonar goggles, left/right gadget, down weapon.
 #include <windows.h>
 #include <keybinds.h>
@@ -116,12 +116,12 @@ KeyBindings DefaultKeyBindings()
     set(Control::RB, { 'Z', VK_MBUTTON });
     set(Control::LT, { VK_SPACE });
     set(Control::RT, { VK_LBUTTON });
-    set(Control::LS, { 'V' });
-    set(Control::RS, { VK_RBUTTON });
+    set(Control::LS, { 'R' }); // reload (L3)
+    set(Control::RS, { VK_RBUTTON }); // aim (R3)
     set(Control::Back, { VK_TAB });
     set(Control::Start, { VK_ESCAPE });
     set(Control::DpadUp, { 'T', VK_UP });
-    set(Control::DpadDown, { 'R', VK_DOWN, kWheelUp, kWheelDown });
+    set(Control::DpadDown, { 'X', VK_DOWN, kWheelUp, kWheelDown });
     set(Control::DpadLeft, { '1', VK_LEFT });
     set(Control::DpadRight, { '2', VK_RIGHT });
     set(Control::MoveUp, { 'W' });

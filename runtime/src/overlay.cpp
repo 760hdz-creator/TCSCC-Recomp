@@ -339,7 +339,7 @@ void ControlsTab()
         { Control::MoveRight, "Move right" }, { Control::Walk, "Walk (hold)" }, { Control::A, "Action / OK (A)" },
         { Control::B, "Attack / Back (B)" }, { Control::X, "Gadget (X)" }, { Control::Y, "Execute (Y)" },
         { Control::LT, "Cover (LT)" }, { Control::RT, "Shoot (RT)" }, { Control::LB, "Crouch (LB)" }, { Control::RB, "Mark (RB)" },
-        { Control::RS, "Right stick click" }, { Control::LS, "Left stick click" }, { Control::DpadUp, "Sonar goggles (d-pad up)" },
+        { Control::RS, "Aim (R3)" }, { Control::LS, "Reload (L3)" }, { Control::DpadUp, "Sonar goggles (d-pad up)" },
         { Control::DpadDown, "Switch weapon (d-pad down)" }, { Control::DpadLeft, "Previous gadget (d-pad left)" },
         { Control::DpadRight, "Next gadget (d-pad right)" }, { Control::Back, "Help (Back)" }, { Control::Start, "Pause (Start)" },
         { Control::LookUp, "Look up" }, { Control::LookDown, "Look down" }, { Control::LookLeft, "Look left" },

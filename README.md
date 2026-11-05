@@ -115,11 +115,12 @@ otherwise. **Online is on by default** (without Steam running the game plays off
 |-|-|
 | Move / walk (hold) | W A S D / Shift |
 | Camera | Mouse |
-| Shoot / right stick click | Left / right mouse button |
+| Shoot / aim | Left / right mouse button |
+| Reload | R |
 | Cover / crouch | Space / C or Left Ctrl |
 | Action, OK / attack, back | E or Enter / F or Backspace |
 | Gadget / execute / mark | G / Q / Z or middle mouse button |
-| Sonar goggles / switch weapon | T / R or mouse wheel |
+| Sonar goggles / switch weapon | T / X or mouse wheel |
 | Previous / next gadget | 1 / 2 |
 | Help / pause | Tab / Esc |
 | Menus | Arrow keys, Enter, Backspace |
@@ -186,8 +187,8 @@ Private Match (Y) and Steam invites to a Player Match don't work yet.
   square, triangle, L1/R1/L2/R2 and the touchpad, drawn in the game's own icon style.
 - **New: keyboard icons.** Playing on keyboard and mouse, the icons show the key bound to each action.
 - **New: F1 > Controls:** rebind every key, mouse sensitivity, invert Y, and the icon style.
-- **New defaults for keyboard play**, laid out for Conviction (cover on Space, shoot and zoom on the mouse
-  buttons, a Walk key).
+- **New defaults for keyboard play**, laid out for Conviction (cover on Space, shoot and aim on the mouse
+  buttons, reload on R, a Walk key).
 - Steam invites to a Player Match now join the host's lobby (tested with two copies on one PC).
 
 ### 2026-11-05: up to 240 fps, SMAA, native 4K, player card
