@@ -379,3 +379,20 @@ TEST(cp_gamma_ramp_captured)
     CHECK_EQ(e[255], 0x3FFFFFFFu);          // identity: 255 -> 1023
     CHECK_EQ(DisplayGammaRamp().version.load(), before + 2);
 }
+
+TEST(gamma_ramp_user_gamma)
+{
+    GammaRamp identity;
+    // 1.0 leaves the title's ramp untouched.
+    CHECK(WithUserGamma(identity.entries, 1.0f) == identity.entries);
+    // Gamma 2 brightens midtones (entry 64 of 255 -> input sqrt(64/255) ~ 0.501), keeps the ends.
+    const auto bright = WithUserGamma(identity.entries, 2.0f);
+    CHECK_EQ(bright[0], identity.entries[0]);
+    CHECK_EQ(bright[255], identity.entries[255]);
+    const uint32_t mid = bright[64] & 0x3FF;
+    CHECK(mid > 505 && mid < 520);
+    CHECK_EQ((bright[64] >> 10) & 0x3FF, mid);
+    CHECK_EQ((bright[64] >> 20) & 0x3FF, mid);
+    // Below 1 darkens.
+    CHECK((WithUserGamma(identity.entries, 0.5f)[128] & 0x3FF) < (identity.entries[128] & 0x3FF));
+}

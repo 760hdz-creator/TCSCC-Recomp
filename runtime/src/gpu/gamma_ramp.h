@@ -7,7 +7,9 @@
 // 20-29); 0x1921 = 0 and 0x1927 = 7 precede each upload. SC:DA writes equal channels, so the
 // channel order inside the entry is unverified.
 #pragma once
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <atomic>
 #include <cstdint>
 #include <mutex>
@@ -45,6 +47,30 @@ struct GammaRamp
         return entries;
     }
 };
+
+// The user's brightness ([Display] Gamma, F1 menu) on top of the title's ramp: entry i becomes the
+// title's ramp read at 255 * (i / 255)^(1 / gamma), per channel, interpolated. 1 = unchanged, above 1
+// brighter midtones; black and white stay put.
+inline std::array<uint32_t, 256> WithUserGamma(const std::array<uint32_t, 256>& ramp, float gamma)
+{
+    if (gamma == 1.0f || !(gamma > 0.0f))
+        return ramp;
+    std::array<uint32_t, 256> out;
+    for (uint32_t i = 0; i < 256; i++)
+    {
+        const float pos = 255.0f * std::pow(float(i) / 255.0f, 1.0f / gamma);
+        const uint32_t lo = std::min<uint32_t>(uint32_t(pos), 254);
+        const float f = pos - float(lo);
+        uint32_t e = 0;
+        for (uint32_t c = 0; c < 3; c++)
+        {
+            const float a = float((ramp[lo] >> (c * 10)) & 0x3FF), b = float((ramp[lo + 1] >> (c * 10)) & 0x3FF);
+            e |= std::min<uint32_t>(uint32_t(a + (b - a) * f + 0.5f), 0x3FF) << (c * 10);
+        }
+        out[i] = e;
+    }
+    return out;
+}
 
 inline GammaRamp& DisplayGammaRamp()
 {

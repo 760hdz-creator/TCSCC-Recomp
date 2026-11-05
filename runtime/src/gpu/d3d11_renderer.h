@@ -49,6 +49,8 @@ public:
     // [Display] CleanGoggles: drop the goggle scanline overlay and the noise displacement.
     void SetCleanGoggles(bool on) { m_cleanGoggles = on; }
     void SetUltrawide(bool on) { m_ultrawide = on; }
+    // User display gamma (F1 Brightness, 1 = the title's ramp unchanged), applied through the gamma ramp.
+    void SetGamma(float gamma) { m_gamma = gamma; }
     // [Display] DrawBackFaces: no back-face culling for opaque, non-stencil draws.
     void SetDrawBackFaces(bool on) { m_drawBackFaces = on; }
     // Reads one texel (as RGBA8) of the last RT0 drawn or resolved (tests); 0 when unavailable.
@@ -114,6 +116,7 @@ private:
     bool m_vsync = true;
     uint32_t m_scale = 1, m_anisotropy = 1;
     bool m_cleanGoggles = false;
+    float m_gamma = 1.0f;
     bool m_ultrawide = false; // Hor+ in windows wider than 16:9 (PresentViewport, camera.cpp)
     bool m_drawBackFaces = false;
     uint64_t m_presented = 0;

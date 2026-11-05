@@ -89,6 +89,7 @@ void Apply(const DisplaySettings& s)
     g_renderer->SetAnisotropy(s.anisotropy);
     g_renderer->SetCleanGoggles(s.cleanGoggles);
     g_renderer->SetUltrawide(s.ultrawide);
+    g_renderer->SetGamma(float(s.gamma) / 100.0f);
     g_renderer->SetDrawBackFaces(s.drawBackFaces);
     SetFovOverride(float(s.fov));
     SetDrawDistance(int(s.drawDistance));
@@ -125,6 +126,8 @@ void Save(const DisplaySettings& before, const DisplaySettings& after)
         save("AntiAliasing", AntiAliasingName(after.antiAliasing));
     if (before.sharpening != after.sharpening)
         save("Sharpening", std::to_string(after.sharpening));
+    if (before.gamma != after.gamma)
+        save("Gamma", std::to_string(after.gamma));
     if (before.upscaling != after.upscaling)
         save("Upscaling", UpscalingName(after.upscaling));
 }
@@ -230,6 +233,10 @@ void GraphicsTab(DisplaySettings& s)
     if (ImGui::SliderInt("Image sharpening", &sharpen, 0, 100, "%d%%"))
         s.sharpening = uint32_t(sharpen);
     Hint("Contrast-adaptive sharpening (AMD CAS) on the final image.");
+    int gamma = int(s.gamma);
+    if (ImGui::SliderInt("Brightness (gamma)", &gamma, 50, 150, "%d%%"))
+        s.gamma = uint32_t(gamma);
+    Hint("Display gamma on top of the game's own brightness setting. 100% = unchanged; higher lifts dark areas, black stays black.");
     int up = s.upscaling;
     if (ImGui::Combo("Upscaling", &up, kUpscalingLabels, 6))
         s.upscaling = DisplaySettings::Upscaling(up);

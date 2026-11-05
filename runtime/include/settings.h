@@ -35,6 +35,9 @@ struct DisplaySettings
     // console made it. The game's own 4x MSAA is always on.
     enum AntiAliasing { AaOff, AaFxaa } antiAliasing = AaOff; // [Display] AntiAliasing=Off|FXAA
     uint32_t sharpening = 0;                                    // [Display] Sharpening=0..100 (percent)
+    // [Display] Gamma=50..200 (percent): display gamma on top of the game's own brightness (the title's
+    // gamma ramp is remapped, gamma_ramp.h WithUserGamma). 100 = unchanged, higher = brighter midtones.
+    uint32_t gamma = 100;
     // [Display] Upscaling=Off|Native|Quality|Balanced|Performance|UltraPerformance: Off uses Scale;
     // the others pick Scale from the window height (UpscalingScale) and upscale to the window.
     enum Upscaling { UpOff, UpNative, UpQuality, UpBalanced, UpPerformance, UpUltraPerformance } upscaling = UpOff;

@@ -436,6 +436,7 @@ struct DrawResources
     std::unordered_map<uint64_t, ComPtr<ID3D11ShaderResourceView>> averageTextures;
     ComPtr<ID3D11ShaderResourceView> gammaRampSrv;
     uint32_t gammaRampVersion = ~0u;
+    float gammaRampUserGamma = 1.0f;
     ComPtr<ID3D11GeometryShader> rectListGs;
     ComPtr<ID3D11GeometryShader> pointListGs;
     ComPtr<ID3D11PixelShader> zeroPs; // aliased depth-only clears: returns 1 (x blend factor), never kills
@@ -3471,10 +3472,11 @@ void D3D11Renderer::Blit(ID3D11ShaderResourceView* source)
     // SCDA_NO_GAMMA_RAMP=1: identity ramp (A/B against the title's display gamma ramp).
     static const bool noRamp = getenv("SCDA_NO_GAMMA_RAMP") != nullptr;
     const uint32_t version = noRamp ? 0 : DisplayGammaRamp().version.load();
-    if (version != r.gammaRampVersion)
+    if (version != r.gammaRampVersion || m_gamma != r.gammaRampUserGamma)
     {
         r.gammaRampVersion = version;
-        std::array<uint32_t, 256> entries = noRamp ? GammaRamp().entries : DisplayGammaRamp().Copy();
+        r.gammaRampUserGamma = m_gamma;
+        std::array<uint32_t, 256> entries = WithUserGamma(noRamp ? GammaRamp().entries : DisplayGammaRamp().Copy(), m_gamma);
         for (auto& e : entries)
             e |= 3u << 30;
         m_context->UpdateSubresource(r.gammaRamp.Get(), 0, nullptr, entries.data(), sizeof(entries), 0);

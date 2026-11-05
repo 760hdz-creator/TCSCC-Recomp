@@ -118,6 +118,12 @@ DisplaySettings LoadDisplaySettings(const std::filesystem::path& ini)
             if (v >= 0 && v <= 100)
                 s.sharpening = uint32_t(v);
         }
+        else if (key == "gamma")
+        {
+            int v = atoi(value.c_str());
+            if (v >= 50 && v <= 200)
+                s.gamma = uint32_t(v);
+        }
         else if (key == "upscaling")
         {
             for (int m = DisplaySettings::UpOff; m <= DisplaySettings::UpUltraPerformance; m++)

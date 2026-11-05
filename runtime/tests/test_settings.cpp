@@ -64,6 +64,14 @@ TEST(settings_post_processing_parsed)
     CHECK(bad.antiAliasing == DisplaySettings::AaOff && bad.sharpening == 0 && bad.upscaling == DisplaySettings::UpOff);
 }
 
+TEST(settings_gamma_parsed)
+{
+    CHECK_EQ(LoadDisplaySettings(Ini("[Display]\n")).gamma, 100u);
+    CHECK_EQ(LoadDisplaySettings(Ini("[Display]\nGamma=130\n")).gamma, 130u);
+    CHECK_EQ(LoadDisplaySettings(Ini("[Display]\nGamma=300\n")).gamma, 100u);
+    CHECK_EQ(LoadDisplaySettings(Ini("[Display]\nGamma=10\n")).gamma, 100u);
+}
+
 TEST(settings_draw_distance_parsed)
 {
     CHECK_EQ(LoadDisplaySettings(Ini("[Display]\n")).drawDistance, 0u);

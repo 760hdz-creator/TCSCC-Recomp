@@ -31,6 +31,7 @@ constexpr uint32_t kLanguageIds[] = { 1, 4, 3, 6, 5 };
 constexpr uint32_t kFov[] = { 70, 80, 90, 100, 110, 120 };
 constexpr uint32_t kAniso[] = { 1, 2, 4, 8, 16 };
 constexpr uint32_t kSharpen[] = { 0, 25, 50, 75, 100 };
+constexpr uint32_t kGamma[] = { 70, 80, 90, 100, 110, 120, 130, 140, 150 };
 
 int StepIndex(const uint32_t* steps, int n, uint32_t v)
 {
@@ -69,6 +70,9 @@ const std::vector<Row>& Rows()
           [](const DisplaySettings& s) { return int(s.antiAliasing); }, [](DisplaySettings& s, int v) { s.antiAliasing = DisplaySettings::AntiAliasing(v); } },
         { "SHARPENING", "Contrast-adaptive sharpening of the final image.", { "OFF", "25%", "50%", "75%", "100%" },
           [](const DisplaySettings& s) { return StepIndex(kSharpen, 5, s.sharpening); }, [](DisplaySettings& s, int v) { s.sharpening = kSharpen[v]; } },
+        { "BRIGHTNESS", "Display gamma on top of the game's own brightness. 100% = unchanged; higher lifts dark areas, black stays black.",
+          { "70%", "80%", "90%", "100%", "110%", "120%", "130%", "140%", "150%" },
+          [](const DisplaySettings& s) { return StepIndex(kGamma, 9, s.gamma); }, [](DisplaySettings& s, int v) { s.gamma = kGamma[v]; } },
         { "ANISOTROPIC FILTERING", "Sharper textures on surfaces seen at a grazing angle.", { "OFF", "2X", "4X", "8X", "16X" },
           [](const DisplaySettings& s) { return StepIndex(kAniso, 5, s.anisotropy); }, [](DisplaySettings& s, int v) { s.anisotropy = kAniso[v]; } },
         { "ONLINE", "Play online over Steam: SYSTEM LINK and XBOX LIVE PLAYER MATCH (COOP & MULTIPLAYER) find other Steam players' matches. Needs Steam running. Applies the next time the game starts.",
