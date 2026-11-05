@@ -6,18 +6,20 @@
 
 **Tom Clancy's Splinter Cell: Conviction (Xbox 360) as a native Windows program. No emulator.**
 
-![status](https://img.shields.io/badge/status-in%20development-orange)
+![status](https://img.shields.io/badge/status-complete%20%E2%80%93%20testing-yellowgreen)
 [![Report a bug](https://img.shields.io/badge/report-a%20bug-red?logo=gitlab)](https://gitlab.com/octagram-labs-group/TCSCC-Recomp/-/issues)
 ![platform](https://img.shields.io/badge/platform-Windows%20x64-blue)
 ![renderer](https://img.shields.io/badge/renderer-Direct3D%2011-informational)
-![fps](https://img.shields.io/badge/up%20to-60%20fps-brightgreen)
+![fps](https://img.shields.io/badge/up%20to-240%20fps-brightgreen)
 ![license](https://img.shields.io/badge/license-GPL--3.0-green)
 
 </div>
 
 > [!NOTE]
-> **Work in progress.** All 11 story chapters load and play with sound and saves, Deniable Ops plays, and co-op /
-> Face-Off work online over Steam (System Link and Xbox LIVE Player Match). There is no installer release yet.
+> **Complete, now in the test phase.** All 11 story chapters load and play with sound and saves, Deniable Ops plays,
+> and co-op / Face-Off work online over Steam (System Link and Xbox LIVE Player Match). Please
+> [report](https://gitlab.com/octagram-labs-group/TCSCC-Recomp/-/issues) anything that looks or plays wrong.
+> No installer release has been published yet.
 
 > [!IMPORTANT]
 > **No game files are included, and none ever will be.** You need your own copy of the Xbox 360 game
@@ -51,8 +53,9 @@ and the runtime started as a fork of it, but every engine-specific fix has been 
 |:-:|:-:|
 | <img src="docs/images/player_match.jpg" width="400"><br>Xbox LIVE Player Match lobby, over Steam | <img src="docs/images/coop_banya.jpg" width="400"><br>Co-op in St. Petersburg Banya, two players |
 | <img src="docs/images/recomp_settings.jpg" width="400"><br>RECOMP SETTINGS, in the game's own menu | <img src="docs/images/faceoff.jpg" width="400"><br>Face-Off (PvP) over System Link |
-| <img src="docs/images/menu.jpg" width="400"><br>Main menu | <img src="docs/images/market_cafe.jpg" width="400"><br>Malta market, the cafe at night |
+| <img src="docs/images/menu.jpg" width="400"><br>Main menu with the Steam player card (top right) | <img src="docs/images/market_cafe.jpg" width="400"><br>Malta market, the cafe at night |
 | <img src="docs/images/market_square.jpg" width="400"><br>Market square | <img src="docs/images/market_alley.jpg" width="400"><br>Market alley, soft shadows |
+| <img src="docs/images/f1_graphics.jpg" width="400"><br>F1 menu, Graphics tab (native 4K) | |
 
 <div align="center">
 <img src="docs/images/ultrawide.jpg" width="820" alt="Ultrawide 21:9">
@@ -78,18 +81,23 @@ and the runtime started as a fork of it, but every engine-specific fix has been 
 ## Options (RECOMP SETTINGS in the main menu, or F1 / L3+R3 in game)
 
 The main menu's UPLAY entry is replaced by **RECOMP SETTINGS**, a settings page in the game's own style.
-Everything new is **off by default**, so the game looks and runs like the console unless you choose otherwise.
+The picture and speed options are **off by default**, so the game looks and runs like the console unless you choose
+otherwise. **Online is on by default** (without Steam running the game plays offline as usual).
 
 | Option | What it does |
 |-|-|
-| **60 FPS** | Lifts the game's 30 fps cap. Game speed is unchanged (checked: the game clock, walk speed and camera turn speed match at 30 and 60 fps). |
+| **Frame rate cap** | 30 (console), 60, 120, 144, 165 or 240. Game speed is unchanged (checked: the game clock, walk speed and cutscene timing match at 30, 60, 120 and 144 fps). Above 60 needs a high-refresh monitor or VSync off. Cutscenes stay at the game's own 30. |
 | **Ultrawide** | In a window wider than 16:9, shows more at the sides (Hor+) instead of black bars. The HUD and menus are stretched; objective markers stay on their targets. |
 | **Draw distance** | Console (default), High, Ultra or Maximum. Small objects stay visible and models keep their detailed versions 2x (High) or 4x (Ultra) further away. Maximum never hides or simplifies them. No measurable fps cost at 60 fps on 01_Market. |
 | Field of view | 70-120 degrees (horizontal; the game uses 90). Zoomed views keep their own. |
 | Internal resolution | Renders at 1x-4x and filters down (supersampling). The game itself renders at 1040x576. |
-| Upscaling, FXAA, sharpening, anisotropic filtering | Image quality options. |
+| **Anti-aliasing** | Off, FXAA or **SMAA** (sharper on fine detail). The game's own 4x MSAA is always on. |
+| **Brightness** | Display gamma on top of the game's own brightness (50-150%); black stays black. |
+| **Texture sharpness** | Default, Sharp or Sharper: more detailed textures at a distance. |
+| Upscaling, image sharpening, anisotropic filtering | Image quality options. |
 | VSync, window mode | Display options. |
-| Online | Play co-op and Face-Off over Steam (see [Playing online](#playing-online)). |
+| Online | On by default. Co-op and Face-Off over Steam (see [Playing online](#playing-online)). |
+| **Profile name** | Your gamertag (F1 > Display). Empty: "Player" offline, your Steam name online. |
 | Language | Menu, subtitle and voice language (needs that language on your disc). |
 
 ## Playing online
@@ -145,6 +153,22 @@ Private Match (Y) and Steam invites to a Player Match don't work yet.
 - Send `scda.log` and `steam_helper.log` (next to `tcscc.exe`) with a bug report.
 
 ## Patch notes
+
+### 2026-11-05: up to 240 fps, SMAA, native 4K, player card
+- **New: frame rate cap** of 30, 60, 120, 144, 165 or 240 (was a 60 FPS switch). The engine's own limiter is
+  raised; game speed, walking and cutscene timing were checked at 120 and 144.
+- **New: SMAA** anti-aliasing, **Brightness** and **Texture sharpness** options.
+- **New: Steam player card** on the main menu: your avatar, name and online status.
+- **New: Profile name** setting (your gamertag, offline and online).
+- **Changed: Online is on by default.** Without Steam running, the game plays offline as before; saves are the
+  same either way.
+- **Fixed: blurry picture on scaled displays.** On a 4K screen at 150% scaling, the game rendered at 2560x1440 and
+  Windows stretched it. It now renders at the screen's real resolution.
+- **Fixed:** the RECOMP SETTINGS list ran past its panel.
+- **Faster, cooler:** three busy-wait loops (the GPU query wait, the file streamer and the frame limiter) now sleep. The
+  game uses about 40% less CPU at the same frame rate (main menu 4.1 -> 2.4 cores, gameplay 3.3 -> 1.9); on a
+  4-core CPU the menu went from 57 to 59 fps.
+- Tested: all 11 chapters, 400 s each with the new options on, no crash.
 
 ### 2026-11-05: online play
 - **New: online co-op and Face-Off over Steam.** System Link finds other players' matches through Steam, and
