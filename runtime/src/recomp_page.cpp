@@ -24,6 +24,7 @@ struct Row
     void (*set)(DisplaySettings&, int);
 };
 
+int g_online = -1;   // [Online] Enabled as saved (applies at the next start)
 int g_language = -1; // index into the language tables ([General] Language, read at startup; saved at once)
 const char* const kLanguageIni[] = { "English", "French", "German", "Italian", "Spanish" };
 constexpr uint32_t kLanguageIds[] = { 1, 4, 3, 6, 5 };
@@ -70,6 +71,17 @@ const std::vector<Row>& Rows()
           [](const DisplaySettings& s) { return StepIndex(kSharpen, 5, s.sharpening); }, [](DisplaySettings& s, int v) { s.sharpening = kSharpen[v]; } },
         { "ANISOTROPIC FILTERING", "Sharper textures on surfaces seen at a grazing angle.", { "OFF", "2X", "4X", "8X", "16X" },
           [](const DisplaySettings& s) { return StepIndex(kAniso, 5, s.anisotropy); }, [](DisplaySettings& s, int v) { s.anisotropy = kAniso[v]; } },
+        { "ONLINE", "System Link over Steam: COOP & MULTIPLAYER > SYSTEM LINK finds Steam players' matches. Needs Steam running. Applies the next time the game starts.",
+          { "OFF", "ON" },
+          [](const DisplaySettings&) {
+              if (g_online < 0)
+                  g_online = OnlineEnabledSetting() ? 1 : 0;
+              return g_online;
+          },
+          [](DisplaySettings&, int v) {
+              g_online = v;
+              SaveSetting(SettingsPath(), "Online", "Enabled", v ? "1" : "0");
+          } },
         { "LANGUAGE", "Menu, subtitle and voice language. Applies the next time the game starts.",
           { "ENGLISH", "FRENCH", "GERMAN", "ITALIAN", "SPANISH" },
           [](const DisplaySettings&) {

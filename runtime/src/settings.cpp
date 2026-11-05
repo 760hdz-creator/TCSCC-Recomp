@@ -303,6 +303,16 @@ bool SaveSetting(const std::filesystem::path& ini, const std::string& section, c
     return MoveFileExW(tmp.c_str(), ini.c_str(), MOVEFILE_REPLACE_EXISTING) != 0;
 }
 
+bool OnlineEnabledSetting()
+{
+    bool on = false;
+    ForEachSetting(SettingsPath(), "online", [&](const std::string& key, const std::string& value) {
+        if (key == "enabled")
+            on = Truthy(value);
+    });
+    return on;
+}
+
 std::filesystem::path SettingsPath()
 {
     // SCDA_SETTINGS=<file>: another settings.ini (unattended test runs never touch the user's).

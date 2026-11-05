@@ -77,3 +77,5 @@ const char* GameLanguageName(uint32_t id); // "English" .. ; nullptr if not one 
 // section). Other lines are kept as they are. Written to a temporary file, then renamed over.
 bool SaveSetting(const std::filesystem::path& ini, const std::string& section, const std::string& key, const std::string& value);
 std::filesystem::path SettingsPath();
+// [Online] Enabled=1: System Link over Steam (online/xnet.cpp), read at startup. Default off.
+bool OnlineEnabledSetting();

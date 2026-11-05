@@ -5,6 +5,7 @@
 #include <cstring>
 #include <string>
 #include <recomp_page.h>
+#include "online/xnet.h"
 
 // Main menu (Scaleform FlashMenu). The UPLAY entry (MAINPAGE key PlayerStore, fscommand StartUPlay,
 // which launches UPlayBrowser.xex = the process exits) becomes RECOMP SETTINGS: the menu's own camera
@@ -167,6 +168,11 @@ PPC_FUNC(sub_82E7EB80)
         ctx.r3.u64 = 1;
         return;
     }
+    // Online (online/xnet.h): a hosted System Link match is published as a Steam lobby while it lasts.
+    if (AsciiIs(ctx.r4.u32, "CreateSession"))
+        xnet::HostStarted();
+    else if (AsciiIs(ctx.r4.u32, "LeaveMatch") || AsciiIs(ctx.r4.u32, "UnInitMPConnection"))
+        xnet::HostStopped();
     __imp__sub_82E7EB80(ctx, base);
 }
 

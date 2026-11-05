@@ -6,8 +6,12 @@
 #include <bcrypt.h>
 #include "xnet.h"
 #include "net_transport.h"
+#include "steam_net.h"
+#include <thread>
 #include <runtime.h>
+#include <settings.h>
 #include <title.h>
+#include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
@@ -16,6 +20,7 @@
 #include <mutex>
 
 void XSocketReceive(uint64_t from, net::Channel channel, const uint8_t* data, size_t size); // xsocket.cpp
+void XSocketResendBroadcasts(uint64_t peer);                                                 // xsocket.cpp
 extern thread_local uint32_t g_wsaError;                                                  // xsocket.cpp
 
 namespace {
@@ -27,6 +32,76 @@ std::map<uint64_t, uint32_t> g_addrOf; // peer id -> virtual address (host order
 std::map<uint32_t, uint64_t> g_peerOf;
 std::map<uint64_t, ULONGLONG> g_heard; // peer -> last packet (GetTickCount64)
 uint32_t g_next = 1;
+
+// Steam discovery: hosts from the lobby list (owner = the record's session id), hosts of accepted Steam
+// "Join Game" invites, and our own hosted lobby.
+std::map<uint64_t, ULONGLONG> g_lobbyHosts; // host peer -> when the lobby list last showed it
+std::map<uint64_t, ULONGLONG> g_invited;    // host peer -> when the invite arrived
+std::atomic<ULONGLONG> g_lastBroadcast{ 0 };
+std::atomic<bool> g_hosting{ false };
+
+bool Steam() { return !net::IsLoopbackPeer(net::LocalPeer()) && net::LocalPeer() != 0; }
+
+std::vector<uint8_t> Record(uint64_t self)
+{
+    std::vector<uint8_t> r = { 'S', 'C', 'C', '1' };
+    for (int i = 0; i < 8; i++)
+        r.push_back(uint8_t(self >> (8 * i)));
+    return r;
+}
+
+// Background (Steam only): while a search ran in the last 20 s the lobby list is refreshed every 3 s; new
+// hosts get the recent broadcasts. Steam "Join Game" requests are picked up all the time.
+void Discovery()
+{
+    for (;;)
+    {
+        std::vector<uint8_t> record;
+        while (steamnet::TakeJoinRequest(record))
+            if (record.size() >= 12 && std::memcmp(record.data(), "SCC1", 4) == 0)
+            {
+                uint64_t host = 0;
+                for (int i = 0; i < 8; i++)
+                    host |= uint64_t(record[4 + i]) << (8 * i);
+                {
+                    std::lock_guard l(g_peerMutex);
+                    g_invited[host] = GetTickCount64();
+                }
+                RuntimeLog("[online] Steam Join Game: host %016llX - its match shows in COOP & MULTIPLAYER > SYSTEM LINK\n", (unsigned long long)host);
+            }
+        if (GetTickCount64() - g_lastBroadcast.load() < 20000)
+        {
+            const auto lobbies = steamnet::ListLobbies(50, 4000);
+            const uint64_t self = net::LocalPeer();
+            std::vector<uint64_t> fresh;
+            {
+                std::lock_guard l(g_peerMutex);
+                for (const auto& r : lobbies)
+                {
+                    if (r.size() < 12 || std::memcmp(r.data(), "SCC1", 4) != 0)
+                        continue;
+                    uint64_t host = 0;
+                    for (int i = 0; i < 8; i++)
+                        host |= uint64_t(r[4 + i]) << (8 * i);
+                    static const bool seeOwn = getenv("SCDA_STEAM_SEE_OWN") != nullptr; // test aid: one account, one PC
+                    if (host == self && !seeOwn)
+                        continue;
+                    if (!g_lobbyHosts.count(host))
+                        fresh.push_back(host);
+                    g_lobbyHosts[host] = GetTickCount64();
+                }
+            }
+            for (const uint64_t host : fresh)
+            {
+                RuntimeLog("[online] Steam lobby host %016llX found\n", (unsigned long long)host);
+                XSocketResendBroadcasts(host);
+            }
+            Sleep(3000);
+        }
+        else
+            Sleep(500);
+    }
+}
 
 void Write64(uint32_t a, uint64_t v)
 {
@@ -67,9 +142,11 @@ namespace xnet {
 
 bool Enabled()
 {
+    // SCDA_ONLINE=0|1 overrides [Online] Enabled (RECOMP SETTINGS > ONLINE).
     static const bool on = [] {
-        const char* e = getenv("SCDA_ONLINE");
-        return e && *e == '1';
+        if (const char* e = getenv("SCDA_ONLINE"))
+            return *e == '1';
+        return OnlineEnabledSetting();
     }();
     return on;
 }
@@ -80,7 +157,37 @@ bool Trace()
     return on;
 }
 
-bool EnsureTransport() { return Enabled() && net::Start(XSocketReceive); }
+bool EnsureTransport()
+{
+    if (!Enabled() || !net::Start(XSocketReceive))
+        return false;
+    static std::once_flag once;
+    std::call_once(once, [] {
+        if (Steam())
+            std::thread(Discovery).detach();
+    });
+    return true;
+}
+
+void HostStarted()
+{
+    if (!Enabled() || !EnsureTransport() || g_hosting.exchange(true))
+        return;
+    RuntimeLog("[online] hosting a System Link match%s\n", Steam() ? ": Steam lobby published" : "");
+    if (Steam())
+        steamnet::PublishLobby(net::LocalPeer(), Record(net::LocalPeer()));
+}
+
+void HostStopped()
+{
+    if (!g_hosting.exchange(false))
+        return;
+    RuntimeLog("[online] no longer hosting\n");
+    if (Steam())
+        steamnet::RemoveLobby(net::LocalPeer());
+}
+
+void NoteBroadcast() { g_lastBroadcast = GetTickCount64(); }
 
 uint64_t LocalPeer()
 {
@@ -133,9 +240,19 @@ std::vector<uint64_t> LanPeers()
                 out.push_back(net::LoopbackPeer(n));
     std::lock_guard l(g_peerMutex);
     const ULONGLONG now = GetTickCount64();
-    for (const auto& [peer, at] : g_heard)
-        if (now - at < 60000 && peer != self && !net::IsLoopbackPeer(peer))
+    auto add = [&](uint64_t peer) {
+        if (peer != self && !net::IsLoopbackPeer(peer) && std::find(out.begin(), out.end(), peer) == out.end())
             out.push_back(peer);
+    };
+    for (const auto& [peer, at] : g_heard)
+        if (now - at < 60000)
+            add(peer);
+    for (const auto& [peer, at] : g_lobbyHosts)
+        if (now - at < 60000)
+            add(peer);
+    for (const auto& [peer, at] : g_invited)
+        if (now - at < 600000)
+            add(peer);
     return out;
 }
 

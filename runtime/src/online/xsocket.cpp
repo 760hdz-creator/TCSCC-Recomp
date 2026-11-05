@@ -66,6 +66,8 @@ struct Socket
 
 std::mutex g_m;
 std::condition_variable g_cv;
+struct SentBroadcast { ULONGLONG at; uint8_t proto; uint16_t srcPort, dstPort; std::vector<uint8_t> data; };
+std::deque<SentBroadcast> g_broadcasts; // under g_m
 std::map<uint32_t, Socket> g_sockets;
 uint32_t g_nextHandle = 0xD4000000u;
 uint16_t g_nextEphemeral = 49152;
@@ -188,6 +190,16 @@ void CompleteRecv(const PendingRecv& r, const Datagram& d)
 
 } // namespace
 
+// A host the Steam lobby search found after a System Link search went out: the recent broadcasts, to it.
+void XSocketResendBroadcasts(uint64_t peer)
+{
+    std::lock_guard l(g_m);
+    const ULONGLONG now = GetTickCount64();
+    for (const SentBroadcast& b : g_broadcasts)
+        if (now - b.at <= 6000)
+            SendPacket(peer, net::Channel::Unreliable, Op::Datagram, b.proto, false, b.srcPort, b.dstPort, 0, b.data.data(), b.data.size());
+}
+
 // ---- incoming packets (transport thread) ----
 void XSocketReceive(uint64_t from, net::Channel, const uint8_t* data, size_t size)
 {
@@ -307,6 +319,14 @@ int SendDatagram(Socket& s, uint32_t handle, uint32_t to, const uint8_t* data, u
     }
     if (to && IsBroadcast(addr))
     {
+        xnet::NoteBroadcast();
+        {
+            // Kept 6 s for hosts the Steam lobby search finds later (XSocketResendBroadcasts).
+            const ULONGLONG now = GetTickCount64();
+            while (!g_broadcasts.empty() && (g_broadcasts.size() >= 8 || now - g_broadcasts.front().at > 6000))
+                g_broadcasts.pop_front();
+            g_broadcasts.push_back({ now, s.proto, s.port, port, std::vector<uint8_t>(data, data + length) });
+        }
         const auto peers = xnet::LanPeers();
         for (const uint64_t p : peers)
             SendPacket(p, net::Channel::Unreliable, Op::Datagram, s.proto, false, s.port, port, 0, data, length);

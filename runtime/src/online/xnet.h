@@ -22,6 +22,13 @@ void Random(void* out, size_t bytes);
 // and the session's members (step 3).
 std::vector<uint64_t> LanPeers();
 void NoteHeardFrom(uint64_t peer);
+// The game hosts a System Link match (fscommand CreateSession) / no longer (LeaveMatch, UnInitMPConnection):
+// over Steam, a lobby carrying our peer id makes the match findable (searchers' broadcasts reach lobby owners).
+void HostStarted();
+void HostStopped();
+// A LAN broadcast went out (System Link search): over Steam, the lobby list is refreshed in the background
+// for a while, and hosts found later get the recent broadcasts (xsocket.cpp XSocketResendBroadcasts).
+void NoteBroadcast();
 bool Trace(); // SCDA_NET_TRACE=1
 
 } // namespace xnet
