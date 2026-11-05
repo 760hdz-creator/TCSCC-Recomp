@@ -76,7 +76,8 @@ and the runtime started as a fork of it, but every engine-specific fix has been 
 | Languages: English, French, German, Italian, Spanish | Work (RECOMP SETTINGS > LANGUAGE) |
 | Online co-op and Face-Off: System Link over Steam | Works (tested with two copies on one PC) |
 | Online co-op and Face-Off: Xbox LIVE Player Match over Steam | Works (tested with two copies on one PC) |
-| Controllers: Xbox, PlayStation 4 / 5 (DualShock 4, DualSense), keyboard and mouse | Work; button icons follow the device |
+| Controllers: Xbox, keyboard and mouse | Work; button icons follow the device |
+| PlayStation 4 / 5 controllers (DualShock 4, DualSense) | Supported, icons verified; not yet tested with a real pad |
 | Steam invites to a Player Match | Works on one PC (two copies); not yet tested between two Steam accounts |
 | Private Match, voice chat, leaderboards | Not yet |
 
@@ -114,7 +115,7 @@ otherwise. **Online is on by default** (without Steam running the game plays off
 |-|-|
 | Move / walk (hold) | W A S D / Shift |
 | Camera | Mouse |
-| Shoot / zoom | Left / right mouse button |
+| Shoot / right stick click | Left / right mouse button |
 | Cover / crouch | Space / C or Left Ctrl |
 | Action, OK / attack, back | E or Enter / F or Backspace |
 | Gadget / execute / mark | G / Q / Z or middle mouse button |

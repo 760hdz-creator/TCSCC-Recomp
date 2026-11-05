@@ -28,7 +28,7 @@
   Walk. Keys: letters, digits, F1-F12, Num0-9, Space Enter Esc Tab Backspace (L/R)Shift (L/R)Ctrl (L/R)Alt CapsLock
   arrows Insert Delete Home End PageUp PageDown LMB RMB MMB Mouse4 Mouse5 WheelUp WheelDown, punctuation names.
   `None` = unbound; a line that does not parse keeps the default.
-- Defaults: WASD move, Shift walk (stick ~40 %), mouse look, LMB shoot, RMB zoom (RS), Space cover, C/LCtrl crouch,
+- Defaults: WASD move, Shift walk (stick ~40 %), mouse look, LMB shoot, RMB right stick click (the game names no stick click), Space cover, C/LCtrl crouch,
   E/Enter action-OK, F/Backspace attack-back, G gadget, Q execute, Z/MMB mark, T/Up sonar, R/Down/wheel weapon,
   1/Left 2/Right gadgets, Tab help, Esc pause, IJKL look keys, V left stick click.
 - F1 > Controls: rebinding (click, press; right-click clears; Esc can be bound while waiting), mouse sensitivity /

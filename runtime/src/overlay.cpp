@@ -314,8 +314,14 @@ void ControlsTab()
         SaveSetting(ini, "Input", "MouseLook", look ? "1" : "0"), InputSettingsChanged();
     Hint("The mouse moves the camera (right stick). Applies the next time the game starts.");
     float sens = in.mouseSensitivity;
+    static float dragging = -1; // saved when the slider is released, not every drag frame
+    if (dragging >= 0)
+        sens = dragging;
     if (ImGui::SliderFloat("Mouse sensitivity", &sens, 0.1f, 5.0f, "%.2f"))
+        dragging = sens;
+    if (ImGui::IsItemDeactivatedAfterEdit())
     {
+        dragging = -1;
         char v[16];
         snprintf(v, sizeof(v), "%.2f", sens);
         SaveSetting(ini, "Input", "MouseSensitivity", v), InputSettingsChanged();
@@ -333,7 +339,7 @@ void ControlsTab()
         { Control::MoveRight, "Move right" }, { Control::Walk, "Walk (hold)" }, { Control::A, "Action / OK (A)" },
         { Control::B, "Attack / Back (B)" }, { Control::X, "Gadget (X)" }, { Control::Y, "Execute (Y)" },
         { Control::LT, "Cover (LT)" }, { Control::RT, "Shoot (RT)" }, { Control::LB, "Crouch (LB)" }, { Control::RB, "Mark (RB)" },
-        { Control::RS, "Zoom (right stick click)" }, { Control::LS, "Left stick click" }, { Control::DpadUp, "Sonar goggles (d-pad up)" },
+        { Control::RS, "Right stick click" }, { Control::LS, "Left stick click" }, { Control::DpadUp, "Sonar goggles (d-pad up)" },
         { Control::DpadDown, "Switch weapon (d-pad down)" }, { Control::DpadLeft, "Previous gadget (d-pad left)" },
         { Control::DpadRight, "Next gadget (d-pad right)" }, { Control::Back, "Help (Back)" }, { Control::Start, "Pause (Start)" },
         { Control::LookUp, "Look up" }, { Control::LookDown, "Look down" }, { Control::LookLeft, "Look left" },
@@ -379,7 +385,9 @@ void ControlsTab()
             else if (text.empty())
                 text = "(none)";
             ImGui::PushID(int(r.c));
-            if (ImGui::Button(text.c_str(), ImVec2(-FLT_MIN, 0)))
+            // Mouse click only: Enter/Space (nav activate) are bindable keys and would restart the capture.
+            ImGui::Button(text.c_str(), ImVec2(-FLT_MIN, 0));
+            if (ImGui::IsItemClicked(ImGuiMouseButton_Left) && g_capture.load() < 0)
                 g_capture = int(r.c), captureAt = GetTickCount64(), armed = false;
             if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
                 SaveKeyBinding(r.c, {});
@@ -478,6 +486,8 @@ void Menu()
                 body([] { ControlsTab(); });
                 ImGui::EndTabItem();
             }
+            if (current != 2)
+                g_capture = -1; // left the Controls tab
             if (ImGui::BeginTabItem("Update", nullptr, tab(3)))
             {
                 current = 3;
@@ -768,6 +778,7 @@ bool OverlayToggle()
 {
     const bool open = !g_open;
     g_open = open;
+    g_capture = -1; // a pending key capture ends with the menu
     SetInputBlocked(open);
     RuntimeLog("[menu] %s\n", open ? "open" : "closed");
     return open;
