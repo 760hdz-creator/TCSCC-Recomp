@@ -168,7 +168,8 @@ UpdateSettings LoadUpdateSettings(const std::filesystem::path& ini)
     return s;
 }
 
-// X_LANGUAGE ids the SCDA discs carry text for (Packages\Texts\ENG/FRA/DEU/ESP/ITA; no Japanese text).
+// X_LANGUAGE ids the Conviction US/EU disc carries text + voices for (Default\loc-int/fra/deu/esp/ita.umd,
+// Sounds\Xbox360\<Name>). loc-dan/nl/nor/swe.umd also exist but have no X_LANGUAGE id here.
 static const struct { uint32_t id; const char* name; } kLanguages[] = {
     { 1, "English" }, { 3, "German" }, { 4, "French" }, { 5, "Spanish" }, { 6, "Italian" },
 };
@@ -212,13 +213,13 @@ uint32_t GameLanguage()
             });
         if (v > 1)
         {
-            // The disc must carry the text (Packages\Texts\<code>); else English, as a console would.
-            static const char* const codes[] = { "", "ENG", "", "DEU", "FRA", "ESP", "ITA" };
+            // The disc must carry the text (Conviction: Default\loc-<code>.umd); else English, as a console would.
+            static const char* const codes[] = { "", "int", "", "deu", "fra", "esp", "ita" };
             char exe[MAX_PATH] = {};
             GetModuleFileNameA(nullptr, exe, MAX_PATH);
-            const auto dir = std::filesystem::path(exe).parent_path() / "game" / "Packages" / "Texts" / codes[v];
+            const auto dir = std::filesystem::path(exe).parent_path() / "game" / "Default" / (std::string("loc-") + codes[v] + ".umd");
             std::error_code ec;
-            if (!std::filesystem::is_directory(dir, ec))
+            if (!std::filesystem::is_regular_file(dir, ec))
             {
                 RuntimeLog("[settings] Language %s: %s missing on this disc, using English\n", GameLanguageName(v), dir.string().c_str());
                 v = 1;

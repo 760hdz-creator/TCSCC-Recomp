@@ -173,8 +173,6 @@ void DisplayTab(DisplaySettings& s)
         s.drawDistance = uint32_t(drawDistance);
     Hint("Small objects stay visible and models keep their detailed versions further away "
          "(2x or 4x the console distance; Maximum: never hidden or simplified). Costs GPU time.");
-    ImGui::Checkbox("Clean goggles", &s.cleanGoggles);
-    Hint("Night, thermal and EMF vision without the scanlines and noise.");
     // [General] Language (X_LANGUAGE id), saved at once, read at startup (GameLanguage).
     static const uint32_t ids[] = { 1, 4, 3, 6, 5 };
     const char* const languages[] = { "English", "French", "German", "Italian", "Spanish" };

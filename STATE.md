@@ -36,9 +36,11 @@
 - 2026-11-04 DRAW DISTANCE setting (F1 Display / [Display] DrawDistance=Console|High|Ultra|Maximum, lod.cpp, docs/draw_distance.md): l3d settings sub_82C95F30 (+60 cull size 0.0025, +280/+284 LOD sizes 0.18/0.045, +279 LOD on); High/Ultra = thresholds x1/4, x1/16 (2x/4x distance), Maximum = cull 0 + LOD off. Market: culled tests 47% -> 9.5% (High) / 1.3% (Ultra); FPS60 cost none measurable (58.5 vs 58.5/58.0). Visual A/B by frame diff useless (camera moves). `SCDA_TRACE_LOD=1`, `SCDA_LOD_SCALE/CULL_SCALE/LOD_OFF/LOD_FROM`.
 - 2026-11-04 graphics: shadow map = 880x880 depth (pitch 0x370, resolve -> 0x00532000 x2/frame), already scales with internal res; extra x4 gave no visible change (softness = the game's filter). Post chain frame 6000: bloom 320/160/80 (draws 1312-1338), grade 1351+. Clean Goggles hashes are SC:DA's (likely inert on Conviction). Right-edge black strip FIXED abf3e4b (present = swap size_2d 1040x576, not the 1056 resolve).
 ## User playtest 2026-11-04 (installer build) — open
+- Sam's eyes look strange in cutscenes (user 2026-11-04; unseen).
+- 2026-11-04 LANGUAGE FIXED: disc check looked for SCDA PackagesTexts<code> (always English); now Defaultoc-<int|deu|fra|esp|ita>.umd. French menus verified (SCDA_LANGUAGE=French). Clean goggles removed from F1 (SC:DA hashes, inert).
 - Crash: sub_82511D28 (D3D SetTexture-like, r3 dev 0x40102080, stage r4 0) got texture ptr r5=1 -> read 0x31; after content enumerate (checkpoint). Not reproduced.
 - Climb/vault prompt = white box (Museum). 3 PS failed X3511 (loop unroll) -> fallback 51cafda; failed shaders are SKIPPED not white, so the box may be a mask pass: re-check.
-- Mission 2 (Grim frees Sam) foreground blur pixelated/blocky (DOF upsample?). Car mirror (look under door): user re-test 2026-11-04 on installer build 658eb11 = OK (no capture). Execute arrows not red when marked/ready.
+- Mission 3 (Grim frees Sam; user corrected from 2) foreground blur pixelated/blocky (DOF upsample?). Car mirror (look under door): user re-test 2026-11-04 on installer build 658eb11 = OK (no capture). Execute arrows not red when marked/ready.
 - FIXED: F1 rows under footer + live Window mode (47715ab); stutters = blocking shader compiles -> async (c3d7316, [hitch] log).
 
 ## Ruled out
