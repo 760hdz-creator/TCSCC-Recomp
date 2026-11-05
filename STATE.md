@@ -44,7 +44,7 @@
 ## Ruled out (debug switches: docs/debug_switches.md)
 - Occlusion queries, camera, timebase, GPU predication, CP packet drops; 26 patch ops + vsel128/eqv/frsqrte/mulhd/vandc/vcmpbfp correct. sub_82EFD598 = SONAR pass. Light-list black volumes not PS 6372c96f / Hi-Z / shadow maps (docs/light_list.md).
 ## Next
-0. ONLINE: user + friend Steam test of System Link / Face-Off / Player Match. Then Steam Join Game / Private Match invites for Player Match (docs/online.md "Step 4").
-1. User playtest items above (eyes, white climb box, DOF blur, execute arrows, SetTexture crash).
-2. 60 fps polish: soak FPS60 on more maps. 2026-11-05 main menu 58.7 fps (pause menu / Scene Select unmeasured). 4-core affinity: menu 56.7 -> 58.8, Banya same. Worker = thread 5 (entry 82A8F8E8, created at FS init: async file I/O?); Market cutscene+walk A/B same hitches. GetData spin (sub_82EF6278 loop on sub_825283A0) now WaitOnAddress on GpuWriteSeq after 16 back-to-back pendings: -0.7 core menu, -0.4 core Banya, fps same (`SCDA_GETDATA_SPIN=1` old). Stream worker sub_82AB6528 idle Sleep(0) (lr 82AB660C) -> Sleep(1): -1 core menu + Banya, load time/menu audio same (`SCDA_STREAM_SPIN=1` old). Total menu 4.07 -> 2.4 cores, Banya 3.29 -> 1.9.
-3. GitLab remote `gitlab` (PRIVATE, main at 58d9265 2026-11-05: online guide + screenshots): NEVER push game files (audit tree + history first). Gemini bridge still 503.
+0. ONLINE: user + friend Steam test of System Link / Face-Off / Player Match. Then Steam Join Game / Private Match invites (docs/online.md "Step 4").
+1. User playtest open: eyes, DOF blur (not reproduced; need moment), SetTexture crash; mouse-look/cursor clip after DPI awareness (2f1df83, untested by hand).
+2. Perf: 120/144 cap -> ~105 fps Banya = renderer D3D11 overhead (BindRegisterState, driver thunks ~5 ms/frame). Spins fixed 2026-11-05 (GetData WaitOnAddress `SCDA_GETDATA_SPIN`, stream worker Sleep(1) `SCDA_STREAM_SPIN`, limiter sleep `SCDA_LIMITER_SPIN`): menu 4.07 -> 2.4 cores. Pause menu / Scene Select fps unmeasured. Graphics ideas left: bloom slider (c253.x in PS 09979cb4), centred ultrawide HUD.
+3. Installer: version = fresh hash; local install C:\Games\TCSCC-Recomp updated per build. GitLab remote `gitlab` (PRIVATE, main at 58d9265): NEVER push game files (audit tree + history first). Gemini bridge still 503.
