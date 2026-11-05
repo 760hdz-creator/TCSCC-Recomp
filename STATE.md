@@ -37,9 +37,8 @@
 ## User playtest 2026-11-04 (installer build) — open
 - Sam's eyes look strange in cutscenes (user 2026-11-04; unseen).
 - Crash: sub_82511D28 (D3D SetTexture-like, r3 dev 0x40102080, stage r4 0) got texture ptr r5=1 -> read 0x31; after content enumerate (checkpoint). Not reproduced.
-- Climb/vault prompt = white box (Museum). 3 PS failed X3511 (loop unroll) -> fallback 51cafda; failed shaders are SKIPPED not white, so the box may be a mask pass: re-check.
-- Mission 3 (Grim frees Sam; user corrected from 2) foreground blur pixelated/blocky: NOT REPRODUCED 2026-11-05 (03_Airfield intro, 2560x1440, FPS60=0, Scale 1 vs 3 same frames: identical, smooth). DOF bufs 288x144/544x288 scale (pitch>160). Need user moment/screenshot (gameplay? 60 fps?). Car mirror (look under door): user re-test 2026-11-04 on installer build 658eb11 = OK (no capture). Execute arrows not red when marked/ready.
-- FIXED: F1 rows under footer + live Window mode (47715ab); stutters = blocking shader compiles -> async (c3d7316, [hitch] log).
+- Mission 3 (Grim frees Sam; user corrected from 2) foreground blur pixelated/blocky: NOT REPRODUCED 2026-11-05 (03_Airfield intro, 2560x1440, FPS60=0, Scale 1 vs 3 same frames: identical, smooth). DOF bufs 288x144/544x288 scale (pitch>160). Need user moment/screenshot (gameplay? 60 fps?). Car mirror (look under door): user re-test 2026-11-04 on installer build 658eb11 = OK (no capture).
+- FIXED (user 2026-11-05): climb/vault white box, execute arrows red. FIXED: F1 rows under footer + live Window mode (47715ab); stutters = blocking shader compiles -> async (c3d7316, [hitch] log).
 ## Ruled out
 - Occlusion queries, camera, timebase, GPU predication, CP packet drops; 26 patch ops + vsel128/eqv/frsqrte/mulhd/vandc/vcmpbfp correct. sub_82EFD598 = SONAR pass. Light-list black volumes not PS 6372c96f / Hi-Z / shadow maps (docs/light_list.md).
 ## Debug switches: docs/debug_switches.md
