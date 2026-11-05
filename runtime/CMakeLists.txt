@@ -105,7 +105,6 @@ add_executable(scda
     src/overlay.cpp
     src/updater.cpp
     src/imports.cpp
-    src/net.cpp
     src/fs.cpp
     src/kernel.cpp
     src/gfx_log.cpp
@@ -120,6 +119,8 @@ add_executable(scda
     src/online/steam_net.cpp
     src/online/steam_bridge.cpp
     src/online/net_selftest.cpp
+    src/online/xnet.cpp
+    src/online/xsocket.cpp
     src/xma_xaudio.cpp
     src/imports_stubs.cpp
     scda.rc)

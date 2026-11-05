@@ -72,6 +72,9 @@ static HANDLE HostHandle(uint32_t guest)
     return it == g_handles.end() ? nullptr : it->second.host;
 }
 
+// The host object of a guest handle (online/xnet.cpp: WSA events), null when unknown.
+HANDLE KernelHostHandle(uint32_t guest) { return HostHandle(guest); }
+
 bool CloseKernelHandle(uint32_t guest)
 {
     std::lock_guard lock(g_objMutex);
@@ -344,6 +347,48 @@ SCDA_IMPORT(NtClearEvent)
     HANDLE h = HostHandle(ctx.r3.u32);
     if (h) ResetEvent(h);
     ctx.r3.u64 = h ? X_STATUS_SUCCESS : X_STATUS_INVALID_HANDLE;
+}
+
+// Timers (Conviction's Quazal network layer): host waitable timers behind kernel handles.
+// NtCreateTimer(Handle*, ObjectAttributes*, TimerType (0 notification, 1 synchronization))
+SCDA_IMPORT(NtCreateTimer)
+{
+    HANDLE t = CreateWaitableTimerW(nullptr, ctx.r5.u32 == 0, nullptr);
+    if (ctx.r3.u32)
+        GuestStore32(ctx.r3.u32, t ? AddHandle(t) : 0);
+    ctx.r3.u64 = t ? X_STATUS_SUCCESS : 0xC0000017; // STATUS_NO_MEMORY
+}
+
+// NtSetTimerEx(Handle, s64* DueTime (100 ns; negative = relative), ApcRoutine, Mode, ApcContext, Resume,
+// Period ms, BOOLEAN* PreviousState). APC routines are not run (none seen; logged once).
+SCDA_IMPORT(NtSetTimerEx)
+{
+    HANDLE h = HostHandle(ctx.r3.u32);
+    if (!h || !ctx.r4.u32)
+    {
+        ctx.r3.u64 = X_STATUS_INVALID_HANDLE;
+        return;
+    }
+    if (ctx.r5.u32)
+    {
+        static bool logged;
+        if (!logged)
+            RuntimeLog("[kernel] NtSetTimerEx with an APC routine %08X: not run\n", ctx.r5.u32);
+        logged = true;
+    }
+    LARGE_INTEGER due;
+    due.QuadPart = (int64_t)GuestLoad64(ctx.r4.u32);
+    const uint32_t period = ctx.r9.u32;
+    ctx.r3.u64 = SetWaitableTimer(h, &due, LONG(period), nullptr, nullptr, FALSE) ? X_STATUS_SUCCESS : X_STATUS_INVALID_HANDLE;
+}
+
+// NtCancelTimer(Handle, BOOLEAN* CurrentState)
+SCDA_IMPORT(NtCancelTimer)
+{
+    HANDLE h = HostHandle(ctx.r3.u32);
+    if (ctx.r4.u32)
+        g_base[ctx.r4.u32] = 0;
+    ctx.r3.u64 = h && CancelWaitableTimer(h) ? X_STATUS_SUCCESS : X_STATUS_INVALID_HANDLE;
 }
 
 // NtCreateSemaphore(Handle*, ObjectAttributes*, InitialCount, MaximumCount)
