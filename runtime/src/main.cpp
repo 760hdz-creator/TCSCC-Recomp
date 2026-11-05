@@ -324,8 +324,14 @@ static DWORD WINAPI ForceRelaunchThread(void* list)
     return 0;
 }
 
+namespace steamnet { int RunBridge(int argc, char** argv); } // online/steam_bridge.cpp
+void NetSelfTestStart();                                      // online/net_selftest.cpp
+
 int main(int argc, char** argv)
 {
+    // The Steam helper process (online/steam_bridge.cpp): this exe again, before anything of the game.
+    if (argc >= 2 && strcmp(argv[1], "--steam-bridge") == 0)
+        return steamnet::RunBridge(argc, argv);
     // Installer layout: <dir>\scda.exe + <dir>\game\ (extracted disc).
     char exeDir[MAX_PATH];
     GetModuleFileNameA(nullptr, exeDir, MAX_PATH);
@@ -339,6 +345,7 @@ int main(int argc, char** argv)
     g_profileDir = (localAppData ? std::string(localAppData) + "\\TCSCCRecomp" : std::string(exeDir)) + "\\profile";
     g_log = fopen((std::string(exeDir) + "\\scda.log").c_str(), "w");
     AddVectoredExceptionHandler(1, CrashHandler);
+    NetSelfTestStart(); // SCDA_NET_SELFTEST=1 only
 
     if (!InitMemory())
     {

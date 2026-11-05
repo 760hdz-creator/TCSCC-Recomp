@@ -116,6 +116,10 @@ add_executable(scda
     src/pawn_hooks.cpp
     src/main_menu.cpp
     src/recomp_page.cpp
+    src/online/net_transport.cpp
+    src/online/steam_net.cpp
+    src/online/steam_bridge.cpp
+    src/online/net_selftest.cpp
     src/xma_xaudio.cpp
     src/imports_stubs.cpp
     scda.rc)
@@ -127,6 +131,26 @@ target_link_libraries(scda PRIVATE scda_ppc scda_imgui scda_sdl gdiplus winhttp 
 # Recompiled code runs on the host stack; the main guest thread recurses deeply.
 target_link_options(scda PRIVATE /STACK:0x4000000)
 target_compile_definitions(scda PRIVATE SCDA_EXPECTED_IMAGE_SHA256="${SCDA_EXPECTED_IMAGE_SHA256}" NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
+
+# Steam online (src/online/, ported from the TTT2 port): built when the Steamworks SDK sits in
+# external/steamworks_sdk_165 (user-supplied, git-ignored). steam_api64.dll is delay-loaded and copied
+# next to the executable; without it (or without a running Steam client) online uses the loopback
+# transport (two instances on one PC).
+set(SCDA_STEAMWORKS "${SCDA_ROOT}/external/steamworks_sdk_165/sdk" CACHE PATH "Steamworks SDK (sdk folder)")
+if(EXISTS "${SCDA_STEAMWORKS}/public/steam/steam_api.h" AND EXISTS "${SCDA_STEAMWORKS}/redistributable_bin/win64/steam_api64.lib")
+    target_include_directories(scda PRIVATE "${SCDA_STEAMWORKS}/public")
+    target_compile_definitions(scda PRIVATE SCDA_HAVE_STEAM=1)
+    target_link_libraries(scda PRIVATE "${SCDA_STEAMWORKS}/redistributable_bin/win64/steam_api64.lib" delayimp ws2_32)
+    target_link_options(scda PRIVATE "/DELAYLOAD:steam_api64.dll")
+    add_custom_command(TARGET scda POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${SCDA_STEAMWORKS}/redistributable_bin/win64/steam_api64.dll"
+                "$<TARGET_FILE_DIR:scda>/steam_api64.dll")
+    message(STATUS "Steamworks SDK: ${SCDA_STEAMWORKS} (Steam online enabled)")
+else()
+    target_compile_definitions(scda PRIVATE SCDA_HAVE_STEAM=0)
+    target_link_libraries(scda PRIVATE ws2_32)
+    message(STATUS "Steamworks SDK not found - Steam online disabled (loopback only)")
+endif()
 
 # Tests: ctest --test-dir runtime/build
 enable_testing()
