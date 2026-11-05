@@ -13,6 +13,7 @@ using std::max;
 using std::min;
 }
 #include <gdiplus.h>
+#include <keybinds.h>
 #include <prompts.h>
 #include <settings.h>
 
@@ -75,7 +76,7 @@ static std::atomic<int> g_style{ int(PromptStyle::Keyboard) };
 
 void PromptNoteInput(PadKind pad, bool padActive, bool keyboardActive)
 {
-    static const PromptSetting setting = ParsePromptSetting(LoadInputSettings(SettingsPath()).buttonPrompts.c_str());
+    const PromptSetting setting = ParsePromptSetting(CurrentInputSettings().buttonPrompts.c_str());
     std::lock_guard lock(g_trackerMutex);
     g_connected = pad;
     g_tracker.Note(pad, padActive, keyboardActive);
@@ -216,72 +217,74 @@ void Arrow(Canvas& c, REAL x, REAL y, int dir, REAL size, Color color)
     c.G().FillPolygon(&b, p, 3);
 }
 
-const Color kGreen = Rgb(0x63E39A), kKeyText = Rgb(0x1E1E1E);
+// Conviction's icon look (its 36x36 button textures): flat mid-grey shapes, a light rim, white symbols.
+const Color kFill = Rgb(0x969696), kRim = Rgb(0xE2E2E2), kInk = Rgb(0xF7F7F7), kDim = Rgb(0x6E6E6E);
+constexpr REAL kRimW = 3.6f; // the rim, in icon units (2 px of 36)
 
-// A dark round button (PS face buttons, sticks).
-void Disk(Canvas& c, REAL r, uint32_t top = 0x4A4A4A, uint32_t bottom = 0x161616)
+void Shape2(Canvas& c, GraphicsPath& path, Color fill = kFill)
 {
-    const REAL u = c.U(), cx = 32 * u, cy = 32 * u;
+    SolidBrush f(fill);
+    c.G().FillPath(&f, &path);
+    Pen rim(kRim, kRimW * c.U());
+    rim.SetLineJoin(LineJoinRound);
+    c.G().DrawPath(&rim, &path);
+}
+
+// A round button (face buttons, sticks): the disc fills the icon like the game's.
+void Disk(Canvas& c, REAL r = 29)
+{
+    const REAL u = c.U();
     GraphicsPath path;
-    path.AddEllipse(cx - r * u, cy - r * u, 2 * r * u, 2 * r * u);
-    LinearGradientBrush fill(PointF(0, cy - r * u), PointF(0, cy + r * u), Rgb(top), Rgb(bottom));
-    c.G().FillPath(&fill, &path);
-    Pen ring(Rgb(0x9A9A9A), 1.6f * u);
-    c.G().DrawPath(&ring, &path);
+    path.AddEllipse((32 - r) * u, (32 - r) * u, 2 * r * u, 2 * r * u);
+    Shape2(c, path);
 }
 
 void PsSymbol(Canvas& c, char which, REAL cx, REAL cy, REAL r)
 {
     const REAL u = c.U();
     cx *= u, cy *= u, r *= u;
+    Pen p(kInk, 5.0f * u);
+    p.SetStartCap(LineCapRound), p.SetEndCap(LineCapRound), p.SetLineJoin(LineJoinRound);
     switch (which)
     {
-    case 'a': { Pen p(Rgb(0x8AB4FF), 4.2f * u); p.SetStartCap(LineCapRound), p.SetEndCap(LineCapRound);
-        c.G().DrawLine(&p, cx - r, cy - r, cx + r, cy + r); c.G().DrawLine(&p, cx - r, cy + r, cx + r, cy - r); break; }
-    case 'b': { Pen p(Rgb(0xFF6B6B), 4.2f * u); c.G().DrawEllipse(&p, cx - r * 1.08f, cy - r * 1.08f, r * 2.16f, r * 2.16f); break; }
-    case 'x': { Pen p(Rgb(0xF59BD8), 4.2f * u); p.SetLineJoin(LineJoinRound); c.G().DrawRectangle(&p, cx - r, cy - r, 2 * r, 2 * r); break; }
-    default: { Pen p(Rgb(0x48D9B0), 4.2f * u); p.SetLineJoin(LineJoinRound);
-        PointF t[3] = { { cx, cy - r * 1.15f }, { cx - r * 1.15f, cy + r * 0.85f }, { cx + r * 1.15f, cy + r * 0.85f } };
+    case 'a': c.G().DrawLine(&p, cx - r, cy - r, cx + r, cy + r); c.G().DrawLine(&p, cx - r, cy + r, cx + r, cy - r); break; // cross
+    case 'b': c.G().DrawEllipse(&p, cx - r * 1.08f, cy - r * 1.08f, r * 2.16f, r * 2.16f); break;                              // circle
+    case 'x': c.G().DrawRectangle(&p, cx - r, cy - r, 2 * r, 2 * r); break;                                                     // square
+    default: { PointF t[3] = { { cx, cy - r * 1.2f }, { cx - r * 1.2f, cy + r * 0.85f }, { cx + r * 1.2f, cy + r * 0.85f } };  // triangle
         c.G().DrawPolygon(&p, t, 3); break; }
     }
 }
 
-// A light key cap (keyboard) or grey shoulder/pill (PS) with a centred label.
-void Cap(Canvas& c, REAL x, REAL y, REAL w, REAL h, const wchar_t* label, REAL radius = 7, bool light = true)
+// A rounded cap with a centred label (PS shoulders/triggers, keyboard keys).
+void Cap(Canvas& c, REAL x, REAL y, REAL w, REAL h, const wchar_t* label, REAL radius = 7)
 {
     const REAL u = c.U();
     GraphicsPath path;
     RoundRect(path, x * u, y * u, w * u, h * u, radius * u);
-    LinearGradientBrush fill(PointF(0, y * u), PointF(0, (y + h) * u), light ? Rgb(0xF2F2F2) : Rgb(0x5A5A5A), light ? Rgb(0xB4B4B4) : Rgb(0x262626));
-    c.G().FillPath(&fill, &path);
-    Pen border(light ? Rgb(0x2E2E2E) : Rgb(0xA0A0A0), 2.0f * u);
-    c.G().DrawPath(&border, &path);
-    if (label)
-        c.Text(label, (x + w / 2) * u, (y + h / 2) * u, (w - 8) * u, (h - 10) * u, light ? kKeyText : Rgb(0xF0F0F0));
+    Shape2(c, path);
+    if (label && *label)
+        c.Text(label, (x + w / 2) * u, (y + h / 2) * u, (w - 9) * u, (h - 11) * u, kInk);
 }
 
-// Arrow key cap: one arrow, or all four for the plain d-pad.
+// Arrow key cap: one arrow, or all four.
 void ArrowCap(Canvas& c, REAL x, REAL y, REAL w, REAL h, int dirs)
 {
     Cap(c, x, y, w, h, nullptr);
     const REAL u = c.U(), cx = (x + w / 2) * u, cy = (y + h / 2) * u, s = std::min(w, h) * u;
-    const Color dark = kKeyText;
     if (dirs == 0)
     {
-        Arrow(c, cx, cy - s * 0.32f, Up, s * 0.11f, dark);
-        Arrow(c, cx, cy + s * 0.32f, Down, s * 0.11f, dark);
-        Arrow(c, cx - s * 0.32f, cy, Left, s * 0.11f, dark);
-        Arrow(c, cx + s * 0.32f, cy, Right, s * 0.11f, dark);
+        Arrow(c, cx, cy - s * 0.3f, Up, s * 0.11f, kInk), Arrow(c, cx, cy + s * 0.3f, Down, s * 0.11f, kInk);
+        Arrow(c, cx - s * 0.3f, cy, Left, s * 0.11f, kInk), Arrow(c, cx + s * 0.3f, cy, Right, s * 0.11f, kInk);
         return;
     }
     const REAL a = s * 0.2f;
-    if (dirs == Up) Arrow(c, cx, cy - a, Up, a, dark);
-    if (dirs == Down) Arrow(c, cx, cy + a, Down, a, dark);
-    if (dirs == Left) Arrow(c, cx - a, cy, Left, a, dark);
-    if (dirs == Right) Arrow(c, cx + a, cy, Right, a, dark);
+    if (dirs == Up) Arrow(c, cx, cy - a, Up, a, kInk);
+    if (dirs == Down) Arrow(c, cx, cy + a, Down, a, kInk);
+    if (dirs == Left) Arrow(c, cx - a, cy, Left, a, kInk);
+    if (dirs == Right) Arrow(c, cx + a, cy, Right, a, kInk);
 }
 
-// Two caps side by side (pairs: L1 R1, W S, ...).
+// Two caps side by side.
 template <typename F>
 void Pair(F&& draw)
 {
@@ -289,66 +292,59 @@ void Pair(F&& draw)
     draw(34.0f, 30.0f);
 }
 
-// A mouse: buttons lit per mask (1 left, 2 right, 4 middle), optional move arrows around it.
+// A mouse: the part in `lit` (1 left, 2 right, 4 wheel) white, optional move arrows around it.
 void Mouse(Canvas& c, int lit, int dirs)
 {
-    const REAL u = c.U(), x = dirs ? 20 : 16, y = dirs ? 14 : 6, w = dirs ? 24 : 32, h = dirs ? 36 : 52;
+    const REAL u = c.U(), x = dirs ? 20 : 15, y = dirs ? 14 : 5, w = dirs ? 24 : 34, h = dirs ? 36 : 54;
     GraphicsPath body;
     RoundRect(body, x * u, y * u, w * u, h * u, (w / 2) * u);
-    LinearGradientBrush fill(PointF(0, y * u), PointF(0, (y + h) * u), Rgb(0xF2F2F2), Rgb(0xB4B4B4));
+    SolidBrush fill(kFill);
     c.G().FillPath(&fill, &body);
     const REAL split = y + h * 0.42f;
     Region clip(&body);
     c.G().SetClip(&clip);
-    SolidBrush on(kGreen);
+    SolidBrush on(kInk);
     if (lit & 1) c.G().FillRectangle(&on, x * u, y * u, (w / 2) * u, (split - y) * u);
     if (lit & 2) c.G().FillRectangle(&on, (x + w / 2) * u, y * u, (w / 2) * u, (split - y) * u);
     c.G().ResetClip();
-    Pen line(Rgb(0x2E2E2E), 1.8f * u);
+    Pen line(kRim, 2.4f * u);
     c.G().DrawLine(&line, x * u, split * u, (x + w) * u, split * u);
     c.G().DrawLine(&line, (x + w / 2) * u, y * u, (x + w / 2) * u, split * u);
     GraphicsPath wheel;
-    RoundRect(wheel, (x + w / 2 - 3) * u, (y + h * 0.12f) * u, 6 * u, h * 0.2f * u, 3 * u);
-    SolidBrush wheelFill(lit & 4 ? kGreen : Rgb(0x5A5A5A));
+    RoundRect(wheel, (x + w / 2 - 3.5f) * u, (y + h * 0.1f) * u, 7 * u, h * 0.22f * u, 3.5f * u);
+    SolidBrush wheelFill(lit & 4 ? kInk : kDim);
     c.G().FillPath(&wheelFill, &wheel);
-    Pen border(Rgb(0x2E2E2E), 2.0f * u);
-    c.G().DrawPath(&border, &body);
+    Pen rim(kRim, kRimW * u);
+    c.G().DrawPath(&rim, &body);
     const REAL cx = 32 * u, cy = (y + h / 2) * u, a = 5 * u;
-    if (dirs & Up) Arrow(c, cx, (y - 2) * u, Up, a, kGreen);
-    if (dirs & Down) Arrow(c, cx, (y + h + 2) * u, Down, a, kGreen);
-    if (dirs & Left) Arrow(c, (x - 3) * u, cy, Left, a, kGreen);
-    if (dirs & Right) Arrow(c, (x + w + 3) * u, cy, Right, a, kGreen);
+    if (dirs & Up) Arrow(c, cx, (y - 2) * u, Up, a, kInk);
+    if (dirs & Down) Arrow(c, cx, (y + h + 2) * u, Down, a, kInk);
+    if (dirs & Left) Arrow(c, (x - 3) * u, cy, Left, a, kInk);
+    if (dirs & Right) Arrow(c, (x + w + 3) * u, cy, Right, a, kInk);
 }
 
 void PsStick(Canvas& c, const Shape& s)
 {
-    Disk(c, 21, 0x6A6A6A, 0x2A2A2A);
+    Disk(c);
     const REAL u = c.U();
-    Pen inner(Rgb(0x8A8A8A), 1.2f * u);
-    c.G().DrawEllipse(&inner, 17 * u, 17 * u, 30 * u, 30 * u);
-    const wchar_t* label = s.which == 'l' ? (s.press ? L"L3" : L"L") : (s.press ? L"R3" : L"R");
-    c.Text(label, 32 * u, 32.5f * u, 22 * u, 20 * u, Rgb(0xF0F0F0));
+    Pen inner(kRim, 2.0f * u);
+    c.G().DrawEllipse(&inner, 14 * u, 14 * u, 36 * u, 36 * u);
+    // The game's stick icons stand for the stick (move / camera); a click shows L3 / R3.
+    c.Text(s.which == 'l' ? (s.press ? L"L3" : L"L") : (s.press ? L"R3" : L"R"), 32 * u, 32.5f * u, 26 * u, 22 * u, kInk);
     const REAL a = 5.5f * u;
-    if (s.press)
-    {
-        Arrow(c, 32 * u, 16 * u, Down, a, kGreen), Arrow(c, 32 * u, 48 * u, Up, a, kGreen);
-        Arrow(c, 16 * u, 32 * u, Right, a, kGreen), Arrow(c, 48 * u, 32 * u, Left, a, kGreen);
-        return;
-    }
-    if (s.dirs & Up) Arrow(c, 32 * u, 5 * u, Up, a, kGreen);
-    if (s.dirs & Down) Arrow(c, 32 * u, 59 * u, Down, a, kGreen);
-    if (s.dirs & Left) Arrow(c, 5 * u, 32 * u, Left, a, kGreen);
-    if (s.dirs & Right) Arrow(c, 59 * u, 32 * u, Right, a, kGreen);
+    if (s.dirs & Up) Arrow(c, 32 * u, 7 * u, Up, a, kInk);
+    if (s.dirs & Down) Arrow(c, 32 * u, 57 * u, Down, a, kInk);
+    if (s.dirs & Left) Arrow(c, 7 * u, 32 * u, Left, a, kInk);
+    if (s.dirs & Right) Arrow(c, 57 * u, 32 * u, Right, a, kInk);
 }
 
-// PlayStation d-pad: four separate arrow-shaped keys, the named directions lit.
+// PlayStation d-pad: four separate arrow-shaped keys, the named directions white.
 void PsDpad(Canvas& c, int dirs)
 {
     const REAL u = c.U();
     auto key = [&](int dir)
     {
-        // An arrow key pointing outward: a 14-wide stem from the centre with a pointed tip.
-        PointF p[5] = { { -7, -9 }, { 7, -9 }, { 7, -24 }, { 0, -30 }, { -7, -24 } };
+        PointF p[5] = { { -8, -7 }, { 8, -7 }, { 8, -23 }, { 0, -30 }, { -8, -23 } };
         for (auto& q : p)
         {
             REAL x = q.X, y = q.Y;
@@ -357,104 +353,110 @@ void PsDpad(Canvas& c, int dirs)
             if (dir == Right) std::swap(x, y), x = -x;
             q = { (32 + x) * u, (32 + y) * u };
         }
-        LinearGradientBrush fill(PointF(0, 2 * u), PointF(0, 62 * u), (dirs & dir) ? kGreen : Rgb(0x6A6A6A), (dirs & dir) ? Rgb(0x2E9A5E) : Rgb(0x2A2A2A));
-        c.G().FillPolygon(&fill, p, 5);
-        Pen border(Rgb(0xA0A0A0), 1.6f * u);
-        border.SetLineJoin(LineJoinRound);
-        c.G().DrawPolygon(&border, p, 5);
+        GraphicsPath path;
+        path.AddPolygon(p, 5);
+        Shape2(c, path, (dirs & dir) ? kInk : kDim);
     };
     key(Up), key(Down), key(Left), key(Right);
 }
 
 void DrawPs(Canvas& c, const Shape& s, bool ps4)
 {
+    const REAL u = c.U();
     switch (s.kind)
     {
-    case Shape::Face: Disk(c, 23); PsSymbol(c, s.which, 32, 32, 9); break;
-    case Shape::Back: Cap(c, 4, 19, 56, 26, ps4 ? L"SHARE" : L"CREATE", 13, false); break;
-    case Shape::Start: Cap(c, 4, 19, 56, 26, L"OPTIONS", 13, false); break;
-    case Shape::Bumper: Cap(c, 6, 17, 52, 30, s.which == 'l' ? L"L1" : L"R1", 10, false); break;
-    case Shape::Trigger: Cap(c, 10, 6, 44, 52, s.which == 'l' ? L"L2" : L"R2", 14, false); break;
-    case Shape::Bumpers: Pair([&](REAL x, REAL w) { Cap(c, x, 19, w - 2, 26, x < 10 ? L"L1" : L"R1", 9, false); }); break;
-    case Shape::Triggers: Pair([&](REAL x, REAL w) { Cap(c, x, 12, w - 2, 40, x < 10 ? L"L2" : L"R2", 11, false); }); break;
-    case Shape::Stick: PsStick(c, s); break;
-    case Shape::Dpad: PsDpad(c, s.dirs); break;
-    case Shape::Opsat:
+    case Shape::Face:
+    case Shape::Opsat: Disk(c); PsSymbol(c, s.which, 32, 32, 12); break;
+    case Shape::Back:
+        // The touchpad (its click is Back here; SHARE / CREATE are too small to read at 36 px).
+        Cap(c, 6, 14, 52, 36, nullptr, 9);
+        if (!ps4)
+        {
+            Pen line(kInk, 2.4f * u);
+            c.G().DrawLine(&line, 32 * u, 20 * u, 32 * u, 44 * u);
+        }
+        break;
+    case Shape::Start:
     {
-        // The OPSAT screen's own look: dark green disk, green ring and symbol.
-        const REAL u = c.U();
-        SolidBrush fill(Rgb(0x14261E));
-        c.G().FillEllipse(&fill, 3 * u, 3 * u, 58 * u, 58 * u);
-        Pen ring(Rgb(0x6CD39A), 4 * u);
-        c.G().DrawEllipse(&ring, 4 * u, 4 * u, 56 * u, 56 * u);
-        PsSymbol(c, s.which, 32, 32, 13);
+        // OPTIONS: a pill with three lines.
+        Cap(c, 8, 16, 48, 32, nullptr, 16);
+        Pen line(kInk, 3.2f * u);
+        line.SetStartCap(LineCapRound), line.SetEndCap(LineCapRound);
+        for (int i = -1; i <= 1; i++)
+            c.G().DrawLine(&line, 23 * u, (32 + 6.5f * i) * u, 41 * u, (32 + 6.5f * i) * u);
         break;
     }
+    case Shape::Bumper: Cap(c, 5, 15, 54, 34, s.which == 'l' ? L"L1" : L"R1", 10); break;
+    case Shape::Trigger: Cap(c, 9, 4, 46, 56, s.which == 'l' ? L"L2" : L"R2", 15); break;
+    case Shape::Bumpers: Pair([&](REAL x, REAL w) { Cap(c, x, 18, w - 2, 28, x < 10 ? L"L1" : L"R1", 8); }); break;
+    case Shape::Triggers: Pair([&](REAL x, REAL w) { Cap(c, x, 11, w - 2, 42, x < 10 ? L"L2" : L"R2", 10); }); break;
+    case Shape::Stick: PsStick(c, s); break;
+    case Shape::Dpad: PsDpad(c, s.dirs); break;
     }
+}
+
+// The first key bound to `c` ([Keyboard], keybinds.h): a mouse button or the wheel draws the mouse with
+// that part lit, any other key a cap with its label. Unbound: an empty cap.
+int FirstKey(Control c)
+{
+    const std::vector<int> keys = CurrentKeyBindings()[c];
+    return keys.empty() ? 0 : keys[0];
+}
+
+std::wstring Wide(const std::string& s) { return std::wstring(s.begin(), s.end()); }
+
+void KeyIcon(Canvas& c, int code, REAL x = 10, REAL y = 10, REAL w = 44, REAL h = 44)
+{
+    if (code == VK_LBUTTON || code == VK_RBUTTON || code == VK_MBUTTON || code == kWheelUp || code == kWheelDown)
+        return Mouse(c, code == VK_LBUTTON ? 1 : code == VK_RBUTTON ? 2 : 4, 0);
+    if (code == VK_UP || code == VK_DOWN || code == VK_LEFT || code == VK_RIGHT)
+        return ArrowCap(c, x, y, w, h, code == VK_UP ? Up : code == VK_DOWN ? Down : code == VK_LEFT ? Left : Right);
+    const std::wstring label = code ? Wide(KeyLabel(code)) : L"";
+    if (label.size() > 2 && w < 50) // long names (SPACE, ENTER, SHIFT) get a wide cap
+        x = 2, y = 17, w = 60, h = 30;
+    Cap(c, x, y, w, h, label.c_str());
 }
 
 void DrawKeyboard(Canvas& c, const Shape& s)
 {
-    auto letters = [&](int dirs, const wchar_t* u, const wchar_t* d, const wchar_t* l, const wchar_t* r, const wchar_t* all)
+    auto dirs = [&](int d, Control up, Control down, Control left, Control right)
     {
-        const int n = !!(dirs & Up) + !!(dirs & Down) + !!(dirs & Left) + !!(dirs & Right);
-        if (n == 0)
-            Cap(c, 2, 16, 60, 32, all);
-        else if (n == 1)
-            Cap(c, 10, 10, 44, 44, dirs == Up ? u : dirs == Down ? d : dirs == Left ? l : r);
-        else
+        const int n = !!(d & Up) + !!(d & Down) + !!(d & Left) + !!(d & Right);
+        if (n == 1)
+            return KeyIcon(c, FirstKey(d == Up ? up : d == Down ? down : d == Left ? left : right));
+        // Several directions: two caps (up/left and down/right), or all four as a 2x2 block.
+        if (n == 4 || n == 0)
         {
-            const wchar_t* a = dirs & Up ? u : l;
-            const wchar_t* b = dirs & Down ? d : r;
-            Pair([&](REAL x, REAL w) { Cap(c, x, 17, w - 2, 30, x < 10 ? a : b); });
+            const Control q[4] = { up, left, down, right };
+            const REAL pos[4][2] = { { 22, 4 }, { 1, 33 }, { 22, 33 }, { 43, 33 } };
+            for (int i = 0; i < 4; i++)
+                Cap(c, pos[i][0], pos[i][1], 20, 27, Wide(KeyLabel(FirstKey(q[i]))).substr(0, 1).c_str(), 4);
+            return;
         }
+        const Control a = d & Up ? up : left, b = d & Down ? down : right;
+        Pair([&](REAL x, REAL w) { Cap(c, x, 17, w - 2, 30, Wide(KeyLabel(FirstKey(x < 10 ? a : b))).c_str()); });
     };
     switch (s.kind)
     {
     case Shape::Face:
-        if (s.which == 'a') Cap(c, 1, 17, 62, 30, L"SPACE");
-        else if (s.which == 'b') Cap(c, 4, 17, 56, 30, L"CTRL");
-        else Cap(c, 10, 10, 44, 44, s.which == 'x' ? L"E" : L"Q");
-        break;
-    case Shape::Back: Cap(c, 6, 17, 52, 30, L"TAB"); break;
-    case Shape::Start: Cap(c, 6, 17, 52, 30, L"ESC"); break;
-    case Shape::Bumper: Cap(c, 10, 10, 44, 44, s.which == 'l' ? L"1" : L"3"); break;
-    case Shape::Bumpers: Pair([&](REAL x, REAL w) { Cap(c, x, 17, w - 2, 30, x < 10 ? L"1" : L"3"); }); break;
-    case Shape::Trigger: Mouse(c, s.which == 'l' ? 2 : 1, 0); break;
-    case Shape::Triggers: Mouse(c, 3, 0); break;
-    case Shape::Stick:
-        if (s.which == 'l')
-        {
-            if (s.press)
-                Cap(c, 10, 10, 44, 44, L"F");
-            else
-                letters(s.dirs, L"W", L"S", L"A", L"D", L"WASD");
-        }
-        else
-            Mouse(c, s.press ? 4 : 0, s.press ? 0 : (s.dirs ? s.dirs : Up | Down | Left | Right));
-        break;
-    case Shape::Dpad:
-    {
-        const int n = !!(s.dirs & Up) + !!(s.dirs & Down) + !!(s.dirs & Left) + !!(s.dirs & Right);
-        if (n <= 1)
-            ArrowCap(c, 10, 10, 44, 44, s.dirs);
-        else
-        {
-            const int a = s.dirs & Up ? Up : Left, b = s.dirs & Down ? Down : Right;
-            Pair([&](REAL x, REAL w) { ArrowCap(c, x, 17, w - 2, 30, x < 10 ? a : b); });
-        }
-        break;
-    }
     case Shape::Opsat:
-    {
-        const REAL u = c.U();
-        SolidBrush fill(Rgb(0x14261E));
-        c.G().FillEllipse(&fill, 3 * u, 3 * u, 58 * u, 58 * u);
-        Pen ring(Rgb(0x6CD39A), 4 * u);
-        c.G().DrawEllipse(&ring, 4 * u, 4 * u, 56 * u, 56 * u);
-        c.Text(s.which == 'a' ? L"SPACE" : L"CTRL", 32 * u, 32 * u, 46 * u, 24 * u, Rgb(0x8DE0B0));
+        KeyIcon(c, FirstKey(s.which == 'a' ? Control::A : s.which == 'b' ? Control::B : s.which == 'x' ? Control::X : Control::Y));
         break;
-    }
+    case Shape::Back: KeyIcon(c, FirstKey(Control::Back)); break;
+    case Shape::Start: KeyIcon(c, FirstKey(Control::Start)); break;
+    case Shape::Bumper: KeyIcon(c, FirstKey(s.which == 'l' ? Control::LB : Control::RB)); break;
+    case Shape::Trigger: KeyIcon(c, FirstKey(s.which == 'l' ? Control::LT : Control::RT)); break;
+    case Shape::Bumpers: Pair([&](REAL x, REAL w) { Cap(c, x, 17, w - 2, 30, Wide(KeyLabel(FirstKey(x < 10 ? Control::LB : Control::RB))).c_str()); }); break;
+    case Shape::Triggers: Pair([&](REAL x, REAL w) { Cap(c, x, 17, w - 2, 30, Wide(KeyLabel(FirstKey(x < 10 ? Control::LT : Control::RT))).c_str()); }); break;
+    case Shape::Stick:
+        if (s.press)
+            KeyIcon(c, FirstKey(s.which == 'l' ? Control::LS : Control::RS));
+        else if (s.which == 'l')
+            dirs(s.dirs, Control::MoveUp, Control::MoveDown, Control::MoveLeft, Control::MoveRight);
+        else
+            Mouse(c, 0, s.dirs ? s.dirs : Up | Down | Left | Right); // the camera is the mouse
+        break;
+    case Shape::Dpad: dirs(s.dirs, Control::DpadUp, Control::DpadDown, Control::DpadLeft, Control::DpadRight); break;
     }
 }
 

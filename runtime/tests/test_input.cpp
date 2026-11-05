@@ -3,6 +3,8 @@
 #include <cstring>
 #include <filesystem>
 #include <input.h>
+#include <keybinds.h>
+#include <fstream>
 #include <pad.h>
 #ifdef SCDA_HAVE_SDL3
 #include <SDL3/SDL_gamepad.h>
@@ -43,10 +45,34 @@ TEST(keyboard_maps_to_gamepad)
     static int held[4];
     held[0] = VK_RETURN; held[1] = VK_UP; held[2] = 'D'; held[3] = 0;
     auto down = [](int vk) { for (int k : held) if (k && k == vk) return true; return false; };
-    XINPUT_GAMEPAD g = KeyboardGamepad(down);
+    XINPUT_GAMEPAD g = KeyboardGamepad(down, DefaultKeyBindings());
     CHECK_EQ(g.wButtons, uint16_t(XINPUT_GAMEPAD_A | XINPUT_GAMEPAD_DPAD_UP));
     CHECK_EQ(g.sThumbLX, int16_t(32767));
     CHECK_EQ(g.sThumbLY, int16_t(0));
+    held[0] = VK_LBUTTON; held[1] = VK_SPACE; held[2] = VK_LSHIFT; held[3] = 'W';
+    g = KeyboardGamepad(down, DefaultKeyBindings(), false, true);
+    CHECK_EQ(g.bRightTrigger, uint8_t(255));
+    CHECK_EQ(g.bLeftTrigger, uint8_t(255));
+    CHECK_EQ(g.wButtons, uint16_t(XINPUT_GAMEPAD_DPAD_DOWN)); // wheel notch
+    CHECK(g.sThumbLY > 0 && g.sThumbLY < 20000);               // walk
+}
+
+TEST(keyboard_bindings_load_from_settings)
+{
+    const auto ini = std::filesystem::temp_directory_path() / "scda_keybinds_test.ini";
+    {
+        std::ofstream out(ini);
+        out << "[Display]\nA=Q\n[Keyboard]\nA = Space, Mouse4\nY=None\nRT=Bogus\nmoveup=Up\n";
+    }
+    const KeyBindings b = LoadKeyBindings(ini);
+    std::filesystem::remove(ini);
+    CHECK(b[Control::A] == std::vector<int>({ VK_SPACE, VK_XBUTTON1 }));
+    CHECK(b[Control::Y].empty());
+    CHECK(b[Control::RT] == DefaultKeyBindings()[Control::RT]); // a line that does not parse keeps the default
+    CHECK(b[Control::MoveUp] == std::vector<int>({ VK_UP }));
+    CHECK_EQ(ParseKeyName("f5"), VK_F5);
+    CHECK_EQ(KeyName(ParseKeyName("wheeldown")), std::string("WheelDown"));
+    CHECK_EQ(KeyLabel(VK_SPACE), std::string("SPACE"));
 }
 
 // Raw mouse motion -> right stick: 50 px = full deflection at sensitivity 1, screen-down = stick down.

@@ -34,5 +34,6 @@ void OverlayChangeSettings(const DisplaySettings& s);
 // opens by itself.
 bool OverlayToggle();
 bool OverlayOpen();
+bool OverlayCapturingKey(); // the Controls tab waits for a key: Esc binds instead of closing
 // While the menu is open, mouse and keyboard messages go to it (true: taken, not for the game).
 bool OverlayWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);

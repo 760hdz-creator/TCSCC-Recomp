@@ -76,7 +76,9 @@ and the runtime started as a fork of it, but every engine-specific fix has been 
 | Languages: English, French, German, Italian, Spanish | Work (RECOMP SETTINGS > LANGUAGE) |
 | Online co-op and Face-Off: System Link over Steam | Works (tested with two copies on one PC) |
 | Online co-op and Face-Off: Xbox LIVE Player Match over Steam | Works (tested with two copies on one PC) |
-| Steam invites to a Player Match, Private Match, voice chat, leaderboards | Not yet |
+| Controllers: Xbox, PlayStation 4 / 5 (DualShock 4, DualSense), keyboard and mouse | Work; button icons follow the device |
+| Steam invites to a Player Match | Works on one PC (two copies); not yet tested between two Steam accounts |
+| Private Match, voice chat, leaderboards | Not yet |
 
 ## Options (RECOMP SETTINGS in the main menu, or F1 / L3+R3 in game)
 
@@ -99,6 +101,30 @@ otherwise. **Online is on by default** (without Steam running the game plays off
 | Online | On by default. Co-op and Face-Off over Steam (see [Playing online](#playing-online)). |
 | **Profile name** | Your gamertag (F1 > Display). Empty: "Player" offline, your Steam name online. |
 | Language | Menu, subtitle and voice language (needs that language on your disc). |
+
+## Controls
+
+- **Xbox controllers** work as on the console.
+- **PlayStation 4 and 5 controllers** (DualShock 4, DualSense) work natively through SDL3. The
+  touchpad click is Back. The button icons in menus and the HUD become PlayStation symbols.
+- **Keyboard and mouse**: mouse look, every action on a key, and the button icons show your keys. Change any key in
+  **F1 > Controls** (click a key, press the new one; right-click clears), or in `settings.ini` under `[Keyboard]`.
+
+| Action | Default keys |
+|-|-|
+| Move / walk (hold) | W A S D / Shift |
+| Camera | Mouse |
+| Shoot / zoom | Left / right mouse button |
+| Cover / crouch | Space / C or Left Ctrl |
+| Action, OK / attack, back | E or Enter / F or Backspace |
+| Gadget / execute / mark | G / Q / Z or middle mouse button |
+| Sonar goggles / switch weapon | T / R or mouse wheel |
+| Previous / next gadget | 1 / 2 |
+| Help / pause | Tab / Esc |
+| Menus | Arrow keys, Enter, Backspace |
+
+Button icons follow the device you used last; F1 > Controls > Button prompts can fix them to Xbox, PlayStation or
+keyboard. The menus use the keys and the arrow keys; they have no mouse pointer (as on the console).
 
 ## Playing online
 
@@ -153,6 +179,15 @@ Private Match (Y) and Steam invites to a Player Match don't work yet.
 - Send `scda.log` and `steam_helper.log` (next to `tcscc.exe`) with a bug report.
 
 ## Patch notes
+
+### 2026-11-05: PlayStation icons, keyboard and mouse controls
+- **New: PlayStation button icons.** With a DualShock 4 or DualSense the menus and the HUD show cross, circle,
+  square, triangle, L1/R1/L2/R2 and the touchpad, drawn in the game's own icon style.
+- **New: keyboard icons.** Playing on keyboard and mouse, the icons show the key bound to each action.
+- **New: F1 > Controls:** rebind every key, mouse sensitivity, invert Y, and the icon style.
+- **New defaults for keyboard play**, laid out for Conviction (cover on Space, shoot and zoom on the mouse
+  buttons, a Walk key).
+- Steam invites to a Player Match now join the host's lobby (tested with two copies on one PC).
 
 ### 2026-11-05: up to 240 fps, SMAA, native 4K, player card
 - **New: frame rate cap** of 30, 60, 120, 144, 165 or 240 (was a 60 FPS switch). The engine's own limiter is

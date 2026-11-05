@@ -16,6 +16,9 @@
 #include <input.h>
 #include <pad.h>
 #include <prompts.h>
+#include <keybinds.h>
+#include <settings.h>
+#include <filesystem>
 #include <fov.h>
 #include <interrupts.h>
 #include <runtime.h>
@@ -54,8 +57,8 @@ bool g_imgui;
 ImFont* g_pageTitle; // RECOMP SETTINGS page fonts (null: the default font)
 ImFont* g_pageBody;
 OverlayPlayerCard g_playerCard; // player_card.cpp (game build only)
-int g_openTab = -1; // SCDA_MENU=<0-2>: the menu starts open on that tab (unattended checks)
-constexpr int kTabs = 3;
+int g_openTab = -1; // SCDA_MENU=<0-3>: the menu starts open on that tab (unattended checks)
+constexpr int kTabs = 4;
 int g_tabStep = 0;  // L1/R1 (LB/RB) pressed in the menu: -1 previous tab, +1 next
 
 // Update notification: shown once, when the check has answered and the player has signed in at the
@@ -292,6 +295,107 @@ void GraphicsTab(DisplaySettings& s)
     ImGui::Text("Internal %s  ->  Output %ux%u  (%s)", Resolution(scale).c_str(), w, h, how);
 }
 
+// Controls tab: button prompts, mouse, and keyboard bindings ([Input], [Keyboard]; applied live).
+std::atomic<int> g_capture{ -1 }; // control waiting for a key (Esc then binds, it does not close the menu)
+
+void ControlsTab()
+{
+    const std::filesystem::path ini = SettingsPath();
+    InputSettings in = CurrentInputSettings();
+    const char* const prompts[] = { "Auto (last device used)", "Xbox", "PlayStation", "Keyboard and mouse" };
+    const char* const promptValues[] = { "Auto", "Xbox", "PlayStation", "Keyboard" };
+    int prompt = int(ParsePromptSetting(in.buttonPrompts.c_str()));
+    if (ImGui::Combo("Button prompts", &prompt, prompts, 4))
+        SaveSetting(ini, "Input", "ButtonPrompts", promptValues[prompt]), InputSettingsChanged();
+    Hint("The button icons in menus and the HUD. Auto follows the device you used last: a PlayStation pad shows "
+         "PlayStation symbols, the keyboard shows the keys bound below.");
+    bool look = in.mouseLook;
+    if (ImGui::Checkbox("Mouse look", &look))
+        SaveSetting(ini, "Input", "MouseLook", look ? "1" : "0"), InputSettingsChanged();
+    Hint("The mouse moves the camera (right stick). Applies the next time the game starts.");
+    float sens = in.mouseSensitivity;
+    if (ImGui::SliderFloat("Mouse sensitivity", &sens, 0.1f, 5.0f, "%.2f"))
+    {
+        char v[16];
+        snprintf(v, sizeof(v), "%.2f", sens);
+        SaveSetting(ini, "Input", "MouseSensitivity", v), InputSettingsChanged();
+    }
+    bool invert = in.mouseInvertY;
+    if (ImGui::Checkbox("Invert mouse Y", &invert))
+        SaveSetting(ini, "Input", "MouseInvertY", invert ? "1" : "0"), InputSettingsChanged();
+
+    ImGui::SeparatorText("Keyboard and mouse");
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+    ImGui::TextWrapped("Click a key, then press the new key or mouse button (6 s). Right-click: clear.");
+    ImGui::PopStyleColor();
+    static const struct { Control c; const char* label; } kRows[] = {
+        { Control::MoveUp, "Move forward" }, { Control::MoveDown, "Move back" }, { Control::MoveLeft, "Move left" },
+        { Control::MoveRight, "Move right" }, { Control::Walk, "Walk (hold)" }, { Control::A, "Action / OK (A)" },
+        { Control::B, "Attack / Back (B)" }, { Control::X, "Gadget (X)" }, { Control::Y, "Execute (Y)" },
+        { Control::LT, "Cover (LT)" }, { Control::RT, "Shoot (RT)" }, { Control::LB, "Crouch (LB)" }, { Control::RB, "Mark (RB)" },
+        { Control::RS, "Zoom (right stick click)" }, { Control::LS, "Left stick click" }, { Control::DpadUp, "Sonar goggles (d-pad up)" },
+        { Control::DpadDown, "Switch weapon (d-pad down)" }, { Control::DpadLeft, "Previous gadget (d-pad left)" },
+        { Control::DpadRight, "Next gadget (d-pad right)" }, { Control::Back, "Help (Back)" }, { Control::Start, "Pause (Start)" },
+        { Control::LookUp, "Look up" }, { Control::LookDown, "Look down" }, { Control::LookLeft, "Look left" },
+        { Control::LookRight, "Look right" },
+    };
+    const KeyBindings keys = CurrentKeyBindings();
+    static ULONGLONG captureAt = 0;
+    static bool armed = false; // the click that started the capture is released
+    const int capture = g_capture.load();
+    if (capture >= 0)
+    {
+        bool anyDown = false;
+        for (int vk = 1; vk < 0xFF; vk++)
+            anyDown |= (GetAsyncKeyState(vk) & 0x8000) != 0;
+        if (!armed)
+            armed = !anyDown;
+        else
+            for (int vk = 1; vk < 0xFF; vk++)
+            {
+                // The generic Shift/Ctrl/Alt codes also report the left/right ones: bind the specific key.
+                if (vk == VK_SHIFT || vk == VK_CONTROL || vk == VK_MENU || vk == VK_F1 || !(GetAsyncKeyState(vk) & 0x8000))
+                    continue;
+                SaveKeyBinding(Control(capture), { vk });
+                g_capture = -1;
+                break;
+            }
+        if (g_capture.load() >= 0 && GetTickCount64() - captureAt > 6000)
+            g_capture = -1; // nothing pressed: unchanged
+    }
+    if (ImGui::BeginTable("keys", 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp))
+    {
+        for (const auto& r : kRows)
+        {
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(r.label);
+            ImGui::TableNextColumn();
+            std::string text;
+            for (const int k : keys[r.c])
+                text += (text.empty() ? "" : ", ") + KeyName(k);
+            if (g_capture.load() == int(r.c))
+                text = "press a key...";
+            else if (text.empty())
+                text = "(none)";
+            ImGui::PushID(int(r.c));
+            if (ImGui::Button(text.c_str(), ImVec2(-FLT_MIN, 0)))
+                g_capture = int(r.c), captureAt = GetTickCount64(), armed = false;
+            if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+                SaveKeyBinding(r.c, {});
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
+    }
+    if (ImGui::Button("Reset keys to defaults"))
+    {
+        const KeyBindings d = DefaultKeyBindings();
+        for (size_t c = 0; c < size_t(Control::Count); c++)
+            SaveKeyBinding(Control(c), d.keys[c]);
+    }
+    Hint("The mouse wheel (WheelUp / WheelDown) can be bound in settings.ini, [Keyboard] section.");
+}
+
 void UpdateTab()
 {
     const updater::Status st = updater::Get();
@@ -332,9 +436,9 @@ void Menu()
         const DisplaySettings before = g_settings;
         // Previous/next tab: L1/R1 (LB/RB) on a pad, Q/E on the keyboard.
         static int current = 0;
-        if (ImGui::IsKeyPressed(ImGuiKey_Q, false))
+        if (ImGui::IsKeyPressed(ImGuiKey_Q, false) && !OverlayCapturingKey()) // a key being bound is not a tab switch
             g_tabStep = -1;
-        if (ImGui::IsKeyPressed(ImGuiKey_E, false))
+        if (ImGui::IsKeyPressed(ImGuiKey_E, false) && !OverlayCapturingKey())
             g_tabStep = 1;
         if (g_tabStep && g_openTab < 0)
             g_openTab = (current + g_tabStep + kTabs) % kTabs;
@@ -368,9 +472,15 @@ void Menu()
                 body([] { GraphicsTab(g_settings); });
                 ImGui::EndTabItem();
             }
-            if (ImGui::BeginTabItem("Update", nullptr, tab(2)))
+            if (ImGui::BeginTabItem("Controls", nullptr, tab(2)))
             {
                 current = 2;
+                body([] { ControlsTab(); });
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("Update", nullptr, tab(3)))
+            {
+                current = 3;
                 body([] { UpdateTab(); });
                 ImGui::EndTabItem();
             }
@@ -664,6 +774,7 @@ bool OverlayToggle()
 }
 
 bool OverlayOpen() { return g_open; }
+bool OverlayCapturingKey() { return g_capture.load() >= 0; }
 
 DisplaySettings OverlaySettings()
 {

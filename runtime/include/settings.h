@@ -77,6 +77,12 @@ struct UpdateSettings
 
 DisplaySettings LoadDisplaySettings(const std::filesystem::path& ini); // defaults if missing/invalid
 InputSettings LoadInputSettings(const std::filesystem::path& ini);     // [Input] MouseLook, MouseSensitivity, MouseInvertY, PlayStationNative, ButtonPrompts
+// The F1 Controls tab saved [Input] or [Keyboard]: readers that cache them (input.cpp, prompts.cpp, keybinds.cpp)
+// reload when the generation changes.
+void InputSettingsChanged();
+uint32_t InputSettingsGeneration();
+// The user's [Input] settings, reloaded after InputSettingsChanged().
+InputSettings CurrentInputSettings();
 UpdateSettings LoadUpdateSettings(const std::filesystem::path& ini);
 // [General] Language=English|French|German|Spanish|Italian (or the X_LANGUAGE number):
 // the console language the title is told (XGetLanguage, XCONFIG_USER_LANGUAGE). Default English (1).

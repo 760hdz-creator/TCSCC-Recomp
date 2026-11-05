@@ -17,6 +17,7 @@
 #include "../camera.h"
 #include <gpu/draw_state.h>
 #include <prompts.h>
+#include <settings.h>
 #include <gpu/gamma_ramp.h>
 #include <gpu/smaa.h>
 #include <gpu/shader_compiler.h>
@@ -1777,16 +1778,27 @@ void D3D11Renderer::BindRegisterState(const RegisterFile& regs, uint32_t texSlot
             cached.lastUsed = m_presented;
             // Prompt icons: known by their DXT blocks (any address/tiling), redrawn for the device in
             // use; the style is folded into the hash so a device switch converts them again.
-            if (hash && t.format == 20 && t.width == t.height && (t.width == 64 || t.width == 32) && cached.iconFor != hash)
+            // SCDA_PROMPT_DUMP=<dir>: every unknown candidate (DXT5 square, 24-64 px) once per block hash, as
+            // <hash>_<w>.bmp (collecting the title's icon table).
+            static const char* promptDump = getenv("SCDA_PROMPT_DUMP");
+            uint64_t dumpIcon = 0;
+            if (hash && t.format == 20 && t.width == t.height && t.width >= 24 && t.width <= 64 && cached.iconFor != hash)
             {
-                cached.icon = PromptIconIndex(BlockLinearHash(t, guest), t.width, t.height);
+                const uint64_t blocks = BlockLinearHash(t, guest);
+                cached.icon = PromptIconIndex(blocks, t.width, t.height);
                 cached.iconFor = hash;
                 if (cached.icon >= 0 && getenv("SCDA_TRACE_PROMPTS"))
                     RuntimeLog("[prompts] %s at %08X\n", PromptIconName(cached.icon), t.physical);
+                static std::unordered_set<uint64_t> seenIcons;
+                if (cached.icon < 0 && promptDump && seenIcons.insert(blocks).second)
+                {
+                    dumpIcon = blocks;
+                    RuntimeLog("[prompts] candidate %016llX %ux%u at %08X\n", (unsigned long long)blocks, t.width, t.height, t.physical);
+                }
             }
             const PromptStyle promptStyle = cached.icon >= 0 && hash == cached.iconFor ? CurrentPromptStyle() : PromptStyle::Xbox;
-            if (promptStyle != PromptStyle::Xbox)
-                hash ^= (uint64_t(promptStyle) + 1) * 0x9E3779B97F4A7C15ull;
+            if (promptStyle != PromptStyle::Xbox) // style and the key bindings (keyboard icons show them)
+                hash ^= (uint64_t(promptStyle) + 1 + (uint64_t(InputSettingsGeneration()) << 8)) * 0x9E3779B97F4A7C15ull;
             if (hash && cached.srv && cached.hash == hash && !noCache)
                 srv = cached.srv;
             else if (hash)
@@ -1818,6 +1830,12 @@ void D3D11Renderer::BindRegisterState(const RegisterFile& regs, uint32_t texSlot
                     if (seen.insert((t.format << 8) | t.signs).second)
                         RuntimeLog("[convert] fmt %u signs %02X (x%u y%u z%u w%u) fetch %08X %ux%u: sign field ignored\n", t.format, t.signs,
                             t.signs & 3, (t.signs >> 2) & 3, (t.signs >> 4) & 3, (t.signs >> 6) & 3, t.physical, t.width, t.height);
+                }
+                if (dumpIcon && !texels.empty())
+                {
+                    char name[64];
+                    snprintf(name, sizeof(name), "\\%016llX_%u.bmp", (unsigned long long)dumpIcon, t.width);
+                    WriteBmp(promptDump + std::string(name), texels, t.width, t.height);
                 }
                 if (promptStyle != PromptStyle::Xbox && PromptRedraw(cached.icon, promptStyle, texels, t.width, t.height))
                     guestMips = false; // mips generated from the new icon
@@ -3004,6 +3022,13 @@ void D3D11Renderer::ExecuteDraw(const DrawCall& d, const Frame& frame)
                             uint32_t(HostFrontCounterClockwise(r.regs)), std::bit_cast<float>(r.regs[0x210F]), std::bit_cast<float>(r.regs[0x2111]), r.regs[0x2206]);
                         RuntimeLog("[pixel]   psbools %08X %08X %08X %08X loops %08X %08X\n", r.regs[kRegBoolConstants + 4], r.regs[kRegBoolConstants + 5],
                             r.regs[kRegBoolConstants + 6], r.regs[kRegBoolConstants + 7], r.regs[kRegLoopConstants + 16], r.regs[kRegLoopConstants + 31]);
+                        for (uint32_t slot = 0; slot < 4; slot++) // texture fetch constants 0-3: base, format, size
+                        {
+                            const uint32_t f[3] = { r.regs[0x4800 + 6 * slot], r.regs[0x4801 + 6 * slot], r.regs[0x4802 + 6 * slot] };
+                            if (f[1] & 0xFFFFF000)
+                                RuntimeLog("[pixel]   tf%u base %08X fmt %u size %ux%u\n", slot, f[1] & 0xFFFFF000, f[1] & 0x3F,
+                                    (f[2] & 0x1FFF) + 1, ((f[2] >> 13) & 0x1FFF) + 1);
+                        }
                         lastValue = v;
                     }
                 }

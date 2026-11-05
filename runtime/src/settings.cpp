@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cmath>
 #include <fstream>
+#include <mutex>
 #include <vector>
 #include <string>
 #include <settings.h>
@@ -38,6 +39,21 @@ static void ForEachSetting(const std::filesystem::path& ini, const char* wanted,
 }
 
 static bool Truthy(const std::string& value) { return value != "0" && value != "false"; }
+
+static std::atomic<uint32_t> g_inputGeneration{ 1 };
+void InputSettingsChanged() { g_inputGeneration++; }
+uint32_t InputSettingsGeneration() { return g_inputGeneration.load(); }
+
+InputSettings CurrentInputSettings()
+{
+    static std::mutex m;
+    static InputSettings cached;
+    static uint32_t loaded = 0;
+    std::lock_guard l(m);
+    if (const uint32_t g = g_inputGeneration.load(); g != loaded)
+        cached = LoadInputSettings(SettingsPath()), loaded = g;
+    return cached;
+}
 
 InputSettings LoadInputSettings(const std::filesystem::path& ini)
 {

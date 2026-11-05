@@ -147,6 +147,17 @@ PPC_FUNC(sub_82A8D3D8)
         StoreWide(text, "RECOMP SETTINGS");
     else if (WideIs(key, "RedeemCode") && WideIs(sec, "TIPS"))
         StoreWide(text, "Reset to Defaults");
+    // SCDA_PROMPT_SHOWALL=1 (icon table collection): the difficulty page's Rookie line and the Back tip show
+    // every {Img.Buttons.IK_JoyN} icon from N = the value (1 = all), numbered.
+    static const int showFrom = getenv("SCDA_PROMPT_SHOWALL") ? std::max(1, atoi(getenv("SCDA_PROMPT_SHOWALL"))) : 0; // first N shown
+    static const bool showAll = showFrom > 0;
+    if (showAll && ((WideIs(key, "NormalWithIcon") && WideIs(sec, "SPDIFFICULTYPAGE")) || (WideIs(key, "Back") && WideIs(sec, "TIPS"))))
+    {
+        std::string all;
+        for (int i = showFrom; i <= 16; i++)
+            all += std::to_string(i) + "{Img.Buttons.IK_Joy" + std::to_string(i) + "} ";
+        StoreWide(text, all.c_str());
+    }
 }
 
 PPC_FUNC(sub_82E7EB80)
@@ -214,4 +225,16 @@ PPC_FUNC(sub_82E91010)
     if (TraceFlash())
         Log("common", ctx);
     __imp__sub_82E91010(ctx, base);
+}
+
+// Inline image tag builder (out FString*, key object, src FString*, attributes FString*): "{Img.Group.Key}"
+// tokens in UI text become "<img src='%s' %s %s>". SCDA_TRACE_FLASH: log what each token turns into.
+extern "C" PPC_FUNC(__imp__sub_82E79558);
+PPC_FUNC(sub_82E79558)
+{
+    const uint32_t out = ctx.r3.u32, src = ctx.r5.u32, attrs = ctx.r6.u32;
+    const std::string s = src && GuestLoad32(src) ? GuestText(GuestLoad32(src)) : "", a = attrs && GuestLoad32(attrs) ? GuestText(GuestLoad32(attrs)) : "";
+    __imp__sub_82E79558(ctx, base);
+    if (TraceFlash())
+        RuntimeLog("[img] src '%s' attrs '%s' -> %s\n", s.c_str(), a.c_str(), GuestLoad32(out) ? GuestText(GuestLoad32(out), 300).c_str() : "");
 }

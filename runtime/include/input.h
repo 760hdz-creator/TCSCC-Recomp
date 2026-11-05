@@ -9,10 +9,10 @@
 // Writes a guest X_INPUT_STATE (packet number + XINPUT_GAMEPAD, big-endian) at addr.
 void StoreInputState(uint32_t addr, uint32_t packet, const XINPUT_GAMEPAD& g);
 
-// Keyboard/mouse buttons -> gamepad: Enter/Space A, Backspace/Ctrl B, E X, Q Y, Esc Start, Tab Back,
-// arrows d-pad, WASD left stick, IJKL right stick, Z/right mouse LT, C/left mouse RT, 1/3 shoulders,
-// F left stick click, R/middle mouse right stick click (the keyboard prompts in prompts.cpp show these).
-XINPUT_GAMEPAD KeyboardGamepad(bool (*down)(int vk));
+// Keyboard/mouse -> gamepad through the [Keyboard] bindings (keybinds.h; defaults there). Mouse motion is
+// the right stick (MouseToStick below); wheelUp/wheelDown = a wheel notch is being held this poll.
+struct KeyBindings;
+XINPUT_GAMEPAD KeyboardGamepad(bool (*down)(int vk), const KeyBindings& keys, bool wheelUp = false, bool wheelDown = false);
 
 // Mouse look. The window thread adds raw motion and wheel notches; each XamInputGetState poll
 // takes them (MouseTake zeroes the totals) and turns the motion into the right stick: full

@@ -11,6 +11,7 @@
 #include <string>
 #include <gpu/frame_queue.h>
 #include <input.h>
+#include <keybinds.h>
 #include <recomp_page.h>
 #include <online_identity.h>
 #include <string>
@@ -34,27 +35,36 @@ void StoreInputState(uint32_t addr, uint32_t packet, const XINPUT_GAMEPAD& g)
     GuestStore16(addr + 14, uint16_t(g.sThumbRY));
 }
 
-XINPUT_GAMEPAD KeyboardGamepad(bool (*down)(int vk))
+XINPUT_GAMEPAD KeyboardGamepad(bool (*down)(int vk), const KeyBindings& keys, bool wheelUp, bool wheelDown)
 {
-    static const struct { int vk; uint16_t button; } kButtons[] = {
-        { VK_RETURN, XINPUT_GAMEPAD_A }, { VK_SPACE, XINPUT_GAMEPAD_A }, { VK_BACK, XINPUT_GAMEPAD_B }, { VK_CONTROL, XINPUT_GAMEPAD_B },
-        { 'E', XINPUT_GAMEPAD_X }, { 'Q', XINPUT_GAMEPAD_Y },
-        { VK_ESCAPE, XINPUT_GAMEPAD_START }, { VK_TAB, XINPUT_GAMEPAD_BACK }, { VK_UP, XINPUT_GAMEPAD_DPAD_UP },
-        { VK_DOWN, XINPUT_GAMEPAD_DPAD_DOWN }, { VK_LEFT, XINPUT_GAMEPAD_DPAD_LEFT }, { VK_RIGHT, XINPUT_GAMEPAD_DPAD_RIGHT },
-        { '1', XINPUT_GAMEPAD_LEFT_SHOULDER }, { '3', XINPUT_GAMEPAD_RIGHT_SHOULDER },
-        { 'F', XINPUT_GAMEPAD_LEFT_THUMB }, { 'R', XINPUT_GAMEPAD_RIGHT_THUMB }, { VK_MBUTTON, XINPUT_GAMEPAD_RIGHT_THUMB },
+    auto held = [&](Control c)
+    {
+        for (const int k : keys[c])
+            if (k == kWheelUp ? wheelUp : k == kWheelDown ? wheelDown : down(k))
+                return true;
+        return false;
+    };
+    static const struct { Control control; uint16_t button; } kButtons[] = {
+        { Control::A, XINPUT_GAMEPAD_A }, { Control::B, XINPUT_GAMEPAD_B }, { Control::X, XINPUT_GAMEPAD_X }, { Control::Y, XINPUT_GAMEPAD_Y },
+        { Control::LB, XINPUT_GAMEPAD_LEFT_SHOULDER }, { Control::RB, XINPUT_GAMEPAD_RIGHT_SHOULDER },
+        { Control::LS, XINPUT_GAMEPAD_LEFT_THUMB }, { Control::RS, XINPUT_GAMEPAD_RIGHT_THUMB },
+        { Control::Back, XINPUT_GAMEPAD_BACK }, { Control::Start, XINPUT_GAMEPAD_START },
+        { Control::DpadUp, XINPUT_GAMEPAD_DPAD_UP }, { Control::DpadDown, XINPUT_GAMEPAD_DPAD_DOWN },
+        { Control::DpadLeft, XINPUT_GAMEPAD_DPAD_LEFT }, { Control::DpadRight, XINPUT_GAMEPAD_DPAD_RIGHT },
     };
     XINPUT_GAMEPAD g{};
     for (auto& b : kButtons)
-        if (down(b.vk))
+        if (held(b.control))
             g.wButtons |= b.button;
-    auto axis = [&](int neg, int pos) { return int16_t((down(pos) ? 32767 : 0) - (down(neg) ? 32767 : 0)); };
-    g.sThumbLX = axis('A', 'D');
-    g.sThumbLY = axis('S', 'W');
-    g.sThumbRX = axis('J', 'L');
-    g.sThumbRY = axis('K', 'I');
-    g.bLeftTrigger = down('Z') || down(VK_RBUTTON) ? 255 : 0;
-    g.bRightTrigger = down('C') || down(VK_LBUTTON) ? 255 : 0;
+    // Walk: the left stick at ~40 % (Conviction's speed follows the stick).
+    const int full = held(Control::Walk) ? 13000 : 32767;
+    auto axis = [&](Control neg, Control pos, int scale) { return int16_t((held(pos) ? scale : 0) - (held(neg) ? scale : 0)); };
+    g.sThumbLX = axis(Control::MoveLeft, Control::MoveRight, full);
+    g.sThumbLY = axis(Control::MoveDown, Control::MoveUp, full);
+    g.sThumbRX = axis(Control::LookLeft, Control::LookRight, 32767);
+    g.sThumbRY = axis(Control::LookDown, Control::LookUp, 32767);
+    g.bLeftTrigger = held(Control::LT) ? 255 : 0;
+    g.bRightTrigger = held(Control::RT) ? 255 : 0;
     return g;
 }
 
@@ -230,7 +240,7 @@ SCDA_IMPORT(XamInputGetState)
         }
         return ParseAutoPress(env);
     }();
-    static const InputSettings mouse = LoadInputSettings(SettingsPath());
+    const InputSettings mouse = CurrentInputSettings(); // F1 Controls tab changes apply live
     XINPUT_GAMEPAD g{};
     PadKind kind = PadKind::None;
     // A scripted run ignores the physical pad as well, so A/B runs stay identical.
@@ -244,7 +254,15 @@ SCDA_IMPORT(XamInputGetState)
     // A scripted run ignores the keyboard and mouse, so typing elsewhere cannot leak into it.
     if (script.empty() && GameWindowFocused())
     {
-        XINPUT_GAMEPAD k = KeyboardGamepad(KeyDown);
+        // A wheel notch holds its binding for 3 polls (one poll can be missed by the title's edge detection).
+        static int wheelUpHold, wheelDownHold;
+        if (wheel > 0)
+            wheelUpHold = 3;
+        if (wheel < 0)
+            wheelDownHold = 3;
+        XINPUT_GAMEPAD k = KeyboardGamepad(KeyDown, CurrentKeyBindings(), wheelUpHold > 0, wheelDownHold > 0);
+        wheelUpHold -= wheelUpHold > 0;
+        wheelDownHold -= wheelDownHold > 0;
         keyboardActive = k.wButtons || k.bLeftTrigger || k.bRightTrigger || k.sThumbLX || k.sThumbLY || k.sThumbRX || k.sThumbRY ||
             (mouse.mouseLook && (dx || dy || wheel));
         g.wButtons |= k.wButtons;
@@ -260,8 +278,6 @@ SCDA_IMPORT(XamInputGetState)
             g.sThumbRX = rx ? rx : k.sThumbRX;
             g.sThumbRY = ry ? ry : k.sThumbRY;
         }
-        if (mouse.mouseLook && wheel)
-            g.wButtons |= wheel > 0 ? XINPUT_GAMEPAD_DPAD_UP : XINPUT_GAMEPAD_DPAD_DOWN;
     }
     PromptNoteInput(kind, padActive, keyboardActive);
     if (InputBlocked())

@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 #include <imgui.h>
+#include <keybinds.h>
 #include <prompts.h>
 #include <runtime.h>
 #include <settings.h>
@@ -292,8 +293,12 @@ void RecompPageDraw(ImFont* title, ImFont* body)
     }
     else
     {
-        const ImVec2 sz = body->CalcTextSizeA(13.0f * k, FLT_MAX, 0.0f, "A");
-        dl->AddText(body, 13.0f * k, ImVec2(c.x - sz.x * 0.5f, c.y - sz.y * 0.5f), col(255, 255, 255), "A");
+        // Keyboard: the first key bound to A ([Keyboard], keybinds.h), else the Xbox letter.
+        const std::vector<int> keys = CurrentKeyBindings()[Control::A];
+        const std::string label = style == PromptStyle::Keyboard && !keys.empty() ? KeyLabel(keys[0]) : "A";
+        const float size = label.size() > 1 ? 9.0f : 13.0f;
+        const ImVec2 sz = body->CalcTextSizeA(size * k, FLT_MAX, 0.0f, label.c_str());
+        dl->AddText(body, size * k, ImVec2(c.x - sz.x * 0.5f, c.y - sz.y * 0.5f), col(255, 255, 255), label.c_str());
     }
     const float labelW = body->CalcTextSizeA(16.0f * k, FLT_MAX, 0.0f, "Change").x / k;
     text(body, 16.0f, P(548 - 12 - labelW, 507), col(255, 255, 255), "Change");

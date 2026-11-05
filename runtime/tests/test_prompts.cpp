@@ -73,13 +73,14 @@ TEST(prompt_style_follows_last_device)
 // Every table icon draws something for PlayStation and keyboard; Xbox keeps the game's texels.
 TEST(prompt_icons_redraw)
 {
-    CHECK_EQ(PromptIconIndex(0x1234, 64, 64), -1);
+    CHECK_EQ(PromptIconIndex(0x1234, 36, 36), -1);
+    CHECK_EQ(PromptIconIndex(0x8E396833F211DC83ULL, 36, 36), 0);
     for (int i = 0; i < 64; i++)
     {
         const std::string name = PromptIconName(i);
         if (name == "?")
             break;
-        const uint32_t size = name.rfind("btn_opsat_", 0) == 0 ? 32 : 64;
+        const uint32_t size = 36; // Conviction icons
         for (PromptStyle s : { PromptStyle::Xbox, PromptStyle::PS4, PromptStyle::PS5, PromptStyle::Keyboard })
         {
             std::vector<uint32_t> texels(size * size, 0x12345678);
