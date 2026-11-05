@@ -235,9 +235,6 @@ void GraphicsTab(DisplaySettings& s)
         s.upscaling = DisplaySettings::Upscaling(up);
     Hint("FSR 1-style: picks the internal resolution from the window height divided by the mode's ratio "
          "(in 720-row steps), then upscales with a Lanczos filter, or filters down when it is larger. The menu stays sharp.");
-    ImGui::Checkbox("Solid walls from inside", &s.drawBackFaces);
-    Hint("Draws opaque surfaces from both sides, so one-sided walls stay solid when the camera is inside a building "
-         "(Iceland). Off = the console's culling.");
     const uint32_t scale = EffectiveScale(s);
     const uint32_t w = g_renderer->Width(), h = g_renderer->Height();
     const char* how = 720 * scale > h ? "filtered down" : 720 * scale < h ? (s.upscaling != DisplaySettings::UpOff ? "Lanczos upscale" : "bilinear") : "1:1";

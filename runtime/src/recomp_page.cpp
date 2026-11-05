@@ -70,8 +70,6 @@ const std::vector<Row>& Rows()
           [](const DisplaySettings& s) { return StepIndex(kSharpen, 5, s.sharpening); }, [](DisplaySettings& s, int v) { s.sharpening = kSharpen[v]; } },
         { "ANISOTROPIC FILTERING", "Sharper textures on surfaces seen at a grazing angle.", { "OFF", "2X", "4X", "8X", "16X" },
           [](const DisplaySettings& s) { return StepIndex(kAniso, 5, s.anisotropy); }, [](DisplaySettings& s, int v) { s.anisotropy = kAniso[v]; } },
-        { "SOLID WALLS FROM INSIDE", "Draws opaque surfaces from both sides. Off = the console's culling.", { "OFF", "ON" },
-          [](const DisplaySettings& s) { return int(s.drawBackFaces); }, [](DisplaySettings& s, int v) { s.drawBackFaces = v != 0; } },
         { "LANGUAGE", "Menu, subtitle and voice language. Applies the next time the game starts.",
           { "ENGLISH", "FRENCH", "GERMAN", "ITALIAN", "SPANISH" },
           [](const DisplaySettings&) {
