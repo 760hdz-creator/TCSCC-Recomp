@@ -154,6 +154,12 @@ void MemExport(float4 eA, float4 eM)
 }
 #endif
 
+#ifdef SCDA_LOOP_FALLBACK
+#define SCDA_LOOP_ATTR [loop]
+#else
+#define SCDA_LOOP_ATTR
+#endif
+
 float2 Dims2D(Texture2D<float4> t)
 {
     uint w, h;
@@ -162,7 +168,9 @@ float2 Dims2D(Texture2D<float4> t)
 }
 
 // Vertex shaders have no derivatives: sample mip 0 (SCDA_VERTEX is defined by CompileHlsl).
-#ifdef SCDA_VERTEX
+// SCDA_LOOP_FALLBACK (second compile, shader_compiler.cpp): fxc could not unroll a loop holding
+// gradient samples (X3511/X3570); the dispatcher is then a real [loop] and samples take mip 0.
+#if defined(SCDA_VERTEX) || defined(SCDA_LOOP_FALLBACK)
 #define SAMPLE(tex, s, c) tex.SampleLevel(s, c, 0)
 #else
 #define SAMPLE(tex, s, c) tex.Sample(s, c)

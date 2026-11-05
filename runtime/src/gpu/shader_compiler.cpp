@@ -15,7 +15,7 @@
 #include <gpu/xenos/translate.h>
 
 // Bump when the translator or shader_common changes: old disk entries are then ignored.
-static constexpr uint32_t kTranslatorVersion = 34; // v34: vfetch index floored unless is_index_rounded (was always rounded); v33: setp_*_push p0 from src.w, result from src.x (Xenia); v32: tx_coord_denorm normalizes by the guest size (GuestDims2D); v31: vfetch_mini inherits the previous vfetch_full's stride/source/constant; v30: texture fetch exp_adjust (TexExp); v29: colour exponent bias (g_ColorExpBias); v28: param-gen position = integer pixel; v26: PS memexport (MemExport, u7 window); v25: tx_coord_denorm fetches normalized; v24: sky nudge only for w > 0 (behind-camera vertices); v22: user clip planes (v21: far-only sky depth nudge in XenosViewport; v20: PRED_SET_INV 1 -> 0)
+static constexpr uint32_t kTranslatorVersion = 35; // v35: SCDA_LOOP_ATTR on the pc loop (X3511 fallback); v34: vfetch index floored unless is_index_rounded (was always rounded); v33: setp_*_push p0 from src.w, result from src.x (Xenia); v32: tx_coord_denorm normalizes by the guest size (GuestDims2D); v31: vfetch_mini inherits the previous vfetch_full's stride/source/constant; v30: texture fetch exp_adjust (TexExp); v29: colour exponent bias (g_ColorExpBias); v28: param-gen position = integer pixel; v26: PS memexport (MemExport, u7 window); v25: tx_coord_denorm fetches normalized; v24: sky nudge only for w > 0 (behind-camera vertices); v22: user clip planes (v21: far-only sky depth nudge in XenosViewport; v20: PRED_SET_INV 1 -> 0)
 static constexpr uint32_t kCacheMagic = 0x53444353; // "SCDS"
 
 struct CacheHeader
@@ -103,6 +103,18 @@ static void Compile(const ShaderBlob& blob, CompiledShader& out)
     }
     std::string err;
     out.bytecode = CompileHlsl(t.hlsl, blob.type == ShaderType::Pixel, &err);
+    // A loop fxc cannot unroll because it holds gradient samples (X3511, X3570): compile again as a
+    // real loop with mip-0 samples. Three Conviction PS (Market, Museum) failed without it
+    // (climb/vault prompt drawn as a white box, 2026-11-04).
+    if (out.bytecode.empty() && (err.find("X3511") != std::string::npos || err.find("X3570") != std::string::npos))
+    {
+        std::string err2;
+        out.bytecode = CompileHlsl("#define SCDA_LOOP_FALLBACK\n" + t.hlsl, blob.type == ShaderType::Pixel, &err2);
+        if (!out.bytecode.empty())
+            RuntimeLog("[shader] %016llx.%s: compiled with the loop fallback (mip-0 samples)\n", (unsigned long long)blob.hash, stage);
+        else
+            err += "\nloop fallback: " + err2;
+    }
     out.ok = !out.bytecode.empty();
     if (!out.ok)
     {

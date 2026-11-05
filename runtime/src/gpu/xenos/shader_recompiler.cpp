@@ -1780,7 +1780,7 @@ void ShaderRecompiler::recompileBody(const be<uint32_t>* code, uint32_t shaderSi
         out += "\n\tuint pc = 0;\n";
         if (needsLoop)
         {
-            out += "\twhile (true)\n";
+            out += "\tSCDA_LOOP_ATTR while (true)\n"; // [loop] only in the X3511 fallback (translate.cpp)
             out += "\t{\n";
         }
     }
