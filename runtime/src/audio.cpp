@@ -16,11 +16,16 @@
 #include <watchdog.h>
 
 
-constexpr uint32_t kDriverHandle = 0x41550000;
+constexpr uint32_t kDriverHandle = 0x41550000; // + client slot
 constexpr uint32_t kAudioThreadId = 0x101;
 
-static std::atomic<uint32_t> g_callback, g_callbackArg;
+// Several clients can be registered at once (Conviction: two XAudio engines, args 0x40011100 at boot
+// and 0x40011F10 at the menu). The hardware calls every client each frame and mixes their submitted
+// frames; keeping only the last registration left the first engine (the title's music) unpumped.
+constexpr int kClients = 4;
+static std::atomic<uint32_t> g_callback[kClients], g_callbackArg[kClients];
 static std::atomic<bool> g_pumpStarted;
+static void MixFlush(); // after a pump tick: output the sum of the frames the clients submitted
 
 // A title thread (title.h): it stops with the title; the next instance's client registration
 // starts it again on the same guest context (service region, allocated once).
@@ -52,18 +57,21 @@ static DWORD WINAPI AudioPump(void*)
         next.QuadPart += period;
         if (now.QuadPart > next.QuadPart + period * 8)
             next.QuadPart = now.QuadPart + period;
-        if (uint32_t cb = g_callback.load())
-        {
-            ctx->r3.u64 = g_callbackArg.load();
-            (PPC_LOOKUP_FUNC(g_base, cb))(*ctx, g_base);
-        }
+        for (int i = 0; i < kClients; i++)
+            if (uint32_t cb = g_callback[i].load())
+            {
+                ctx->r3.u64 = g_callbackArg[i].load();
+                (PPC_LOOKUP_FUNC(g_base, cb))(*ctx, g_base);
+            }
+        MixFlush();
     }
 }
 
 // Title relaunch (the pump has stopped with the title): the new instance registers its own client.
 void AudioReset()
 {
-    g_callback = 0;
+    for (auto& cb : g_callback)
+        cb = 0;
     g_pumpStarted = false;
 }
 
@@ -71,22 +79,34 @@ void AudioReset()
 SCDA_IMPORT(XAudioRegisterRenderDriverClient)
 {
     uint32_t info = ctx.r3.u32, pDriver = ctx.r4.u32;
+    int slot = 0;
+    while (slot < kClients && g_callback[slot].load())
+        slot++;
+    if (slot == kClients)
+    {
+        RuntimeLog("[audio] client table full\n");
+        ctx.r3.u64 = 0x80004005; // E_FAIL
+        return;
+    }
     // The hardware hands the callback a pointer to a cell holding the argument, not the argument
     // itself (Xenia: wrapped_callback_arg; Conviction's callback does `this = *r3`).
     const uint32_t cell = GuestAllocVirtual(4, 4);
     GuestStore32(cell, GuestLoad32(info + 4));
-    g_callbackArg = cell;
-    g_callback = GuestLoad32(info);
-    GuestStore32(pDriver, kDriverHandle);
-    RuntimeLog("[audio] client callback 0x%08X arg 0x%08X\n", g_callback.load(), g_callbackArg.load());
+    g_callbackArg[slot] = cell;
+    g_callback[slot] = GuestLoad32(info);
+    GuestStore32(pDriver, kDriverHandle + uint32_t(slot));
+    RuntimeLog("[audio] client %d callback 0x%08X arg 0x%08X\n", slot, g_callback[slot].load(), GuestLoad32(info + 4));
     if (!g_pumpStarted.exchange(true))
         CloseHandle(CreateThread(nullptr, 16 * 1024 * 1024, AudioPump, nullptr, 0, nullptr));
     ctx.r3.u64 = 0;
 }
 
+// XAudioUnregisterRenderDriverClient(Driver)
 SCDA_IMPORT(XAudioUnregisterRenderDriverClient)
 {
-    g_callback = 0;
+    const uint32_t slot = ctx.r3.u32 - kDriverHandle;
+    if (slot < uint32_t(kClients))
+        g_callback[slot] = 0;
     ctx.r3.u64 = 0;
 }
 
@@ -169,34 +189,56 @@ void WriteDumpHeader()
 }
 }
 
-// XAudioSubmitRenderDriverFrame(Driver, Samples)
+// The frames submitted during one pump tick, summed (one per client).
+static float g_mix[kFrameSamples * kFrameChannels];
+static bool g_mixed;
+
+// XAudioSubmitRenderDriverFrame(Driver, Samples): added to this tick's mix (MixFlush outputs it).
 SCDA_IMPORT(XAudioSubmitRenderDriverFrame)
 {
-    float six[kFrameSamples * kFrameChannels];
+    float six[kFrameSamples * kFrameChannels], stereo[kFrameSamples * 2];
     std::lock_guard lock(g_outLock);
     if (!g_outTried)
         OpenOutput();
     if (ctx.r4.u32 && (g_voice || g_dump))
     {
-        float* stereo = g_ring[g_ringNext];
         AudioConvertFrame(static_cast<const uint8_t*>(GuestPtr(ctx.r4.u32)), six, stereo);
-        if (g_dump)
-        {
-            fwrite(six, sizeof(six), 1, g_dump);
-            g_dumpFrames++;
-            WriteDumpHeader();
-        }
-        XAUDIO2_VOICE_STATE state;
-        if (g_voice && (g_voice->GetState(&state, XAUDIO2_VOICE_NOSAMPLESPLAYED), state.BuffersQueued < kMaxQueued))
-        {
-            XAUDIO2_BUFFER buffer{};
-            buffer.AudioBytes = sizeof(g_ring[0]);
-            buffer.pAudioData = reinterpret_cast<const BYTE*>(stereo);
-            g_voice->SubmitSourceBuffer(&buffer);
-            g_ringNext = (g_ringNext + 1) % kRing;
-        }
+        for (int i = 0; i < kFrameSamples * kFrameChannels; i++)
+            g_mix[i] = g_mixed ? g_mix[i] + six[i] : six[i];
+        g_mixed = true;
     }
     ctx.r3.u64 = 0;
+}
+
+static void MixFlush()
+{
+    std::lock_guard lock(g_outLock);
+    if (!g_mixed)
+        return;
+    g_mixed = false;
+    if (g_dump)
+    {
+        fwrite(g_mix, sizeof(g_mix), 1, g_dump);
+        g_dumpFrames++;
+        WriteDumpHeader();
+    }
+    XAUDIO2_VOICE_STATE state;
+    if (g_voice && (g_voice->GetState(&state, XAUDIO2_VOICE_NOSAMPLESPLAYED), state.BuffersQueued < kMaxQueued))
+    {
+        float* stereo = g_ring[g_ringNext];
+        constexpr float k = 0.7071f;
+        for (int i = 0; i < kFrameSamples; i++)
+        {
+            const float* f = &g_mix[i * kFrameChannels];
+            stereo[i * 2] = f[0] + k * f[2] + k * f[4];
+            stereo[i * 2 + 1] = f[1] + k * f[2] + k * f[5];
+        }
+        XAUDIO2_BUFFER buffer{};
+        buffer.AudioBytes = sizeof(g_ring[0]);
+        buffer.pAudioData = reinterpret_cast<const BYTE*>(stereo);
+        g_voice->SubmitSourceBuffer(&buffer);
+        g_ringNext = (g_ringNext + 1) % kRing;
+    }
 }
 
 SCDA_IMPORT(XAudioGetSpeakerConfig)

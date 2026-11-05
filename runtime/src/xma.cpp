@@ -56,7 +56,18 @@ struct Decode
     std::vector<uint8_t> pcm;
     size_t pcmRead;
     uint32_t skip; // samples per channel to drop from the next frame (loop start)
+    int peak, frames, failed; // SCDA_TRACE_XMA "consumed": max |sample|, frames decoded / failed since the last one
     FILE* dump; // SCDA_DUMP_XMA=<dir>: every input buffer consumed
+    // A frame that starts in the last packet of a buffer and runs into the other buffer, which is
+    // not valid yet: the hardware keeps the split frame and releases the buffer (Xenia does the same).
+    // Keeping the buffer instead deadlocked Conviction's streamed music: the streamer refills a
+    // voice only after its buffer is released and reads the next file chunk only after every voice
+    // has released its packets of the current one (each music stream stalled at bit ~16375 of a
+    // 16384-bit packet, then the others starved; 2026-11-04). carryPacket = that last packet,
+    // carryPos = the frame's bit offset in it; packet 0 of the next pass, before the new buffer.
+    bool carry;
+    uint32_t carryPos;
+    uint8_t carryPacket[2048];
 };
 Decode g_decode[kContexts];
 HANDLE g_kick; // auto-reset: a context may have work
@@ -95,6 +106,7 @@ void CloseDecode(Decode& d)
     d.pcm.clear();
     d.pcmRead = 0;
     d.skip = 0;
+    d.carry = false;
 }
 
 void Trace(const char* what, uint32_t c, uint32_t lr);
@@ -131,9 +143,42 @@ bool DecodeFrame(uint32_t c, Decode& d)
         valid = cur ? kIn1Valid : kIn0Valid;
     }
     const uint32_t count = Get(c, cur ? kIn1Count : kIn0Count);
-    auto packet = [c](uint32_t n) { return InputPacket(c, n); };
-    uint32_t pos = Get(c, kReadOffset), next = 0;
+    // With a carried split frame, packet 0 is the released buffer's last packet and the current
+    // buffer follows it: positions are relative to the carried packet until the frame is read.
+    const bool carry = d.carry;
+    auto packet = [c, &d, carry](uint32_t n) -> const uint8_t* {
+        return carry ? (n == 0 ? d.carryPacket : InputPacket(c, n - 1)) : InputPacket(c, n);
+    };
+    uint32_t pos = carry ? d.carryPos : Get(c, kReadOffset), next = 0;
     int bits = -1;
+    if (carry)
+    {
+        static uint8_t frame[xma::kMaxFrameBits / 8 + 1];
+        bits = xma::ReadFrame(packet, pos, frame, &next);
+        d.carry = false;
+        if (bits < 0 || next < kPacketBits)
+        {
+            // Not a split frame after all (bad data): drop it, continue at the new buffer.
+            Set(c, kReadOffset, kPacketHeaderBits);
+            Trace("carry dropped", c, 0);
+            return true;
+        }
+        if (bits > 0)
+        {
+            static int16_t samples[512 * 2];
+            const int channels = Get(c, kStereo) ? 2 : 1;
+            const int n = scda_xma_decode_frame(d.stream, frame, bits, samples, 512);
+            const int from = n > 0 ? std::min(n, int(d.skip)) : 0;
+            d.skip = 0;
+            for (int i = from * channels; i < std::max(n, 0) * channels; i++)
+            {
+                d.pcm.push_back(uint8_t(uint16_t(samples[i]) >> 8));
+                d.pcm.push_back(uint8_t(samples[i]));
+            }
+        }
+        Set(c, kReadOffset, next - kPacketBits); // in the current buffer, where the split frame ended
+        return true;
+    }
     if (pos / kPacketBits < count)
     {
         // A read offset before the packet's first frame (buffer start, tail of a split frame)
@@ -143,13 +188,48 @@ bool DecodeFrame(uint32_t c, Decode& d)
             pos = pos / kPacketBits * kPacketBits + first;
         static uint8_t frame[xma::kMaxFrameBits / 8 + 1];
         bits = xma::ReadFrame(packet, pos, frame, &next);
+        if (bits < 0 && pos / kPacketBits == count - 1 && !Get(c, cur ? kIn0Valid : kIn1Valid))
+        {
+            // Split frame into a buffer not valid yet: keep the packet, release the buffer (Decode::carry).
+            memcpy(d.carryPacket, packet(count - 1), sizeof(d.carryPacket));
+            d.carryPos = pos % kPacketBits;
+            d.carry = true;
+            if (d.dump)
+                fwrite(packet(0), 1, count * 2048, d.dump);
+            Set(c, valid, 0);
+            Set(c, kCurBuffer, !cur);
+            Set(c, kReadOffset, kPacketHeaderBits);
+            Trace("consumed (split frame kept)", c, 0);
+            d.peak = d.frames = d.failed = 0;
+            return true;
+        }
         if (bits < 0)
+        {
+            // SCDA_TRACE_XMA: why a context stops (once per context until it moves again).
+            static const bool trace = getenv("SCDA_TRACE_XMA") != nullptr;
+            if (trace && d.frames >= 0)
+            {
+                const uint8_t* p = packet(pos / kPacketBits);
+                char what[96];
+                snprintf(what, sizeof(what), "stall pos %u first %u hdr %02X%02X%02X%02X", pos,
+                    p ? xma::FirstFrameBit(p) : 0, p ? p[0] : 0, p ? p[1] : 0, p ? p[2] : 0, p ? p[3] : 0);
+                Trace(what, c, 0);
+                d.frames = -1000000; // logged; reset by the next consumed
+            }
             return false;
+        }
         if (bits > 0)
         {
             static int16_t samples[512 * 2];
             const int channels = Get(c, kStereo) ? 2 : 1;
             int n = scda_xma_decode_frame(d.stream, frame, bits, samples, 512);
+            static const bool tracePeak = getenv("SCDA_TRACE_XMA") != nullptr;
+            if (tracePeak)
+            {
+                n > 0 ? d.frames++ : d.failed++;
+                for (int i = 0; i < n * channels; i++)
+                    d.peak = std::max(d.peak, std::abs(int(samples[i])));
+            }
             // Loop start drops subframe skip x 128 samples; the frame at loop end plays subframes
             // 0..subframe end (fields filled by XAudio, sub_823FFEE0).
             int from = n > 0 ? std::min(n, int(d.skip)) : 0, to = std::max(n, 0);
@@ -211,6 +291,14 @@ bool DecodeFrame(uint32_t c, Decode& d)
     Set(c, valid, 0);
     Set(c, kCurBuffer, !cur);
     Set(c, kReadOffset, bits >= 0 ? next - count * kPacketBits : kPacketHeaderBits);
+    static const bool tracePeak = getenv("SCDA_TRACE_XMA") != nullptr;
+    if (tracePeak)
+    {
+        char what[64];
+        snprintf(what, sizeof(what), "consumed%s pk %d f %d/%d", bits >= 0 ? "" : "!", d.peak, d.frames, d.failed);
+        Trace(what, c, 0);
+    }
+    d.peak = d.frames = d.failed = 0;
     return true;
 }
 
@@ -269,7 +357,13 @@ void Kick()
 
 void Trace(const char* what, uint32_t c, uint32_t lr)
 {
-    static const bool on = getenv("SCDA_TRACE_XMA") != nullptr;
+    // SCDA_TRACE_XMA=2: only the XAudio-driven events (kick, lock, loop, consumed, create/init/release),
+    // not the export polling (is-*, get-*, set-*, enable, disable: Bink's logos fill the cap with those).
+    static const char* env = getenv("SCDA_TRACE_XMA");
+    static const bool on = env != nullptr, quiet = env && atoi(env) == 2;
+    if (quiet && (!strncmp(what, "is-", 3) || !strncmp(what, "get-", 4) || !strncmp(what, "set-", 4) ||
+                  !strcmp(what, "enable") || !strcmp(what, "disable")))
+        return;
     static int lines;
     if (!on || (lines++ > 20000 && strcmp(what, "loop"))) // loop events are rare: always logged
         return;

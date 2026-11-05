@@ -39,6 +39,43 @@ TEST(audio_register_writes_driver_and_pumps_callback)
     CHECK_EQ(g_audioCalls.load(), after);
 }
 
+static std::atomic<uint32_t> g_audioCallsB;
+static PPC_FUNC(FakeAudioCallbackB) { g_audioCallsB++; }
+
+TEST(audio_two_clients_both_pumped)
+{
+    TestGuestBase();
+    PPC_LOOKUP_FUNC(g_base, 0x824C5000) = FakeAudioCallback;
+    PPC_LOOKUP_FUNC(g_base, 0x824C5100) = FakeAudioCallbackB;
+    GuestStore32(0x40200040, 0x824C5000);
+    GuestStore32(0x40200044, 0x4023EC80);
+    GuestStore32(0x40200048, 0x824C5100);
+    GuestStore32(0x4020004C, 0x4023ED00);
+    PPCContext ctx{};
+    ctx.r3.u64 = 0x40200040;
+    ctx.r4.u64 = 0x40200050;
+    __imp__XAudioRegisterRenderDriverClient(ctx, g_base);
+    ctx.r3.u64 = 0x40200048;
+    ctx.r4.u64 = 0x40200054;
+    __imp__XAudioRegisterRenderDriverClient(ctx, g_base);
+    const uint32_t a = GuestLoad32(0x40200050), b = GuestLoad32(0x40200054);
+    CHECK(a != b);
+    const uint32_t startA = g_audioCalls.load(), startB = g_audioCallsB.load();
+    for (int i = 0; i < 100 && (g_audioCalls.load() < startA + 3 || g_audioCallsB.load() < startB + 3); i++)
+        Sleep(5);
+    CHECK(g_audioCalls.load() >= startA + 3); // the first client keeps running after the second registers
+    CHECK(g_audioCallsB.load() >= startB + 3);
+    ctx.r3.u64 = a;
+    __imp__XAudioUnregisterRenderDriverClient(ctx, g_base);
+    Sleep(30);
+    const uint32_t afterA = g_audioCalls.load(), afterB = g_audioCallsB.load();
+    Sleep(50);
+    CHECK_EQ(g_audioCalls.load(), afterA);
+    CHECK(g_audioCallsB.load() > afterB);
+    ctx.r3.u64 = b;
+    __imp__XAudioUnregisterRenderDriverClient(ctx, g_base);
+}
+
 TEST(audio_speaker_config_and_volume)
 {
     TestGuestBase();
