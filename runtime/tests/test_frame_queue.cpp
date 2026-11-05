@@ -28,6 +28,28 @@ TEST(frame_queue_keeps_order)
     CHECK(!q.PopFrame(f));
 }
 
+TEST(frame_queue_rejects_draw_after_hand_over)
+{
+    FrameQueue q(3);
+    const uint8_t bytes[4] = { 1, 2, 3, 4 };
+    uint32_t gen = q.HandOvers();
+    DrawCall d;
+    d.indexSnapshot = int32_t(q.AddVertexData(0x1234, bytes, 4));
+    q.EndFrame(); // closed between the snapshot and the add (renderer hand-over)
+    CHECK(!q.AddDrawIfSameFrame(d, none, gen));
+    gen = q.HandOvers();
+    d.indexSnapshot = int32_t(q.AddVertexData(0x1234, bytes, 4));
+    CHECK(q.AddDrawIfSameFrame(d, none, gen));
+    q.EndFrame();
+    Frame f;
+    CHECK(q.PopFrame(f));
+    CHECK(f.draws.empty());
+    CHECK(q.PopFrame(f));
+    CHECK_EQ(f.draws.size(), (size_t)1);
+    CHECK(size_t(f.draws[0].indexSnapshot) < f.memory.size());
+    CHECK_EQ(f.memory[f.draws[0].indexSnapshot].key, 0x1234ull);
+}
+
 TEST(occlusion_queries_sit_between_draws)
 {
     FrameQueue q(3);

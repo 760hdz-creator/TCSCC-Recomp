@@ -187,29 +187,39 @@ static void SubmitDraw(DrawCall d)
         Frames().AddResolve(res);
         return;
     }
-    // Snapshot vertex and index data now, in stream order (see Frame::memory).
-    if (d.vs)
-    {
-        std::bitset<96> slots = ShaderVertexFetchSlots(*d.vs);
-        for (uint32_t slot = 0; slot < 96; slot++)
-        {
-            MemoryRange range;
-            if (!slots[slot] || !VertexFetchRange(g_shadow, slot, range) || range.bytes > (16u << 20))
-                continue;
-            const uint8_t* p = (const uint8_t*)GuestPtr(GuestPhysical(range.physical));
-            if (GuestRangeReadable(p, range.bytes))
-                d.memory.push_back(Frames().AddVertexData(MemoryRangeKey(range), p, range.bytes));
-        }
-    }
-    if (d.source == IndexSource::Dma && d.indexBytes && d.indexBytes <= (16u << 20))
-    {
-        const uint8_t* p = (const uint8_t*)GuestPtr(GuestPhysical(d.indexBase));
-        if (GuestRangeReadable(p, d.indexBytes))
-            d.indexSnapshot = int32_t(Frames().AddVertexData(MemoryRangeKey({ d.indexBase & 0x1FFFFFFF, d.indexBytes }), p, d.indexBytes));
-    }
     if (RegDedupCheck())
         d.constantsHash = ConstantsHash(g_shadow);
-    Frames().AddDraw(std::move(d), g_pendingWrites);
+    // Snapshot vertex and index data now, in stream order (see Frame::memory). The indices belong to
+    // the open frame: if the renderer hands it over meanwhile (partial), snapshot again.
+    for (int attempt = 0;; attempt++)
+    {
+        const uint32_t handOvers = Frames().HandOvers();
+        d.memory.clear();
+        d.indexSnapshot = -1;
+        if (d.vs)
+        {
+            std::bitset<96> slots = ShaderVertexFetchSlots(*d.vs);
+            for (uint32_t slot = 0; slot < 96; slot++)
+            {
+                MemoryRange range;
+                if (!slots[slot] || !VertexFetchRange(g_shadow, slot, range) || range.bytes > (16u << 20))
+                    continue;
+                const uint8_t* p = (const uint8_t*)GuestPtr(GuestPhysical(range.physical));
+                if (GuestRangeReadable(p, range.bytes))
+                    d.memory.push_back(Frames().AddVertexData(MemoryRangeKey(range), p, range.bytes));
+            }
+        }
+        if (d.source == IndexSource::Dma && d.indexBytes && d.indexBytes <= (16u << 20))
+        {
+            const uint8_t* p = (const uint8_t*)GuestPtr(GuestPhysical(d.indexBase));
+            if (GuestRangeReadable(p, d.indexBytes))
+                d.indexSnapshot = int32_t(Frames().AddVertexData(MemoryRangeKey({ d.indexBase & 0x1FFFFFFF, d.indexBytes }), p, d.indexBytes));
+        }
+        if (Frames().AddDrawIfSameFrame(d, g_pendingWrites, handOvers))
+            return;
+        if (attempt == 2) // hand-overs every few microseconds: never seen; drop the draw (renderer guard)
+            return;
+    }
 }
 
 void CommandProcessorReset()

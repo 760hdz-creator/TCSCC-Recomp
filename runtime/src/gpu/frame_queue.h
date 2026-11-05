@@ -152,6 +152,28 @@ public:
         }
         m_open.draws.push_back(std::move(d));
     }
+    // AddDraw only if no frame was handed over since HandOvers() returned handOvers: the draw's
+    // Frame::memory indices (AddVertexData) belong to that open frame. A partial hand-over from the
+    // renderer thread between the snapshots and the add put the draw in the next frame with indices
+    // into the old one (07_LincolnMemorial: index snapshot of another range, read past its end).
+    // False: nothing added, d untouched; snapshot again and retry.
+    bool AddDrawIfSameFrame(DrawCall& d, std::vector<RegisterWrite>& pending, uint32_t handOvers)
+    {
+        std::lock_guard lock(m_mutex); // m_open is replaced only under this lock, with m_handOvers bumped
+        if (m_handOvers.load(std::memory_order_relaxed) != handOvers)
+            return false;
+        m_lastActivity = std::chrono::steady_clock::now();
+        m_open.regWrites.insert(m_open.regWrites.end(), pending.begin(), pending.end());
+        pending.clear();
+        d.regWritesEnd = uint32_t(m_open.regWrites.size());
+        if (m_open.draws.size() >= kMaxDrawsPerFrame)
+        {
+            m_droppedDraws++;
+            return true;
+        }
+        m_open.draws.push_back(std::move(d));
+        return true;
+    }
     // Snapshots a guest range into the open frame; returns the index in Frame::memory. Reuses the
     // range's latest snapshot when the bytes are unchanged, also one from an earlier frame (static
     // geometry: newyork_02 re-copied ~24 MB per frame), which also lets the renderer skip the upload.
