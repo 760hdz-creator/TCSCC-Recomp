@@ -2753,8 +2753,21 @@ void D3D11Renderer::ExecuteDraw(const DrawCall& d, const Frame& frame)
                 m_lastSkipped++;
                 return;
             }
+            // The snapshot must be this draw's range: 07_LincolnMemorial (2026-11-04) read past a
+            // snapshot's end here (host heap fault). Skip and log instead of crashing.
+            const auto& snap = frame.memory[d.indexSnapshot];
+            if (snap.Bytes().size() < d.indexBytes || snap.key != MemoryRangeKey({ d.indexBase & 0x1FFFFFFF, d.indexBytes }))
+            {
+                static std::atomic<int> logged{0};
+                if (logged++ < 20)
+                    RuntimeLog("[skip] frame %llu index snapshot %d mismatch: key %016llX size %zu, draw ib %08X bytes %u (memory %zu)\n",
+                        m_presented, d.indexSnapshot, (unsigned long long)snap.key, snap.Bytes().size(), d.indexBase, d.indexBytes,
+                        frame.memory.size());
+                m_lastSkipped++;
+                return;
+            }
             indices.resize(d.indexBytes);
-            SwapIndices(frame.memory[d.indexSnapshot].Bytes().data(), d.indexBytes, d.indexEndian, indices.data());
+            SwapIndices(snap.Bytes().data(), d.indexBytes, d.indexEndian, indices.data());
             count = std::min(d.indexCount, d.indexBytes / (d.index32 ? 4 : 2));
             // SCDA_DUMP_STRIPS=<dir>,<present>: every DMA triangle strip with primitive reset in that present,
             // as <dir>/d<draw>_<vs>.idx (u32 indices, reset value as is), for offline winding analysis.
