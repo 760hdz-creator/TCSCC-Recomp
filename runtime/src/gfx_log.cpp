@@ -341,3 +341,30 @@ PPC_FUNC(sub_82F50BE8)
         ctx.r3.u64 = 1;
     __imp__sub_82F50BE8(ctx, base);
 }
+
+// Sleep(seconds f1) wrapper sub_82A8F6E8. The engine frame limiter (main loop sub_824E53B0, loop at
+// 824E5668, lr 824E5684) calls it with 0 until the minimum frame time has passed: ~140k host yields/s
+// on the main game thread. The caller's registers are live here: f31 = minimum frame time, float at
+// r23-13592 = elapsed. Those calls sleep (high-resolution timer) until 1 ms before the deadline,
+// then yield as before. SCDA_LIMITER_SPIN=1: old Sleep(0).
+extern "C" PPC_FUNC(__imp__sub_82A8F6E8);
+PPC_FUNC(sub_82A8F6E8)
+{
+    static const bool spin = getenv("SCDA_LIMITER_SPIN") != nullptr;
+    if (spin || uint32_t(ctx.lr) != 0x824E5684 || ctx.f1.f64 > 0.0)
+    {
+        __imp__sub_82A8F6E8(ctx, base);
+        return;
+    }
+    const uint32_t elapsedBits = PPC_LOAD_U32(ctx.r23.u32 - 13592);
+    float elapsed;
+    memcpy(&elapsed, &elapsedBits, 4);
+    const double remaining = ctx.f31.f64 - double(elapsed); // seconds
+    thread_local HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+    LARGE_INTEGER due;
+    due.QuadPart = -LONGLONG((remaining - 0.001) * 1e7); // relative, 100 ns units
+    if (timer && remaining > 0.0015 && remaining < 0.1 && SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE))
+        WaitForSingleObject(timer, 100);
+    else
+        SwitchToThread();
+}
