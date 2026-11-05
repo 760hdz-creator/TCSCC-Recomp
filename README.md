@@ -108,7 +108,8 @@ otherwise. **Online is on by default** (without Steam running the game plays off
 - **Xbox controllers** work as on the console.
 - **PlayStation 4 and 5 controllers** (DualShock 4, DualSense) work natively through SDL3. The
   touchpad click is Back. The button icons in menus and the HUD become PlayStation symbols.
-- **Keyboard and mouse**: mouse look, every action on a key, and the button icons show your keys. Change any key in
+- **Keyboard and mouse**: mouse look, every action on a key, and the button icons show your keys. Change any key in the main
+  menu's **RECOMP SETTINGS > CONTROLS** (select a key, press Change, then the new key; X clears), in game in
   **F1 > Controls** (click a key, press the new one; right-click clears), or in `settings.ini` under `[Keyboard]`.
 
 | Action | Default keys |
@@ -186,7 +187,8 @@ Private Match (Y) and Steam invites to a Player Match don't work yet.
 - **New: PlayStation button icons.** With a DualShock 4 or DualSense the menus and the HUD show cross, circle,
   square, triangle, L1/R1/L2/R2 and the touchpad, drawn in the game's own icon style.
 - **New: keyboard icons.** Playing on keyboard and mouse, the icons show the key bound to each action.
-- **New: F1 > Controls:** rebind every key, mouse sensitivity, invert Y, and the icon style.
+- **New: CONTROLS** (RECOMP SETTINGS sub-menu, and F1 > Controls in game): rebind every key, mouse sensitivity,
+  invert Y, and the icon style.
 - **New defaults for keyboard play**, laid out for Conviction (cover on Space, shoot and aim on the mouse
   buttons, reload on R, a Walk key).
 - Steam invites to a Player Match now join the host's lobby (tested with two copies on one PC).

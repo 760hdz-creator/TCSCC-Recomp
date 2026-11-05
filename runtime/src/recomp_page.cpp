@@ -2,7 +2,10 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
+#include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 #include <vector>
 #include <imgui.h>
@@ -23,6 +26,8 @@ struct Row
     std::vector<const char*> values;
     int (*get)(const DisplaySettings&);
     void (*set)(DisplaySettings&, int);
+    enum Kind { Setting, Key, Submenu } kind = Setting;
+    Control key = Control::Count; // Key rows: the pad control the keys press
 };
 
 int g_online = -1;   // [Online] Enabled as saved (applies at the next start)
@@ -33,6 +38,7 @@ constexpr uint32_t kFov[] = { 70, 80, 90, 100, 110, 120 };
 constexpr uint32_t kAniso[] = { 1, 2, 4, 8, 16 };
 constexpr uint32_t kSharpen[] = { 0, 25, 50, 75, 100 };
 constexpr uint32_t kGamma[] = { 70, 80, 90, 100, 110, 120, 130, 140, 150 };
+constexpr float kSensitivity[] = { 0.25f, 0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f, 2.5f, 3.0f, 4.0f, 5.0f };
 
 int StepIndex(const uint32_t* steps, int n, uint32_t v)
 {
@@ -108,21 +114,152 @@ const std::vector<Row>& Rows()
               g_language = v;
               SaveSetting(SettingsPath(), "General", "Language", kLanguageIni[v]);
           } },
+        { "CONTROLS", "Button icons, mouse and keyboard keys.", {}, nullptr, nullptr, Row::Submenu },
+        { "BUTTON PROMPTS", "The button icons in menus and the HUD. Auto follows the device used last: a PlayStation pad shows its symbols, the keyboard the keys bound below.",
+          { "AUTO", "XBOX", "PLAYSTATION", "KEYBOARD" },
+          [](const DisplaySettings&) { return int(ParsePromptSetting(CurrentInputSettings().buttonPrompts.c_str())); },
+          [](DisplaySettings&, int v) {
+              static const char* const ini[] = { "Auto", "Xbox", "PlayStation", "Keyboard" };
+              SaveSetting(SettingsPath(), "Input", "ButtonPrompts", ini[v]);
+              InputSettingsChanged();
+          } },
+        { "MOUSE SENSITIVITY", "How fast the mouse turns the camera.",
+          { "0.25", "0.5", "0.75", "1.0", "1.25", "1.5", "2.0", "2.5", "3.0", "4.0", "5.0" },
+          [](const DisplaySettings&) {
+              const float v = CurrentInputSettings().mouseSensitivity;
+              int best = 0;
+              for (int i = 0; i < 11; i++)
+                  if (std::abs(kSensitivity[i] - v) < std::abs(kSensitivity[best] - v))
+                      best = i;
+              return best;
+          },
+          [](DisplaySettings&, int v) {
+              char text[16];
+              snprintf(text, sizeof(text), "%.2f", kSensitivity[v]);
+              SaveSetting(SettingsPath(), "Input", "MouseSensitivity", text);
+              InputSettingsChanged();
+          } },
+        { "INVERT MOUSE Y", "Mouse up looks down.", { "OFF", "ON" },
+          [](const DisplaySettings&) { return CurrentInputSettings().mouseInvertY ? 1 : 0; },
+          [](DisplaySettings&, int v) {
+              SaveSetting(SettingsPath(), "Input", "MouseInvertY", v ? "1" : "0");
+              InputSettingsChanged();
+          } },
     };
-    return rows;
+    // Then one row per keyboard/mouse binding (keybinds.h) and a reset.
+    static const std::vector<Row> all = [] {
+        std::vector<Row> v = rows;
+        static const struct { Control c; const char* name; } kKeys[] = {
+            { Control::MoveUp, "MOVE FORWARD" }, { Control::MoveDown, "MOVE BACK" }, { Control::MoveLeft, "MOVE LEFT" },
+            { Control::MoveRight, "MOVE RIGHT" }, { Control::Walk, "WALK (HOLD)" }, { Control::A, "ACTION / OK" },
+            { Control::B, "ATTACK / BACK" }, { Control::X, "GADGET" }, { Control::Y, "EXECUTE" },
+            { Control::LT, "COVER" }, { Control::RT, "SHOOT" }, { Control::RS, "AIM" }, { Control::LS, "RELOAD" },
+            { Control::LB, "CROUCH" }, { Control::RB, "MARK" }, { Control::DpadUp, "SONAR GOGGLES" },
+            { Control::DpadDown, "SWITCH WEAPON" }, { Control::DpadLeft, "PREVIOUS GADGET" },
+            { Control::DpadRight, "NEXT GADGET" }, { Control::Back, "HELP" }, { Control::Start, "PAUSE" },
+            { Control::LookUp, "LOOK UP" }, { Control::LookDown, "LOOK DOWN" }, { Control::LookLeft, "LOOK LEFT" },
+            { Control::LookRight, "LOOK RIGHT" },
+        };
+        for (const auto& k : kKeys)
+        {
+            Row r{ k.name, "Change, then press the new key or mouse button within 6 seconds (Esc too). X clears the key. "
+                           "The mouse wheel is set in settings.ini, [Keyboard].", {}, nullptr, nullptr };
+            r.kind = Row::Key;
+            r.key = k.c;
+            v.push_back(r);
+        }
+        return v;
+    }();
+    return all;
 }
 
 using Clock = std::chrono::steady_clock;
 std::atomic<bool> g_open{false}, g_back{false};
 std::atomic<int> g_selected{0};
+std::atomic<int> g_tab{0}; // 0 the main list, 1 the CONTROLS sub-page
+
+// The CONTROLS row (end of the main list); the sub-page is every row after it.
+int SubmenuRow()
+{
+    static const int row = [] {
+        for (size_t i = 0; i < Rows().size(); i++)
+            if (Rows()[i].kind == Row::Submenu)
+                return int(i);
+        return int(Rows().size()) - 1;
+    }();
+    return row;
+}
+int TabBegin(int tab) { return tab == 0 ? 0 : SubmenuRow() + 1; }
+int TabEnd(int tab) { return tab == 0 ? SubmenuRow() + 1 : int(Rows().size()); }
 std::atomic<int64_t> g_openedAt{0}; // Clock ticks
 std::atomic<int64_t> g_backAt{0};   // Clock ticks of the B that closed the page
 
-int Value(const Row& r, const DisplaySettings& s) { return std::clamp(r.get(s), 0, int(r.values.size()) - 1); }
+int Value(const Row& r, const DisplaySettings& s) { return r.get ? std::clamp(r.get(s), 0, int(r.values.size()) - 1) : 0; }
+
+// Key rows: Change starts a capture; the next key or mouse button pressed (after every key is up) is bound.
+std::atomic<int> g_capture{ -1 }; // row waiting for a key
+std::chrono::steady_clock::time_point g_captureAt;
+bool g_captureArmed = false;
+
+std::string KeysText(Control c)
+{
+    std::string t;
+    for (const int k : CurrentKeyBindings()[c])
+        t += (t.empty() ? "" : ", ") + KeyName(k);
+    return t.empty() ? "NONE" : t;
+}
+
+// Game thread, every poll. True while a capture goes on (the page ignores the pad meanwhile).
+bool CaptureTick()
+{
+    const int row = g_capture;
+    if (row < 0)
+        return false;
+    bool anyDown = false;
+    for (int vk = 1; vk < 0xFF; vk++)
+        anyDown |= (GetAsyncKeyState(vk) & 0x8000) != 0;
+    if (!g_captureArmed)
+        g_captureArmed = !anyDown;
+    else
+        for (int vk = 1; vk < 0xFF; vk++)
+        {
+            // The generic Shift/Ctrl/Alt codes also report the left/right ones: bind the specific key.
+            if (vk == VK_SHIFT || vk == VK_CONTROL || vk == VK_MENU || vk == VK_F1 || !(GetAsyncKeyState(vk) & 0x8000))
+                continue;
+            const Row& r = Rows()[size_t(row)];
+            SaveKeyBinding(r.key, { vk });
+            RuntimeLog("[menu] RECOMP SETTINGS: %s -> %s\n", r.name, KeyName(vk).c_str());
+            g_capture = -1;
+            return true;
+        }
+    if (std::chrono::steady_clock::now() - g_captureAt > std::chrono::seconds(6))
+        g_capture = -1; // nothing pressed: unchanged
+    return true;
+}
 
 void Step(int row, int dir)
 {
     const Row& r = Rows()[size_t(row)];
+    if (r.kind == Row::Submenu)
+    {
+        if (dir > 0)
+        {
+            g_tab = 1;
+            g_selected = TabBegin(1);
+            RuntimeLog("[menu] RECOMP SETTINGS: CONTROLS\n");
+        }
+        return;
+    }
+    if (r.kind == Row::Key)
+    {
+        if (dir > 0) // Change (A) / right: capture; left does nothing on a key
+        {
+            g_capture = row, g_captureAt = std::chrono::steady_clock::now(), g_captureArmed = false;
+            RuntimeLog("[menu] RECOMP SETTINGS: %s waits for a key\n", r.name);
+        }
+        return;
+    }
+
     DisplaySettings s = OverlaySettings();
     const int n = int(r.values.size());
     const int v = (Value(r, s) + dir + n) % n;
@@ -131,9 +268,18 @@ void Step(int row, int dir)
     RuntimeLog("[menu] RECOMP SETTINGS: %s -> %s\n", r.name, r.values[size_t(v)]);
 }
 
-// Y: every setting back to its default, except the window mode and the language.
+// Y: SETTINGS tab: every setting back to its default, except the window mode and the language;
+// CONTROLS tab: every key.
 void Reset()
 {
+    if (g_tab == 1)
+    {
+        const KeyBindings d = DefaultKeyBindings();
+        for (size_t c = 0; c < size_t(Control::Count); c++)
+            SaveKeyBinding(Control(c), d.keys[c]);
+        RuntimeLog("[menu] RECOMP SETTINGS: keys reset\n");
+        return;
+    }
     DisplaySettings s;
     s.mode = OverlaySettings().mode;
     OverlayChangeSettings(s);
@@ -160,13 +306,14 @@ float SinceOpen() { return std::chrono::duration<float>(Clock::now() - Clock::ti
 void RecompPageOpen()
 {
     g_selected = 0;
+    g_tab = 0;
     g_back = false;
     g_openedAt = Clock::now().time_since_epoch().count();
     g_open = true;
     RuntimeLog("[menu] RECOMP SETTINGS open\n");
 }
 
-void RecompPageClose() { g_open = false; }
+void RecompPageClose() { g_open = false, g_capture = -1; }
 bool RecompPageIsOpen() { return g_open; }
 bool RecompPageTakeBack()
 {
@@ -189,7 +336,19 @@ void RecompPageInput(const XINPUT_GAMEPAD& g)
     last = now;
     if (!g_open || SinceOpen() < kTravelSeconds)
         return;
-    const int count = int(Rows().size());
+    if (CaptureTick())
+    {
+        last = 0xFFFF; // after the capture: the bound key must be released before it acts on the page
+        return;
+    }
+    if (g_tab == 1 && (pressed & XINPUT_GAMEPAD_B))
+    {
+        g_tab = 0;
+        g_selected = SubmenuRow();
+        RuntimeLog("[menu] RECOMP SETTINGS: CONTROLS back\n");
+        return; // the page stays open: the game's page sees an idle pad
+    }
+    const int begin = TabBegin(g_tab), count = TabEnd(g_tab) - begin;
     // Up/down repeat while held (0.4 s, then every 0.12 s).
     constexpr WORD kVertical = XINPUT_GAMEPAD_DPAD_UP | XINPUT_GAMEPAD_DPAD_DOWN;
     int move = 0;
@@ -204,12 +363,17 @@ void RecompPageInput(const XINPUT_GAMEPAD& g)
         repeatAt = Clock::now() + std::chrono::milliseconds(120);
     }
     if (move)
-        g_selected = (g_selected + move + count) % count;
+        g_selected = begin + (g_selected - begin + move + count) % count;
     const int row = g_selected;
     if (pressed & (XINPUT_GAMEPAD_A | XINPUT_GAMEPAD_DPAD_RIGHT))
         Step(row, 1);
     else if (pressed & XINPUT_GAMEPAD_DPAD_LEFT)
         Step(row, -1);
+    else if ((pressed & XINPUT_GAMEPAD_X) && Rows()[size_t(row)].kind == Row::Key)
+    {
+        SaveKeyBinding(Rows()[size_t(row)].key, {});
+        RuntimeLog("[menu] RECOMP SETTINGS: %s cleared\n", Rows()[size_t(row)].name);
+    }
     else if (pressed & XINPUT_GAMEPAD_Y)
         Reset();
     else if (pressed & XINPUT_GAMEPAD_B) // only B: the game's page turns it into its Back
@@ -217,6 +381,7 @@ void RecompPageInput(const XINPUT_GAMEPAD& g)
         g_backAt = Clock::now().time_since_epoch().count();
         g_back = true;
         g_open = false; // this poll's B goes on to the game's page (its own Back)
+        g_capture = -1;
         last = 0xFFFF; // next open: wait for a release again
         RuntimeLog("[menu] RECOMP SETTINGS back\n");
     }
@@ -255,16 +420,42 @@ void RecompPageDraw(ImFont* title, ImFont* body)
 
     const DisplaySettings s = OverlaySettings();
     const int selected = g_selected;
-    constexpr float kTop = 128.0f, kRowH = 25.0f, kLeft = 120.0f, kRight = 540.0f, kName = 134.0f, kValue = 360.0f;
-    // Our own panel behind the rows, grown to fit all of them: the page's panel (and its scroll arrows,
-    // x ~573) ends at y ~400, 11 rows; it is covered from its top down to the last row.
-    const float panelBottom = kTop + kRowH * float(Rows().size()) + 3.0f;
-    dl->AddRectFilled(P(kLeft - 4, kTop - 6), P(585, panelBottom), col(8, 8, 8, 0.96f));
-    for (size_t i = 0; i < Rows().size(); i++)
+    const int tab = g_tab, begin = TabBegin(tab), end = TabEnd(tab), count = end - begin;
+    constexpr float kTabTop = 122.0f, kTabH = 24.0f, kRowH = 25.0f, kLeft = 120.0f, kRight = 540.0f, kName = 134.0f, kValue = 360.0f;
+    const float kTop = tab == 1 ? kTabTop + kTabH + 6.0f : 128.0f;
+    // 14 rows (13 under the sub-page header) show at once (the tips are at y ~505); the list scrolls.
+    const int kVisible = tab == 1 ? 13 : 14;
+    static int first = 0;
+    first = std::clamp(first, std::max(begin, selected - kVisible + 1), std::min(selected, std::max(begin, end - kVisible)));
+    const int shown = std::min(kVisible, count);
+    // Our own panel behind the tabs and rows (the game's page panel and its scroll arrows, x ~573, are covered).
+    const float panelBottom = kTop + kRowH * float(shown) + 3.0f;
+    dl->AddRectFilled(P(kLeft - 4, kTop - 6 - (tab == 1 ? kTabH + 6.0f : 0.0f)), P(585, panelBottom), col(8, 8, 8, 0.96f));
+    if (tab == 1)
     {
-        const Row& r = Rows()[i];
-        const float y = kTop + kRowH * float(i);
-        const bool sel = int(i) == selected;
+        // Sub-page header: where you are, and how to get back.
+        text(body, 17.0f, P(kName, kTabTop + 2), col(255, 255, 255), "RECOMP SETTINGS  >  CONTROLS");
+        const PromptStyle st = CurrentPromptStyle();
+        std::string back = st == PromptStyle::PS4 || st == PromptStyle::PS5 ? "CIRCLE" : "B";
+        if (st == PromptStyle::Keyboard)
+        {
+            const std::vector<int> keys = CurrentKeyBindings()[Control::B];
+            back = keys.empty() ? "B" : KeyLabel(keys[0]);
+        }
+        back = "BACK: " + back;
+        const float hw = body->CalcTextSizeA(14.0f * k, FLT_MAX, 0.0f, back.c_str()).x / k;
+        text(body, 14.0f, P(kRight - hw, kTabTop + 4), col(170, 170, 170), back.c_str());
+        dl->AddLine(P(kLeft, kTabTop + kTabH + 2), P(kRight, kTabTop + kTabH + 2), col(176, 8, 8), 1.5f * k);
+    }
+    if (first > begin) // more above / below
+        dl->AddTriangleFilled(P(562, kTop + 2), P(556, kTop + 12), P(568, kTop + 12), col(220, 220, 220));
+    if (first + shown < end)
+        dl->AddTriangleFilled(P(562, panelBottom - 6), P(556, panelBottom - 16), P(568, panelBottom - 16), col(220, 220, 220));
+    for (int i = first; i < first + shown; i++)
+    {
+        const Row& r = Rows()[size_t(i)];
+        const float y = kTop + kRowH * float(i - first);
+        const bool sel = i == selected;
         if (sel)
             dl->AddRectFilledMultiColor(P(kLeft, y), P(kRight, y + kRowH - 2), col(176, 8, 8, 0.95f), col(120, 0, 0, 0.0f),
                                         col(120, 0, 0, 0.0f), col(176, 8, 8, 0.95f));
@@ -273,7 +464,13 @@ void RecompPageDraw(ImFont* title, ImFont* body)
                                         col(30, 30, 30, 0.0f), col(30, 30, 30, 0.55f));
         const ImU32 c = sel ? col(255, 255, 255) : col(205, 205, 205);
         text(body, 17.0f, P(kName, y + 3), c, r.name);
-        const std::string v = sel ? std::string("< ") + r.values[size_t(Value(r, s))] + " >" : r.values[size_t(Value(r, s))];
+        std::string v;
+        if (r.kind == Row::Key)
+            v = g_capture.load() == i ? "PRESS A KEY..." : KeysText(r.key);
+        else if (r.kind == Row::Setting)
+            v = sel ? std::string("< ") + r.values[size_t(Value(r, s))] + " >" : r.values[size_t(Value(r, s))];
+        else if (r.kind == Row::Submenu)
+            v = ">";
         text(body, 17.0f, P(kValue, y + 3), c, v.c_str());
     }
     // Description of the selected row, right column.
