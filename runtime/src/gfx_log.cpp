@@ -1,4 +1,7 @@
+#include <windows.h>
 #include <runtime.h>
+#include <chrono>
+#include <gpu/frame_queue.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -293,4 +296,36 @@ PPC_FUNC(sub_824FB378)
     __imp__sub_824FB378(ctx, base);
     if (trace)
         RuntimeLog("[save] result handler(0x%X, 0x%08X, %u, %u) lr 0x%08X -> %u\n", r4, r5, r6, r7, lr, ctx.r3.u32);
+}
+
+// GetData sub_825283A0(query r3, data r4, size r5, flags r6) -> r3 1 (S_FALSE) while the result is
+// pending. sub_82EF6278 spins on it every frame until the renderer answers: a whole host core busy.
+// After a run of back-to-back pending answers for one query on one thread, wait for the next
+// renderer result/fence write (NotifyGpuWrite, 1 ms cap; CP-written results only via the cap)
+// instead of spinning. A caller polling once a frame never builds a run (gap > 200 us resets it).
+// SCDA_GETDATA_SPIN=1: old busy poll.
+extern "C" PPC_FUNC(__imp__sub_825283A0);
+PPC_FUNC(sub_825283A0)
+{
+    static const bool spin = getenv("SCDA_GETDATA_SPIN") != nullptr;
+    thread_local uint32_t lastQuery = 0, run = 0;
+    thread_local std::chrono::steady_clock::time_point lastPending;
+    const uint32_t query = ctx.r3.u32;
+    const uint32_t seq = GpuWriteSeq().load(std::memory_order_acquire);
+    __imp__sub_825283A0(ctx, base);
+    if (spin || ctx.r3.u32 != 1)
+    {
+        run = 0;
+        return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (query != lastQuery || now - lastPending > std::chrono::microseconds(200))
+        run = 0;
+    lastQuery = query;
+    lastPending = now;
+    if (++run < 16)
+        return;
+    uint32_t expected = seq;
+    WaitOnAddress(&GpuWriteSeq(), &expected, sizeof(expected), 1);
+    lastPending = std::chrono::steady_clock::now();
 }

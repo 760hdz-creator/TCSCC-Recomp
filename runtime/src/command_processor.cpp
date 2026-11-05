@@ -716,3 +716,10 @@ void CommandProcessorStart()
         }
     }).detach();
 }
+
+// GetData waiters (gfx_log.cpp sub_825283A0 hook) sleep on GpuWriteSeq until the next result/fence.
+void NotifyGpuWrite()
+{
+    GpuWriteSeq().fetch_add(1, std::memory_order_release);
+    WakeByAddressAll(&GpuWriteSeq());
+}

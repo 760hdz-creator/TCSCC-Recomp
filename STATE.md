@@ -46,5 +46,5 @@
 ## Next
 0. ONLINE: user + friend Steam test of System Link / Face-Off / Player Match. Then Steam Join Game / Private Match invites for Player Match (docs/online.md "Step 4").
 1. User playtest items above (eyes, white climb box, DOF blur, execute arrows, SetTexture crash).
-2. 60 fps polish: menus 38-50 fps at 120 Hz; soak FPS60 on more maps.
+2. 60 fps polish: soak FPS60 on more maps. 2026-11-05 main menu 58.7 fps (38-50 STALE). GetData spin (sub_82EF6278 loop on sub_825283A0) now WaitOnAddress on GpuWriteSeq after 16 back-to-back pendings: -0.7 core menu, -0.4 core Banya, fps same (`SCDA_GETDATA_SPIN=1` old). Next CPU: thread sub_82AB5F80/82AB6528 Set/ClearEvent loop (~90% busy in menu).
 3. GitLab remote `gitlab` (PRIVATE, main at 58d9265 2026-11-05: online guide + screenshots): NEVER push game files (audit tree + history first). Gemini bridge still 503.

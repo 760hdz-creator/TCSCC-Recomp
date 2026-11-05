@@ -39,9 +39,15 @@ inline uint32_t BumpOcclusionGeneration(uint32_t address)
     std::lock_guard lock(OcclusionMutex());
     return ++OcclusionGenerations()[address & ~0x3Fu];
 }
+// Bumped (and waiters woken) after every renderer occlusion result and fence write: GetData pollers
+// sleep on it instead of spinning (gfx_log.cpp, sub_825283A0 hook).
+inline std::atomic<uint32_t>& GpuWriteSeq() { static std::atomic<uint32_t> seq; return seq; }
+void NotifyGpuWrite();
+
 // Writes samples as the block's result; false (nothing written) when a newer query owns the block.
 inline bool WriteOcclusionResult(uint32_t address, uint32_t generation, uint32_t samples)
 {
+    struct Notify { ~Notify() { NotifyGpuWrite(); } } notify;
     if (OcclusionGeneration(address) != generation)
         return false;
     const uint32_t le = __builtin_bswap32(samples); // GuestStore32 swaps again: little-endian in memory
@@ -76,6 +82,7 @@ inline void WriteFence(const Fence& f)
 {
     TimelineEvent('F', f.physical, f.value);
     *reinterpret_cast<uint32_t*>(GuestPtr(f.physical)) = f.value;
+    NotifyGpuWrite();
 }
 
 struct Frame
