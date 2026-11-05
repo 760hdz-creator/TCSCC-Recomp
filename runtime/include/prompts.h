@@ -1,7 +1,7 @@
-// In-game button prompts for the device in use. The title draws its prompts from 64x64 / 32x32
-// DXT5 icon textures (menu.lin \Textures\Common\button_*.dds, btn_opsat_*.dds); the renderer knows
-// them by BlockLinearHash (table: src/prompts_table.inc, tools/prompts/icon_hashes.py) and swaps
-// in PlayStation or keyboard/mouse icons drawn here. Xbox keeps the game's own.
+// In-game button prompts for the device in use. Conviction draws its prompts from 16 icon textures
+// (36x36 DXT5; UI tokens {Img.Buttons.IK_Joy1..16} and the HUD); the renderer knows them by
+// BlockLinearHash (table: src/prompts_table.inc, docs/prompts.md) and swaps in PlayStation or
+// keyboard/mouse icons drawn here. Xbox keeps the game's own.
 #pragma once
 #include <cstdint>
 #include <vector>
