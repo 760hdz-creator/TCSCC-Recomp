@@ -119,10 +119,13 @@ static float UserFovScale(float f)
 }
 
 extern "C" PPC_FUNC(__imp__sub_82DA8B30);
+void MainMenuTick(PPCContext& ctx, uint8_t* base); // main_menu.cpp
 PPC_FUNC(sub_82DA8B30)
 {
     static const bool trace = getenv("SCDA_TRACE_CAMERA") != nullptr;
     const uint32_t lr = uint32_t(ctx.lr);
+    if (lr == 0x82C80004) // the rendered view: once per frame, on the game thread
+        MainMenuTick(ctx, base);
     if (lr == 0x82C80004 || lr == 0x82E32A0C || lr == 0x82DB18CC || lr == 0x82CD05F0 || lr == 0x82DAFF10 || lr == 0x82B2CE84)
     {
         const double f = ctx.f1.f64;

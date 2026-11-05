@@ -11,6 +11,7 @@
 #include <string>
 #include <gpu/frame_queue.h>
 #include <input.h>
+#include <recomp_page.h>
 #include <pad.h>
 #include <prompts.h>
 #include <runtime.h>
@@ -277,6 +278,13 @@ SCDA_IMPORT(XamInputGetState)
     PawnTraceTick(Frames().FramesEnded());
     PeekTick(Frames().FramesEnded());
     AutopilotApply(Frames().FramesEnded(), g);
+    // The main menu's RECOMP SETTINGS page takes the input while it is open; the game sees an idle pad.
+    if (RecompPageIsOpen())
+    {
+        RecompPageInput(g);
+        if (RecompPageIsOpen()) // the B that closes it reaches the game's page (its Back)
+            g = XINPUT_GAMEPAD{};
+    }
     // SCDA_TRACE_INPUT=1: every poll (frame, host thread, mouse delta, foreground, sticks/buttons).
     static const bool trace = getenv("SCDA_TRACE_INPUT") != nullptr;
     if (trace)

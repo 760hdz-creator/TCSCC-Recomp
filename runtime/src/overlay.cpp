@@ -21,6 +21,7 @@
 #include <runtime.h>
 #include "overlay.h"
 #include "updater.h"
+#include <recomp_page.h>
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
 
@@ -49,6 +50,8 @@ bool g_pending;
 DisplaySettings g_pendingSettings;
 ID3D11Device* g_device;      // the ImGui DX11 backend's (a lost device makes a new one)
 bool g_imgui;
+ImFont* g_pageTitle; // RECOMP SETTINGS page fonts (null: the default font)
+ImFont* g_pageBody;
 int g_openTab = -1; // SCDA_MENU=<0-2>: the menu starts open on that tab (unattended checks)
 constexpr int kTabs = 3;
 int g_tabStep = 0;  // L1/R1 (LB/RB) pressed in the menu: -1 previous tab, +1 next
@@ -493,6 +496,18 @@ void InitImGui()
     const float scale = std::clamp(float(g_renderer->Height()) / 576.0f, 1.0f, 3.5f);
     style.ScaleAllSizes(scale);
     io.FontGlobalScale = scale;
+    // RECOMP SETTINGS page (recomp_page.cpp): Bahnschrift, close to the game's condensed menu font,
+    // baked at this window's title / row sizes (the default font stays Fonts[0] for this menu).
+    io.Fonts->AddFontDefault();
+    const float k = float(g_renderer->Height()) / 576.0f;
+    char fonts[MAX_PATH] = {};
+    GetWindowsDirectoryA(fonts, MAX_PATH);
+    const std::string bahn = std::string(fonts) + "\\Fonts\\bahnschrift.ttf";
+    if (GetFileAttributesA(bahn.c_str()) != INVALID_FILE_ATTRIBUTES)
+    {
+        g_pageTitle = io.Fonts->AddFontFromFileTTF(bahn.c_str(), 44.0f * k);
+        g_pageBody = io.Fonts->AddFontFromFileTTF(bahn.c_str(), 17.0f * k);
+    }
     ImGui_ImplWin32_Init(g_hwnd);
     g_imgui = true;
 }
@@ -525,6 +540,11 @@ void Draw()
         Menu();
     else
         Toast();
+    if (RecompPageIsOpen())
+    {
+        ImFont* def = ImGui::GetIO().Fonts->Fonts[0];
+        RecompPageDraw(g_pageTitle ? g_pageTitle : def, g_pageBody ? g_pageBody : def);
+    }
     ImGui::Render();
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
 }
@@ -573,7 +593,7 @@ void OverlayAttach(D3D11Renderer& renderer, HWND hwnd, const DisplaySettings& se
         }
         PollPadCombo();
         // Nothing to draw: no ImGui frame at all (the plain game image, no cost).
-        if (!g_open && !ToastVisible())
+        if (!g_open && !ToastVisible() && !RecompPageIsOpen())
             return;
         if (!g_imgui)
             InitImGui();
