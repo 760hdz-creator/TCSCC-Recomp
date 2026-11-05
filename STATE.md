@@ -47,4 +47,4 @@
 0. ONLINE: user + friend Steam test of System Link / Face-Off / Player Match. Then Steam Join Game / Private Match invites for Player Match (docs/online.md "Step 4").
 1. User playtest items above (eyes, white climb box, DOF blur, execute arrows, SetTexture crash).
 2. 60 fps polish: menus 38-50 fps at 120 Hz; soak FPS60 on more maps.
-3. GitLab remote `gitlab` (PRIVATE, main at f972b9d 2026-11-04): NEVER push game files (audit tree + history first). Gemini bridge still 503.
+3. GitLab remote `gitlab` (PRIVATE, main at 05216c4 2026-11-05: online guide + screenshots): NEVER push game files (audit tree + history first). Gemini bridge still 503.
