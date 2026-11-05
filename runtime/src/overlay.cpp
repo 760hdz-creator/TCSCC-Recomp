@@ -88,6 +88,7 @@ void Apply(const DisplaySettings& s)
         g_renderer->SetScale(scale);
     g_renderer->SetVsync(s.vsync);
     g_renderer->SetAnisotropy(s.anisotropy);
+    g_renderer->SetLodBias(s.textureSharpness * -0.5f);
     g_renderer->SetCleanGoggles(s.cleanGoggles);
     g_renderer->SetUltrawide(s.ultrawide);
     g_renderer->SetGamma(float(s.gamma) / 100.0f);
@@ -115,6 +116,8 @@ void Save(const DisplaySettings& before, const DisplaySettings& after)
         save("Mode", kModeIni[after.mode]);
     if (before.vsync != after.vsync)
         save("VSync", after.vsync ? "1" : "0");
+    if (before.textureSharpness != after.textureSharpness)
+        save("TextureSharpness", std::to_string(after.textureSharpness));
     if (before.anisotropy != after.anisotropy)
         save("Anisotropy", std::to_string(after.anisotropy));
     if (before.cleanGoggles != after.cleanGoggles)
@@ -179,6 +182,12 @@ void DisplayTab(DisplaySettings& s)
     const char* const names[] = { "Off", "2x", "4x", "8x", "16x" };
     if (ImGui::Combo("Anisotropic filtering", &level, names, 5))
         s.anisotropy = uint32_t(levels[level]);
+    int sharp = int(s.textureSharpness);
+    const char* const sharpNames[] = { "Default", "Sharp (-0.5)", "Sharper (-1.0)" };
+    if (ImGui::Combo("Texture sharpness", &sharp, sharpNames, 3))
+        s.textureSharpness = uint32_t(sharp);
+    Hint("Picks more detailed texture mip levels at a distance (mip LOD bias). Sharper can shimmer on fine patterns; "
+         "higher internal resolutions already sharpen textures.");
     int fov = int(s.fov);
     if (ImGui::SliderInt("Field of view", &fov, 70, 120, fov == 90 ? "%d (default)" : "%d"))
         s.fov = uint32_t(fov);

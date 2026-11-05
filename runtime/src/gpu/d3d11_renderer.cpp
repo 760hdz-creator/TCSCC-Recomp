@@ -407,6 +407,7 @@ struct DrawResources
     // frames like EDRAM. Depth is float with stencil: it holds both guest formats (D24S8, D24FS8).
     uint32_t scale = 1; // host texels per guest pixel, each axis (targets and resolve copies)
     uint32_t anisotropy = 1; // settings minimum for linear-filtered textures
+    int32_t lodBiasTenths = 0; // settings mip LOD bias (tenths) for the same textures
     std::unordered_map<uint32_t, ColorTarget> colorTargets;
     std::unordered_map<uint32_t, ComPtr<ID3D11DepthStencilView>> depthTargets;
     uint32_t boundKeys[5] = {}; // RT0-3 + depth keys bound now; ~0u = none
@@ -1999,8 +2000,11 @@ void D3D11Renderer::BindRegisterState(const RegisterFile& regs, uint32_t texSlot
         static const bool afTrilinearOnly = getenv("SCDA_AF_TRILINEAR_ONLY") != nullptr;
         const bool afEligible = afTrilinearOnly ? hs.filter == 0x15 : (hs.filter & 0x14) == 0x14;
         const uint32_t aniso = std::max(hs.anisotropy, afEligible ? r.anisotropy : 1u);
+        // Texture sharpness setting: the same eligible textures, only when they have mips to choose from.
+        const int32_t bias = afEligible && hs.maxLod > hs.minLod ? r.lodBiasTenths : 0;
         auto& state = r.samplers[(uint64_t(hs.filter) << 24) | (hs.addressU << 16) | (hs.addressV << 8) | hs.addressW |
-            (uint64_t(hs.minLod) << 32) | (uint64_t(hs.maxLod) << 36) | (uint64_t(aniso) << 40) | (uint64_t(hs.border == 1) << 48)];
+            (uint64_t(hs.minLod) << 32) | (uint64_t(hs.maxLod) << 36) | (uint64_t(aniso) << 40) | (uint64_t(hs.border == 1) << 48) |
+            (uint64_t(uint8_t(int8_t(bias))) << 49)];
         if (!state)
         {
             D3D11_SAMPLER_DESC sd{};
@@ -2009,6 +2013,7 @@ void D3D11Renderer::BindRegisterState(const RegisterFile& regs, uint32_t texSlot
             sd.AddressU = D3D11_TEXTURE_ADDRESS_MODE(hs.addressU);
             sd.AddressV = D3D11_TEXTURE_ADDRESS_MODE(hs.addressV);
             sd.AddressW = D3D11_TEXTURE_ADDRESS_MODE(hs.addressW);
+            sd.MipLODBias = float(bias) / 10.0f;
             sd.MinLOD = float(hs.minLod);
             sd.MaxLOD = float(hs.maxLod);
             if (hs.border == 1)
@@ -3611,6 +3616,12 @@ void D3D11Renderer::BlitPost(ID3D11ShaderResourceView* source)
             return;
         }
     PostPass(cur, m_backBuffer, pw, ph, scaleMode, true, &place);
+}
+
+void D3D11Renderer::SetLodBias(float bias)
+{
+    if (m_draw)
+        m_draw->lodBiasTenths = int32_t(std::lround(std::clamp(bias, -2.0f, 1.0f) * 10.0f)); // the sampler cache key holds it
 }
 
 void D3D11Renderer::SetAnisotropy(uint32_t anisotropy)

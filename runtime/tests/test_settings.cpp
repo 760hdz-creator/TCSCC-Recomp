@@ -81,6 +81,13 @@ TEST(settings_frame_rate_parsed)
     CHECK_EQ(LoadDisplaySettings(Ini("[Display]\nFPS60=1\nFrameRate=240\n")).frameRate, 240u);
 }
 
+TEST(settings_texture_sharpness_parsed)
+{
+    CHECK_EQ(LoadDisplaySettings(Ini("[Display]\n")).textureSharpness, 0u);
+    CHECK_EQ(LoadDisplaySettings(Ini("[Display]\nTextureSharpness=2\n")).textureSharpness, 2u);
+    CHECK_EQ(LoadDisplaySettings(Ini("[Display]\nTextureSharpness=3\n")).textureSharpness, 0u);
+}
+
 TEST(settings_draw_distance_parsed)
 {
     CHECK_EQ(LoadDisplaySettings(Ini("[Display]\n")).drawDistance, 0u);

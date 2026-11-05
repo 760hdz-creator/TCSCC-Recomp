@@ -81,6 +81,12 @@ DisplaySettings LoadDisplaySettings(const std::filesystem::path& ini)
         }
         else if (key == "vsync")
             s.vsync = Truthy(value);
+        else if (key == "texturesharpness")
+        {
+            int v = atoi(value.c_str());
+            if (v >= 0 && v <= 2)
+                s.textureSharpness = uint32_t(v);
+        }
         else if (key == "anisotropy")
         {
             int v = atoi(value.c_str());

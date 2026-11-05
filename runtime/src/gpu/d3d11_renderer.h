@@ -71,6 +71,8 @@ public:
     uint32_t Scale() const { return m_scale; }
     void SetVsync(bool on) { m_vsync = on; }
     void SetAnisotropy(uint32_t anisotropy);
+    // Mip LOD bias for linear-filtered, mipmapped textures (0 = the guest's choice; negative = sharper).
+    void SetLodBias(float bias);
     uint32_t Width() const { return m_width; }
     uint32_t Height() const { return m_height; }
     ID3D11Device* Device() const { return m_device; }
