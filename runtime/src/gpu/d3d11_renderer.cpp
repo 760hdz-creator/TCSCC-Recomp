@@ -632,6 +632,14 @@ bool D3D11Renderer::Init(HWND hwnd, uint32_t width, uint32_t height, bool vsync,
     }
     if (FAILED(hr))
         return false;
+    {
+        // The adapter the default device picked (multi-GPU PCs: renderer bugs differ by vendor).
+        ComPtr<IDXGIDevice> dxgi;
+        ComPtr<IDXGIAdapter> adapter;
+        DXGI_ADAPTER_DESC ad{};
+        if (SUCCEEDED(m_device->QueryInterface(IID_PPV_ARGS(&dxgi))) && SUCCEEDED(dxgi->GetAdapter(&adapter)) && SUCCEEDED(adapter->GetDesc(&ad)))
+            RuntimeLog("[d3d11] adapter %ls (vendor %04X)\n", ad.Description, ad.VendorId);
+    }
     CreateBackBufferView();
     if (m_backBuffer && !CreateDrawResources())
         printf("[d3d11] draw resources unavailable: presenting placeholder frames\n");

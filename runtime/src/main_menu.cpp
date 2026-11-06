@@ -224,6 +224,19 @@ PPC_FUNC(sub_82E91010)
 {
     if (TraceFlash())
         Log("common", ctx);
+    if (TraceFlash())
+    {
+        // The menu movie's vtable (Invoke +52, SetVariable +104): logged when it changes.
+        PPCContext c = ctx;
+        __imp__sub_82E49CB8(c, base);
+        static uint32_t lastVt = 0;
+        const uint32_t movie = c.r3.u32, vt = movie ? GuestLoad32(movie) : 0;
+        if (vt && vt != lastVt)
+        {
+            lastVt = vt;
+            RuntimeLog("[flash] movie %08X vt %08X invoke %08X setvar %08X\n", movie, vt, GuestLoad32(vt + 52), GuestLoad32(vt + 104));
+        }
+    }
     __imp__sub_82E91010(ctx, base);
 }
 
@@ -237,4 +250,21 @@ PPC_FUNC(sub_82E79558)
     __imp__sub_82E79558(ctx, base);
     if (TraceFlash())
         RuntimeLog("[img] src '%s' attrs '%s' -> %s\n", s.c_str(), a.c_str(), GuestLoad32(out) ? GuestText(GuestLoad32(out), 300).c_str() : "");
+}
+
+// SCDA_TRACE_FLASH: engine -> menu movie calls. Invoke (result, movie, FString* path, ...) and
+// SetVariable (movie, FString* path, value...): the path and the first argument words.
+extern "C" PPC_FUNC(__imp__sub_82E6D9D0);
+PPC_FUNC(sub_82E6D9D0)
+{
+    if (TraceFlash() && ctx.r5.u32 && GuestLoad32(ctx.r5.u32))
+        RuntimeLog("[flash>] invoke %s (%08X %08X)\n", GuestText(GuestLoad32(ctx.r5.u32)).c_str(), ctx.r6.u32, ctx.r7.u32);
+    __imp__sub_82E6D9D0(ctx, base);
+}
+extern "C" PPC_FUNC(__imp__sub_82E6D430);
+PPC_FUNC(sub_82E6D430)
+{
+    if (TraceFlash() && ctx.r4.u32 && GuestLoad32(ctx.r4.u32))
+        RuntimeLog("[flash>] setvar %s (%08X %08X)\n", GuestText(GuestLoad32(ctx.r4.u32)).c_str(), ctx.r5.u32, ctx.r6.u32);
+    __imp__sub_82E6D430(ctx, base);
 }
