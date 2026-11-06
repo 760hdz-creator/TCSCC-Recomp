@@ -464,6 +464,12 @@ struct DrawResources
         std::vector<ComPtr<ID3D11ShaderResourceView>> mipSrv;
         std::vector<ComPtr<ID3D11UnorderedAccessView>> mipUav;
         uint32_t width = 0, height = 0;
+        // Level 0 at the internal scale (no max), bound for single-level k_24_8 fetches: the shadow
+        // maps. The pyramid's guest-size level 0 made Scale 2-4 shadows 880x880 blocky.
+        ComPtr<ID3D11Texture2D> full;
+        ComPtr<ID3D11ShaderResourceView> fullSrv;
+        ComPtr<ID3D11UnorderedAccessView> fullUav;
+        uint32_t fullW = 0, fullH = 0;
     };
     std::unordered_map<uint32_t, DepthPyramid> depthPyramids;
     std::unordered_map<uint32_t, ComPtr<ID3D11ShaderResourceView>> depthSrvs; // by depth key: depth as R32
@@ -1665,7 +1671,9 @@ void D3D11Renderer::BindRegisterState(const RegisterFile& regs, uint32_t texSlot
         if (t.format == 22 || t.format == 23)
             if (auto z = r.depthPyramids.find(t.physical & 0x1FFFF000); z != r.depthPyramids.end() && z->second.srv)
             {
-                srvs[slot] = z->second.srv.Get();
+                // SCDA_SHADOW_NATIVE=1: single-level fetches read the guest-size pyramid level 0 (old).
+                static const bool shadowNative = getenv("SCDA_SHADOW_NATIVE") != nullptr;
+                srvs[slot] = !shadowNative && t.mipMaxLevel == 0 && z->second.fullSrv ? z->second.fullSrv.Get() : z->second.srv.Get();
                 continue;
             }
         // A resolve target: guest memory there does not hold the image, the host copy does.
@@ -3315,6 +3323,42 @@ void D3D11Renderer::ExecuteResolve(const Resolve& res)
                     m_context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
                     lw = std::max(lw / 2, 1u);
                     lh = std::max(lh / 2, 1u);
+                }
+                // Full-scale level 0 (block = MSAA samples only): what single-level fetches bind.
+                const uint32_t fw = w * scale, fh = h * scale;
+                if (scale > 1 && (z.fullW != fw || z.fullH != fh || !z.full))
+                {
+                    z.full = nullptr; z.fullSrv = nullptr; z.fullUav = nullptr; z.fullW = z.fullH = 0;
+                    D3D11_TEXTURE2D_DESC fd{};
+                    fd.Width = fw;
+                    fd.Height = fh;
+                    fd.MipLevels = fd.ArraySize = 1;
+                    fd.Format = DXGI_FORMAT_R32_FLOAT;
+                    fd.SampleDesc.Count = 1;
+                    fd.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+                    if (SUCCEEDED(m_device->CreateTexture2D(&fd, nullptr, &z.full)) &&
+                        SUCCEEDED(m_device->CreateShaderResourceView(z.full.Get(), nullptr, &z.fullSrv)) &&
+                        SUCCEEDED(m_device->CreateUnorderedAccessView(z.full.Get(), nullptr, &z.fullUav)))
+                        z.fullW = fw, z.fullH = fh;
+                    else
+                        z.full = nullptr, z.fullSrv = nullptr, z.fullUav = nullptr;
+                }
+                if (scale == 1)
+                    z.full = nullptr, z.fullSrv = nullptr, z.fullUav = nullptr, z.fullW = z.fullH = 0;
+                if (z.fullUav)
+                {
+                    const int32_t q[8] = { int32_t(scale) * (res.hasRect ? std::max(res.rect[0], 0) : 0), int32_t(scale) * (res.hasRect ? std::max(res.rect[1], 0) : 0),
+                        0, 0, int32_t(layout.samplesX), int32_t(layout.samplesY), 0, 0 };
+                    m_context->UpdateSubresource(r.saturateRect.Get(), 0, nullptr, q, 0, 0);
+                    ID3D11ShaderResourceView* srv = zsrv->second.Get();
+                    ID3D11UnorderedAccessView* uav = z.fullUav.Get();
+                    m_context->CSSetShaderResources(0, 1, &srv);
+                    m_context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
+                    m_context->Dispatch((fw + 7) / 8, (fh + 7) / 8, 1);
+                    srv = nullptr;
+                    uav = nullptr;
+                    m_context->CSSetShaderResources(0, 1, &srv);
+                    m_context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
                 }
                 static uint32_t logged;
                 if (logged++ < 3)
