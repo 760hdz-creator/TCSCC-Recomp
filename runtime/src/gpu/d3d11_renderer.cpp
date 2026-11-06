@@ -575,6 +575,7 @@ struct DrawResources
         bool destSwap = false;   // RB_COPY_DEST_INFO bit 24: red and blue swapped in memory
         uint32_t version = 0;    // bumped by each copy into texture
         uint64_t lastCopy = 0;   // resolveSerial at the last copy into texture
+        uint64_t lastCopyFrame = ~0ull; // m_presented at the last copy (tile continuations: same frame only)
         uint64_t guestHash = 0;  // SCDA_TRACE_STALE: guest bytes under the texture after the last copy
         uint64_t checkedAt = ~0ull; // SCDA_TRACE_STALE: presented frame of the last hash check
         uint64_t staleSince = 0;    // SCDA_TRACE_STALE: presented frame + 1 the change was seen, 0 = fresh
@@ -3381,11 +3382,17 @@ void D3D11Renderer::ExecuteResolve(const Resolve& res)
         // invalidated, so an older texture can also span this base, and the map's iteration order
         // changes as it rehashes (Scale 2 Intro: screen tiles 1-2 went into a stale texture and the
         // presented rows 256+ froze).
+        static const bool anyFrame = getenv("SCDA_RESOLVE_ANY_FRAME") != nullptr;
         uint32_t dy = 0;
         auto dstIt = r.resolved.end();
         for (auto it = r.resolved.begin(); it != r.resolved.end(); ++it)
+            // Only a texture copied in this frame: predicated tiles resolve back to back. A dead texture
+            // from an earlier frame can span a new allocation (main menu after a mission: its Flash
+            // render target 0C562000 sat 141 rows into the boot menu's 0C4D5000, the copy went there and
+            // the fetch found nothing: menu items invisible). SCDA_RESOLVE_ANY_FRAME=1: old behaviour.
             if (it->first < base && it->second.rowBytes && it->second.format == sd.Format && it->second.width == ResolveWidth(res) &&
-                (base - it->first) % it->second.rowBytes == 0 && (base - it->first) / it->second.rowBytes < it->second.height)
+                (base - it->first) % it->second.rowBytes == 0 && (base - it->first) / it->second.rowBytes < it->second.height &&
+                (anyFrame || it->second.lastCopyFrame == m_presented))
             {
                 if (dstIt == r.resolved.end() || it->second.lastCopy > dstIt->second.lastCopy)
                 {
@@ -3501,6 +3508,7 @@ void D3D11Renderer::ExecuteResolve(const Resolve& res)
                 m_lastResolved++;
                 dst.version++;
                 dst.lastCopy = ++r.resolveSerial;
+                dst.lastCopyFrame = m_presented;
                 static const bool traceStale = getenv("SCDA_TRACE_STALE") != nullptr;
                 if (traceStale)
                 {
