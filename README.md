@@ -97,6 +97,7 @@ otherwise. **Online is on by default** (without Steam running the game plays off
 | **Anti-aliasing** | Off, FXAA or **SMAA** (sharper on fine detail). The game's own 4x MSAA is always on. |
 | **Brightness** | Display gamma on top of the game's own brightness (50-150%); black stays black. |
 | **Texture sharpness** | Default, Sharp or Sharper: more detailed textures at a distance. |
+| **Upscaler** | Lanczos (default) or **NIS** (NVIDIA Image Scaling, any GPU): the filter that scales the picture up to the window when Upscaling is on. NIS sharpens while scaling; it covers up to 2x, larger steps use Lanczos. |
 | Upscaling, image sharpening, anisotropic filtering | Image quality options. |
 | VSync, window mode | Display options. |
 | Online | On by default. Co-op and Face-Off over Steam (see [Playing online](#playing-online)). |
@@ -184,6 +185,7 @@ Private Match (Y) and Steam invites to a Player Match don't work yet.
 ## Patch notes
 
 ### 2026-11-05: PlayStation icons, keyboard and mouse controls
+- **New: NIS upscaler** (NVIDIA Image Scaling) next to Lanczos, under Upscaling.
 - **New: PlayStation button icons.** With a DualShock 4 or DualSense the menus and the HUD show cross, circle,
   square, triangle, L1/R1/L2/R2 and the touchpad, drawn in the game's own icon style.
 - **New: keyboard icons.** Playing on keyboard and mouse, the icons show the key bound to each action.

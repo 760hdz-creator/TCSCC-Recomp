@@ -19,6 +19,7 @@
 #include <prompts.h>
 #include <settings.h>
 #include <gpu/gamma_ramp.h>
+#include <gpu/nis.h>
 #include <gpu/smaa.h>
 #include <gpu/shader_compiler.h>
 #include <gpu/xenos/translate.h>
@@ -427,6 +428,14 @@ struct DrawResources
     // PostFx (kPostPs): its constants and two intermediate targets, (re)made at the size a pass needs.
     ComPtr<ID3D11PixelShader> postPs;
     Smaa smaa; // AntiAliasing=SMAA (optional: not ready = FXAA-less plain path)
+    Nis nis;   // Upscaler=NIS (optional: not ready = Lanczos)
+    struct NisTarget
+    {
+        ComPtr<ID3D11Texture2D> texture;
+        ComPtr<ID3D11ShaderResourceView> srv;
+        ComPtr<ID3D11UnorderedAccessView> uav;
+        uint32_t width = 0, height = 0;
+    } nisTarget;
     ComPtr<ID3D11Buffer> postConstants;
     struct PostTarget
     {
@@ -686,6 +695,8 @@ bool D3D11Renderer::CreateDrawResources()
         }
         if (!r->smaa.Init(m_device, &error))
             RuntimeLog("[d3d11] SMAA unavailable: %s\n", error.c_str());
+        if (!r->nis.Init(m_device, &error))
+            RuntimeLog("[d3d11] NIS unavailable: %s\n", error.c_str());
     }
     {
         D3D11_TEXTURE2D_DESC gd{};
@@ -3675,8 +3686,43 @@ void D3D11Renderer::BlitPost(ID3D11ShaderResourceView* source)
         }
     const D3D11_VIEWPORT place = PresentViewport();
     const uint32_t pw = uint32_t(place.Width), ph = uint32_t(place.Height);
-    const int scaleMode = m_postFx.upscale && sd.Width && sd.Width < pw ? 1 : 0;
-    if (m_postFx.sharpness > 0.0f)
+    int scaleMode = m_postFx.upscale && sd.Width && sd.Width < pw ? 1 : 0;
+    bool nisRan = false; // NIS sharpened already: no CAS pass
+    // NIS (Upscaler=NIS): one compute pass to the window size into an FP16 UAV target, then the usual
+    // copy (+ CAS when Sharpening is on, + gamma ramp) into the back buffer. Ratios over 2x keep Lanczos.
+    if (scaleMode == 1 && m_postFx.nis && r.nis.Ready() && Nis::Supports(sd.Width, sd.Height, pw, ph))
+    {
+        auto& t = r.nisTarget;
+        if (t.width != pw || t.height != ph || !t.uav)
+        {
+            t = {};
+            D3D11_TEXTURE2D_DESC td{};
+            td.Width = pw;
+            td.Height = ph;
+            td.MipLevels = td.ArraySize = 1;
+            td.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+            td.SampleDesc.Count = 1;
+            td.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+            if (SUCCEEDED(m_device->CreateTexture2D(&td, nullptr, &t.texture)) &&
+                SUCCEEDED(m_device->CreateShaderResourceView(t.texture.Get(), nullptr, &t.srv)) &&
+                SUCCEEDED(m_device->CreateUnorderedAccessView(t.texture.Get(), nullptr, &t.uav)))
+                t.width = pw, t.height = ph;
+            else
+                t = {};
+        }
+        m_context->OMSetRenderTargets(0, nullptr, nullptr); // cur may still be bound as a target
+        r.bound = false;
+        r.srvShadow = false;
+        // NIS sharpness: the Sharpening setting (0..1), else a moderate default (NIS's own upscaler sharpens).
+        if (t.uav && r.nis.Run(m_context, cur, sd.Width, sd.Height, t.uav.Get(), pw, ph,
+                               m_postFx.sharpness > 0.0f ? m_postFx.sharpness : 0.25f))
+        {
+            cur = t.srv.Get();
+            scaleMode = 4; // copy
+            nisRan = true;
+        }
+    }
+    if (m_postFx.sharpness > 0.0f && !nisRan)
         if (auto& t = target(1, pw, ph); t.rtv)
         {
             PostPass(cur, t.rtv.Get(), pw, ph, scaleMode, false);

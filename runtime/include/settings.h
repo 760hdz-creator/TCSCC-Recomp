@@ -46,6 +46,9 @@ struct DisplaySettings
     // [Display] Upscaling=Off|Native|Quality|Balanced|Performance|UltraPerformance: Off uses Scale;
     // the others pick Scale from the window height (UpscalingScale) and upscale to the window.
     enum Upscaling { UpOff, UpNative, UpQuality, UpBalanced, UpPerformance, UpUltraPerformance } upscaling = UpOff;
+    // [Display] Upscaler=Lanczos|NIS: the filter that scales up to the window (NIS: NVIDIA Image Scaling,
+    // up to 2x per axis; larger ratios keep Lanczos).
+    enum Upscaler { UpscalerLanczos, UpscalerNis } upscaler = UpscalerLanczos;
 };
 
 // Internal resolution scale for an upscaling mode: the window height divided by the mode's ratio

@@ -63,6 +63,7 @@ public:
         bool fxaa = false;
         bool smaa = false; // SMAA 1x instead of FXAA (gpu/smaa.h)
         bool upscale = false;
+        bool nis = false; // upscale with NVIDIA Image Scaling (gpu/nis.h) where the ratio allows, else Lanczos
         float sharpness = 0.0f;
     };
     void SetPostFx(const PostFx& fx) { m_postFx = fx; }

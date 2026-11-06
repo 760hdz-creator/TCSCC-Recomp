@@ -87,6 +87,7 @@ void Apply(const DisplaySettings& s)
     fx.fxaa = s.antiAliasing == DisplaySettings::AaFxaa;
     fx.smaa = s.antiAliasing == DisplaySettings::AaSmaa;
     fx.upscale = s.upscaling != DisplaySettings::UpOff;
+    fx.nis = s.upscaler == DisplaySettings::UpscalerNis;
     fx.sharpness = float(s.sharpening) / 100.0f;
     g_renderer->SetPostFx(fx);
     if (const uint32_t scale = EffectiveScale(s); scale != g_renderer->Scale())
@@ -148,6 +149,8 @@ void Save(const DisplaySettings& before, const DisplaySettings& after)
         save("Gamma", std::to_string(after.gamma));
     if (before.upscaling != after.upscaling)
         save("Upscaling", UpscalingName(after.upscaling));
+    if (before.upscaler != after.upscaler)
+        save("Upscaler", after.upscaler == DisplaySettings::UpscalerNis ? "NIS" : "Lanczos");
 }
 
 std::string Resolution(uint32_t scale) { return std::to_string(1280 * scale) + "x" + std::to_string(720 * scale); }
@@ -287,6 +290,13 @@ void GraphicsTab(DisplaySettings& s)
     int up = s.upscaling;
     if (ImGui::Combo("Upscaling", &up, kUpscalingLabels, 6))
         s.upscaling = DisplaySettings::Upscaling(up);
+    int filter = int(s.upscaler);
+    const char* const filters[] = { "Lanczos", "NVIDIA Image Scaling (NIS)" };
+    if (ImGui::Combo("Upscaler", &filter, filters, 2))
+        s.upscaler = DisplaySettings::Upscaler(filter);
+    Hint("The filter that scales the picture up to the window when Upscaling is on. NIS (NVIDIA Image Scaling, works on "
+         "any GPU) sharpens while it scales (strength: Sharpening, else a light default); it covers up to 2x, larger "
+         "steps use Lanczos.");
     Hint("FSR 1-style: picks the internal resolution from the window height divided by the mode's ratio "
          "(in 720-row steps), then upscales with a Lanczos filter, or filters down when it is larger. The menu stays sharp.");
     const uint32_t scale = EffectiveScale(s);

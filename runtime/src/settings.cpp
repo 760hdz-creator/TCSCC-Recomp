@@ -157,6 +157,8 @@ DisplaySettings LoadDisplaySettings(const std::filesystem::path& ini)
             if (v >= 50 && v <= 200)
                 s.gamma = uint32_t(v);
         }
+        else if (key == "upscaler")
+            s.upscaler = value == "nis" ? DisplaySettings::UpscalerNis : DisplaySettings::UpscalerLanczos;
         else if (key == "upscaling")
         {
             for (int m = DisplaySettings::UpOff; m <= DisplaySettings::UpUltraPerformance; m++)

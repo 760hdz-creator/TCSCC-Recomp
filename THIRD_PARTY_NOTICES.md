@@ -17,6 +17,7 @@ TCSCC Recomp is licensed under GPL-3.0 (see `LICENSE`). It builds on or adapts:
 | Dear ImGui (v1.91.9) | MIT | Extra Settings menu (F1 / L3+R3), vendored unmodified in `runtime/thirdparty/imgui/` | https://github.com/ocornut/imgui |
 | AMD FidelityFX CAS | MIT | Sharpening filter math, reimplemented in `kPostPs` (`runtime/src/gpu/d3d11_renderer.cpp`) | https://github.com/GPUOpen-Effects/FidelityFX-CAS |
 | SMAA (Jimenez, Echevarria, Masia, Navarro, Gutierrez) | MIT-style (`runtime/src/gpu/smaa/LICENSE.txt`) | `SMAA.hlsl`, `AreaTex.h`, `SearchTex.h` vendored unmodified in `runtime/src/gpu/smaa/` (commit 71c806a); anti-aliasing option | https://github.com/iryoku/smaa |
+| NVIDIA Image Scaling SDK 1.0.3 (NVIDIA) | MIT (`runtime/src/gpu/nis/LICENSE.txt`) | `NIS_Config.h`, `NIS_Scaler.h` vendored unmodified in `runtime/src/gpu/nis/` (commit 35e13ba; `nis_hlsl.inc` = NIS_Scaler.h as a raw string); Upscaler=NIS option | https://github.com/NVIDIAGameWorks/NVIDIAImageScaling |
 
 The online code in `runtime/src/online/` (packet transport, Steam helper, virtual Xbox sockets, XSession and
 matchmaking) is adapted from the Tekken Tag Tournament 2 PC port by shihabal3amri
