@@ -21,6 +21,8 @@ extern "C" PPC_FUNC(__imp__sub_82A8D3D8); // UE Localize(r3 section, r4 key, r5 
 extern "C" PPC_FUNC(__imp__sub_824B1EE8); // FString(r3 this, r4 ASCII)
 extern "C" PPC_FUNC(__imp__sub_82B9FD18); // FString dtor
 extern "C" PPC_FUNC(__imp__sub_824B2430); // Invoke result dtor (result + 32)
+extern "C" PPC_FUNC(__imp__sub_82D00FB0); // UI event post (event, a, b, c)
+extern "C" PPC_FUNC(__imp__sub_824F76A0); // profile object vt+84 (this, user): signed-in check
 extern "C" PPC_FUNC(__imp__sub_82E49CB8); // -> menu movie; vtbl+52 = Invoke(result, movie, &path)
 
 namespace
@@ -215,9 +217,40 @@ PPC_FUNC(sub_82E85358)
         strcpy(reinterpret_cast<char*>(base + back), "EVENT=TRAVEL_C_A PAGE=IndexPage");
         ctx.r5.u64 = back;
     }
+    const bool toMain = AsciiIs(ctx.r4.u32, "TRAVEL_MENU") && GuestText(ctx.r5.u32).find("EVENT=TO_MAIN") != std::string::npos;
     if (AsciiIs(ctx.r4.u32, "TRAVEL_MENU"))
         MainMenuSetIndexPage(GuestText(ctx.r5.u32).find("PAGE=IndexPage") != std::string::npos);
+    const PPCContext saved = ctx;
     __imp__sub_82E85358(ctx, base);
+    // Back from a mission (EXIT TO MAIN MENU, TO_MAIN): the menu movie is made again (FlashMenu.init) and
+    // shows its main page items only once it has the profile (handleProfileChange, the callbackObject
+    // settings: UI events 60/74/81/79). On first boot the profile object posts them after PRESS START
+    // (storage message 4, sub_824F9420); after a mission nothing did, and the items stayed at alpha 0
+    // (invisible, still usable). Post the same sequence.
+    // EXPERIMENT, off by default: does not make the items visible yet (STATE.md). SCDA_MENU_REFRESH=1 on.
+    static const bool noRefresh = getenv("SCDA_MENU_REFRESH") == nullptr;
+    const uint32_t online = GuestLoad32(0x836E70E4); // profile/online object (vt 82005150)
+    static bool refreshing = false; // event 60's handler travels TO_MAIN itself: post once, not again from there
+    if (toMain && !noRefresh && online && !refreshing)
+    {
+        refreshing = true;
+        constexpr uint32_t user = 0;
+        PPCContext c = saved;
+        c.r3.u64 = online, c.r4.u64 = user;
+        __imp__sub_824F76A0(c, base); // vt+84: the user's sign-in check, event 60's first argument
+        const uint32_t signedIn = c.r3.u32;
+        auto post = [&](uint32_t ev, uint32_t a, uint32_t b) {
+            PPCContext p = saved;
+            p.r3.u64 = ev, p.r4.u64 = a, p.r5.u64 = b, p.r6.u64 = 0;
+            __imp__sub_82D00FB0(p, base);
+        };
+        post(60, signedIn, user); // handleProfileChange + the callbackObject settings
+        static const bool all = getenv("SCDA_MENU_REFRESH_ALL") != nullptr; // also 74/81/79
+        if (all)
+            post(74, user, 0), post(81, 0, 0), post(79, 0, 0);
+        RuntimeLog("[menu] back from a mission: profile events re-posted (signed in %u)\n", signedIn);
+        refreshing = false;
+    }
 }
 
 PPC_FUNC(sub_82E91010)
@@ -267,4 +300,268 @@ PPC_FUNC(sub_82E6D430)
     if (TraceFlash() && ctx.r4.u32 && GuestLoad32(ctx.r4.u32))
         RuntimeLog("[flash>] setvar %s (%08X %08X)\n", GuestText(GuestLoad32(ctx.r4.u32)).c_str(), ctx.r5.u32, ctx.r6.u32);
     __imp__sub_82E6D430(ctx, base);
+}
+
+
+// SCDA_TRACE_FLASH: the other movie vtable slots (Invoke / SetVariable variants), path from r4 or r5 (FString*).
+static std::string FlashPathArg(uint32_t p)
+{
+    if (p < 0x10000 || p >= 0xF0000000u) return "";
+    const uint32_t s = GuestLoad32(p);
+    if (s < 0x10000 || s >= 0xF0000000u) return "";
+    std::string t = GuestText(s, 120);
+    return t.rfind("_root", 0) == 0 || t.rfind("_global", 0) == 0 ? t : "";
+}
+extern "C" PPC_FUNC(__imp__sub_82E6DA78);
+PPC_FUNC(sub_82E6DA78)
+{
+    if (TraceFlash())
+    {
+        std::string p = FlashPathArg(ctx.r5.u32);
+        if (p.empty()) p = FlashPathArg(ctx.r4.u32);
+        if (!p.empty()) RuntimeLog("[flash>] vt+56 %s (%08X %08X)\n", p.c_str(), ctx.r6.u32, ctx.r7.u32);
+    }
+    __imp__sub_82E6DA78(ctx, base);
+}
+extern "C" PPC_FUNC(__imp__sub_82E6E088);
+PPC_FUNC(sub_82E6E088)
+{
+    if (TraceFlash())
+    {
+        std::string p = FlashPathArg(ctx.r5.u32);
+        if (p.empty()) p = FlashPathArg(ctx.r4.u32);
+        if (!p.empty()) RuntimeLog("[flash>] vt+60 %s (%08X %08X)\n", p.c_str(), ctx.r6.u32, ctx.r7.u32);
+    }
+    __imp__sub_82E6E088(ctx, base);
+}
+extern "C" PPC_FUNC(__imp__sub_82E6DBE8);
+PPC_FUNC(sub_82E6DBE8)
+{
+    if (TraceFlash())
+    {
+        std::string p = FlashPathArg(ctx.r5.u32);
+        if (p.empty()) p = FlashPathArg(ctx.r4.u32);
+        if (!p.empty()) RuntimeLog("[flash>] vt+64 %s (%08X %08X)\n", p.c_str(), ctx.r6.u32, ctx.r7.u32);
+    }
+    __imp__sub_82E6DBE8(ctx, base);
+}
+extern "C" PPC_FUNC(__imp__sub_82E6DC90);
+PPC_FUNC(sub_82E6DC90)
+{
+    if (TraceFlash())
+    {
+        std::string p = FlashPathArg(ctx.r5.u32);
+        if (p.empty()) p = FlashPathArg(ctx.r4.u32);
+        if (!p.empty()) RuntimeLog("[flash>] vt+68 %s (%08X %08X)\n", p.c_str(), ctx.r6.u32, ctx.r7.u32);
+    }
+    __imp__sub_82E6DC90(ctx, base);
+}
+extern "C" PPC_FUNC(__imp__sub_82E6DB40);
+PPC_FUNC(sub_82E6DB40)
+{
+    if (TraceFlash())
+    {
+        std::string p = FlashPathArg(ctx.r5.u32);
+        if (p.empty()) p = FlashPathArg(ctx.r4.u32);
+        if (!p.empty()) RuntimeLog("[flash>] vt+72 %s (%08X %08X)\n", p.c_str(), ctx.r6.u32, ctx.r7.u32);
+    }
+    __imp__sub_82E6DB40(ctx, base);
+}
+extern "C" PPC_FUNC(__imp__sub_82E6D3A8);
+PPC_FUNC(sub_82E6D3A8)
+{
+    if (TraceFlash())
+    {
+        std::string p = FlashPathArg(ctx.r5.u32);
+        if (p.empty()) p = FlashPathArg(ctx.r4.u32);
+        if (!p.empty()) RuntimeLog("[flash>] vt+76 %s (%08X %08X)\n", p.c_str(), ctx.r6.u32, ctx.r7.u32);
+    }
+    __imp__sub_82E6D3A8(ctx, base);
+}
+extern "C" PPC_FUNC(__imp__sub_82E6DD58);
+PPC_FUNC(sub_82E6DD58)
+{
+    if (TraceFlash())
+    {
+        std::string p = FlashPathArg(ctx.r5.u32);
+        if (p.empty()) p = FlashPathArg(ctx.r4.u32);
+        if (!p.empty()) RuntimeLog("[flash>] vt+80 %s (%08X %08X)\n", p.c_str(), ctx.r6.u32, ctx.r7.u32);
+    }
+    __imp__sub_82E6DD58(ctx, base);
+}
+extern "C" PPC_FUNC(__imp__sub_82E6D3D0);
+PPC_FUNC(sub_82E6D3D0)
+{
+    if (TraceFlash())
+    {
+        std::string p = FlashPathArg(ctx.r5.u32);
+        if (p.empty()) p = FlashPathArg(ctx.r4.u32);
+        if (!p.empty()) RuntimeLog("[flash>] vt+84 %s (%08X %08X)\n", p.c_str(), ctx.r6.u32, ctx.r7.u32);
+    }
+    __imp__sub_82E6D3D0(ctx, base);
+}
+extern "C" PPC_FUNC(__imp__sub_82E6D400);
+PPC_FUNC(sub_82E6D400)
+{
+    if (TraceFlash())
+    {
+        std::string p = FlashPathArg(ctx.r5.u32);
+        if (p.empty()) p = FlashPathArg(ctx.r4.u32);
+        if (!p.empty()) RuntimeLog("[flash>] vt+88 %s (%08X %08X)\n", p.c_str(), ctx.r6.u32, ctx.r7.u32);
+    }
+    __imp__sub_82E6D400(ctx, base);
+}
+extern "C" PPC_FUNC(__imp__sub_82E6DE00);
+PPC_FUNC(sub_82E6DE00)
+{
+    if (TraceFlash())
+    {
+        std::string p = FlashPathArg(ctx.r5.u32);
+        if (p.empty()) p = FlashPathArg(ctx.r4.u32);
+        if (!p.empty()) RuntimeLog("[flash>] vt+92 %s (%08X %08X)\n", p.c_str(), ctx.r6.u32, ctx.r7.u32);
+    }
+    __imp__sub_82E6DE00(ctx, base);
+}
+extern "C" PPC_FUNC(__imp__sub_82E6DE80);
+PPC_FUNC(sub_82E6DE80)
+{
+    if (TraceFlash())
+    {
+        std::string p = FlashPathArg(ctx.r5.u32);
+        if (p.empty()) p = FlashPathArg(ctx.r4.u32);
+        if (!p.empty()) RuntimeLog("[flash>] vt+96 %s (%08X %08X)\n", p.c_str(), ctx.r6.u32, ctx.r7.u32);
+    }
+    __imp__sub_82E6DE80(ctx, base);
+}
+extern "C" PPC_FUNC(__imp__sub_82E6DF00);
+PPC_FUNC(sub_82E6DF00)
+{
+    if (TraceFlash())
+    {
+        std::string p = FlashPathArg(ctx.r5.u32);
+        if (p.empty()) p = FlashPathArg(ctx.r4.u32);
+        if (!p.empty()) RuntimeLog("[flash>] vt+100 %s (%08X %08X)\n", p.c_str(), ctx.r6.u32, ctx.r7.u32);
+    }
+    __imp__sub_82E6DF00(ctx, base);
+}
+extern "C" PPC_FUNC(__imp__sub_82E6D458);
+PPC_FUNC(sub_82E6D458)
+{
+    if (TraceFlash())
+    {
+        std::string p = FlashPathArg(ctx.r5.u32);
+        if (p.empty()) p = FlashPathArg(ctx.r4.u32);
+        if (!p.empty()) RuntimeLog("[flash>] vt+108 %s (%08X %08X)\n", p.c_str(), ctx.r6.u32, ctx.r7.u32);
+    }
+    __imp__sub_82E6D458(ctx, base);
+}
+extern "C" PPC_FUNC(__imp__sub_82E6D480);
+PPC_FUNC(sub_82E6D480)
+{
+    if (TraceFlash())
+    {
+        std::string p = FlashPathArg(ctx.r5.u32);
+        if (p.empty()) p = FlashPathArg(ctx.r4.u32);
+        if (!p.empty()) RuntimeLog("[flash>] vt+112 %s (%08X %08X)\n", p.c_str(), ctx.r6.u32, ctx.r7.u32);
+    }
+    __imp__sub_82E6D480(ctx, base);
+}
+extern "C" PPC_FUNC(__imp__sub_82E6D4A8);
+PPC_FUNC(sub_82E6D4A8)
+{
+    if (TraceFlash())
+    {
+        std::string p = FlashPathArg(ctx.r5.u32);
+        if (p.empty()) p = FlashPathArg(ctx.r4.u32);
+        if (!p.empty()) RuntimeLog("[flash>] vt+116 %s (%08X %08X)\n", p.c_str(), ctx.r6.u32, ctx.r7.u32);
+    }
+    __imp__sub_82E6D4A8(ctx, base);
+}
+extern "C" PPC_FUNC(__imp__sub_82E6D4D0);
+PPC_FUNC(sub_82E6D4D0)
+{
+    if (TraceFlash())
+    {
+        std::string p = FlashPathArg(ctx.r5.u32);
+        if (p.empty()) p = FlashPathArg(ctx.r4.u32);
+        if (!p.empty()) RuntimeLog("[flash>] vt+120 %s (%08X %08X)\n", p.c_str(), ctx.r6.u32, ctx.r7.u32);
+    }
+    __imp__sub_82E6D4D0(ctx, base);
+}
+extern "C" PPC_FUNC(__imp__sub_82E6D500);
+PPC_FUNC(sub_82E6D500)
+{
+    if (TraceFlash())
+    {
+        std::string p = FlashPathArg(ctx.r5.u32);
+        if (p.empty()) p = FlashPathArg(ctx.r4.u32);
+        if (!p.empty()) RuntimeLog("[flash>] vt+124 %s (%08X %08X)\n", p.c_str(), ctx.r6.u32, ctx.r7.u32);
+    }
+    __imp__sub_82E6D500(ctx, base);
+}
+extern "C" PPC_FUNC(__imp__sub_82E6D530);
+PPC_FUNC(sub_82E6D530)
+{
+    if (TraceFlash())
+    {
+        std::string p = FlashPathArg(ctx.r5.u32);
+        if (p.empty()) p = FlashPathArg(ctx.r4.u32);
+        if (!p.empty()) RuntimeLog("[flash>] vt+128 %s (%08X %08X)\n", p.c_str(), ctx.r6.u32, ctx.r7.u32);
+    }
+    __imp__sub_82E6D530(ctx, base);
+}
+extern "C" PPC_FUNC(__imp__sub_82E6D560);
+PPC_FUNC(sub_82E6D560)
+{
+    if (TraceFlash())
+    {
+        std::string p = FlashPathArg(ctx.r5.u32);
+        if (p.empty()) p = FlashPathArg(ctx.r4.u32);
+        if (!p.empty()) RuntimeLog("[flash>] vt+132 %s (%08X %08X)\n", p.c_str(), ctx.r6.u32, ctx.r7.u32);
+    }
+    __imp__sub_82E6D560(ctx, base);
+}
+extern "C" PPC_FUNC(__imp__sub_82E6D590);
+PPC_FUNC(sub_82E6D590)
+{
+    if (TraceFlash())
+    {
+        std::string p = FlashPathArg(ctx.r5.u32);
+        if (p.empty()) p = FlashPathArg(ctx.r4.u32);
+        if (!p.empty()) RuntimeLog("[flash>] vt+136 %s (%08X %08X)\n", p.c_str(), ctx.r6.u32, ctx.r7.u32);
+    }
+    __imp__sub_82E6D590(ctx, base);
+}
+extern "C" PPC_FUNC(__imp__sub_82E6D5C0);
+PPC_FUNC(sub_82E6D5C0)
+{
+    if (TraceFlash())
+    {
+        std::string p = FlashPathArg(ctx.r5.u32);
+        if (p.empty()) p = FlashPathArg(ctx.r4.u32);
+        if (!p.empty()) RuntimeLog("[flash>] vt+140 %s (%08X %08X)\n", p.c_str(), ctx.r6.u32, ctx.r7.u32);
+    }
+    __imp__sub_82E6D5C0(ctx, base);
+}
+extern "C" PPC_FUNC(__imp__sub_82E6D5F0);
+PPC_FUNC(sub_82E6D5F0)
+{
+    if (TraceFlash())
+    {
+        std::string p = FlashPathArg(ctx.r5.u32);
+        if (p.empty()) p = FlashPathArg(ctx.r4.u32);
+        if (!p.empty()) RuntimeLog("[flash>] vt+144 %s (%08X %08X)\n", p.c_str(), ctx.r6.u32, ctx.r7.u32);
+    }
+    __imp__sub_82E6D5F0(ctx, base);
+}
+extern "C" PPC_FUNC(__imp__sub_82E6D620);
+PPC_FUNC(sub_82E6D620)
+{
+    if (TraceFlash())
+    {
+        std::string p = FlashPathArg(ctx.r5.u32);
+        if (p.empty()) p = FlashPathArg(ctx.r4.u32);
+        if (!p.empty()) RuntimeLog("[flash>] vt+148 %s (%08X %08X)\n", p.c_str(), ctx.r6.u32, ctx.r7.u32);
+    }
+    __imp__sub_82E6D620(ctx, base);
 }
