@@ -1648,9 +1648,9 @@ void D3D11Renderer::BindRegisterState(const RegisterFile& regs, uint32_t texSlot
         if (TraceResolveFrame(m_presented))
         {
             auto hit = r.resolved.find(t.physical);
-            RuntimeLog("[rtrace] draw %u slot %u fetch %08X fmt %u %ux%ux%u dim %u st %d tiled %d resolve %ux%u fmt %u\n", m_lastDrawn + m_lastSkipped, slot, t.physical,
+            RuntimeLog("[rtrace] draw %u slot %u fetch %08X fmt %u %ux%ux%u dim %u st %d tiled %d resolve %ux%u fmt %u scale %u\n", m_lastDrawn + m_lastSkipped, slot, t.physical,
                 t.format, t.width, t.height, t.depth, t.dimension, t.stacked, t.tiled, hit != r.resolved.end() ? hit->second.width : 0, hit != r.resolved.end() ? hit->second.height : 0,
-                hit != r.resolved.end() ? hit->second.destFormat : 0);
+                hit != r.resolved.end() ? hit->second.destFormat : 0, hit != r.resolved.end() ? hit->second.scale : 0);
         }
         // A depth-source resolve's destination fetched as k_24_8 / k_24_8_FLOAT: the depth pyramid
         // (ExecuteResolve). Same address can also hold a colour resolve of another format (the menu

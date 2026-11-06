@@ -383,6 +383,13 @@ void main(in uint iVertexId : SV_VertexID, out float4 oPos : SV_Position, out fl
         if (at != std::string::npos)
         {
             r.hlsl.replace(at, 10, "void xenos_main(");
+            // Param gen for memexport shaders: the guest-integer pixel (an object index, see main).
+            // Other shaders use it for screen-space lookups: snapping to the guest grid made every
+            // scale x scale block read one texel (4x4 blocky world lighting at Scale 4, user photo).
+            if (r.hlsl.find("MemExport(r32") != std::string::npos)
+                r.hlsl += "\n#define PARAM_GEN_POS(p) floor((p) * g_PositionScale)\n";
+            else
+                r.hlsl += "\n#define PARAM_GEN_POS(p) ((floor(p) + 0.5) * g_PositionScale - 0.5)\n";
             r.hlsl += R"HLSL(
 float4 Clamp7e3(float4 c, uint n) { return (g_ColorClamp >> n) & 1 ? float4(clamp(c.rgb, 0.0, 31.875), saturate(c.a)) : c; }
 void main(in float4 iPos : SV_Position, in float4 iT[16] : TEXCOORD0, in bool iFace : SV_IsFrontFace,
@@ -391,10 +398,11 @@ void main(in float4 iPos : SV_Position, in float4 iT[16] : TEXCOORD0, in bool iF
     // Param gen: pixel position (guest pixels) in xy; zw keep the point sprite coordinate the point
     // geometry shader wrote there (0 for other primitives). The integer pixel, whatever PA_SU_VTX_CNTL
     // pix_center says: Conviction's l3d visibility PS (pix_center 1) indexes objects by x + 256 y and
-    // pixel (0, 0) must give object 0 (centres made it 128).
+    // pixel (0, 0) must give object 0 (centres made it 128). At Scale k other shaders get the host
+    // pixel in guest units ((floor + 0.5) / k - 0.5: the same integer at k = 1), see PARAM_GEN_POS.
     float4 t[16] = iT;
     if (g_ParamGen)
-        t[g_ParamGen - 1] = float4(floor(iPos.xy * g_PositionScale), iT[g_ParamGen - 1].zw);
+        t[g_ParamGen - 1] = float4(PARAM_GEN_POS(iPos.xy), iT[g_ParamGen - 1].zw);
     xenos_main(float4(iPos.xy * g_PositionScale, iPos.zw), t, iFace, oC0, oC1, oC2, oC3);
     // Exponent bias after the alpha test (xenos_main), before the 7e3 clamp and blending (Xenia).
     oC0 *= g_ColorExpBias.x; oC1 *= g_ColorExpBias.y; oC2 *= g_ColorExpBias.z; oC3 *= g_ColorExpBias.w;
