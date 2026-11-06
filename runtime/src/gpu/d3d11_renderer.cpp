@@ -2015,6 +2015,27 @@ void D3D11Renderer::BindRegisterState(const RegisterFile& regs, uint32_t texSlot
         if (!((texSlots | texSlots >> 16) >> slot & 1)) // sampler = fetch slot & 15
             continue;
         HostSampler hs = DecodeSampler(regs, slot);
+        // One mip level (minLod == maxLod) with a linear mag and a point min filter (Conviction's DOF / bloom
+        // upsampling of its 260x144 and 520x288 buffers): min follows mag. Which one applies depends on the
+        // derivative LOD, and the translated shaders sample inside loops and branches, where derivatives are
+        // undefined: NVIDIA then took the point (minify) path and the depth of field came out in hard blocks
+        // (AMD kept linear). With one level, the min filter changes nothing else. SCDA_STRICT_MINMAG=1: off.
+        static const bool strictMinMag = getenv("SCDA_STRICT_MINMAG") != nullptr;
+        if (!strictMinMag && hs.minLod == hs.maxLod && (hs.filter & 0x14) == 0x04)
+            hs.filter |= 0x10;
+        // SCDA_TRACE_SAMPLERS=1: each (filter, texture size, format, lod range) once.
+        static const bool traceSamplers = getenv("SCDA_TRACE_SAMPLERS") != nullptr;
+        if (traceSamplers)
+        {
+            static std::mutex m;
+            static std::set<uint64_t> seen;
+            const uint32_t f1 = regs[kRegFetchConstants + slot * 6 + 1], f2 = regs[kRegFetchConstants + slot * 6 + 2];
+            const uint64_t key = (uint64_t(hs.filter) << 56) | (uint64_t(f1 & 0x3F) << 48) | (uint64_t(f2 & 0x03FFFFFF) << 8) | (hs.minLod << 4) | hs.maxLod;
+            std::lock_guard l(m);
+            if (seen.insert(key).second && seen.size() < 400)
+                RuntimeLog("[sampler] slot %u filter %02X fmt %u %ux%u lod %u-%u base %08X\n", slot, hs.filter, f1 & 0x3F, (f2 & 0x1FFF) + 1,
+                    ((f2 >> 13) & 0x1FFF) + 1, hs.minLod, hs.maxLod, f1 & 0xFFFFF000);
+        }
         // Anisotropy: the guest's, raised to the settings minimum when min and mag are linear (with
         // linear or point mips: floor and wall materials often use point mips and blurred at grazing
         // angles without it). Screen-aligned passes have an isotropic footprint, so AF leaves them.
