@@ -303,6 +303,8 @@ SCDA_IMPORT(XamInputGetState)
         if (RecompPageIsOpen()) // the B that closes it reaches the game's page (its Back)
             g = XINPUT_GAMEPAD{};
     }
+    else
+        MainMenuExitInput(g); // EXIT GAME row under the main page's SETTINGS
     // SCDA_TRACE_INPUT=1: every poll (frame, host thread, mouse delta, foreground, sticks/buttons).
     static const bool trace = getenv("SCDA_TRACE_INPUT") != nullptr;
     if (trace)

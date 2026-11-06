@@ -391,8 +391,40 @@ void RecompPageInput(const XINPUT_GAMEPAD& g)
 }
 
 static std::atomic<bool> g_indexPage{false};
-void MainMenuSetIndexPage(bool on) { g_indexPage = on; }
+static std::atomic<int64_t> g_indexSince{0}; // Clock ticks: the main page's travel started
+void MainMenuSetIndexPage(bool on)
+{
+    if (on && !g_indexPage)
+        g_indexSince = Clock::now().time_since_epoch().count();
+    g_indexPage = on;
+}
 bool MainMenuOnIndexPage() { return g_indexPage.load(); }
+
+// A (cross) or B (circle) button icon, drawn like the game's: pad letter, PlayStation symbol, or the
+// first key bound to it ([Keyboard], keybinds.h).
+static void PadIcon(ImDrawList* dl, ImFont* body, ImVec2 c, float k, float alpha, bool b)
+{
+    auto col = [&](int r, int g, int bl) { return IM_COL32(r, g, bl, int(255 * alpha)); };
+    const PromptStyle style = CurrentPromptStyle();
+    const bool ps = style == PromptStyle::PS4 || style == PromptStyle::PS5;
+    dl->AddCircleFilled(c, 8.5f * k, col(70, 70, 70));
+    dl->AddCircle(c, 8.5f * k, col(210, 210, 210), 0, 1.2f * k);
+    if (ps && b) // circle
+        dl->AddCircle(c, 4.2f * k, col(255, 255, 255), 0, 1.6f * k);
+    else if (ps) // cross
+    {
+        dl->AddLine(ImVec2(c.x - 4 * k, c.y - 4 * k), ImVec2(c.x + 4 * k, c.y + 4 * k), col(255, 255, 255), 1.6f * k);
+        dl->AddLine(ImVec2(c.x - 4 * k, c.y + 4 * k), ImVec2(c.x + 4 * k, c.y - 4 * k), col(255, 255, 255), 1.6f * k);
+    }
+    else
+    {
+        const std::vector<int> keys = CurrentKeyBindings()[b ? Control::B : Control::A];
+        const std::string label = style == PromptStyle::Keyboard && !keys.empty() ? KeyLabel(keys[0]) : (b ? "B" : "A");
+        const float size = label.size() > 1 ? 9.0f : 13.0f;
+        const ImVec2 sz = body->CalcTextSizeA(size * k, FLT_MAX, 0.0f, label.c_str());
+        dl->AddText(body, size * k, ImVec2(c.x - sz.x * 0.5f, c.y - sz.y * 0.5f), col(255, 255, 255), label.c_str());
+    }
+}
 
 void RecompPageDraw(ImFont* title, ImFont* body)
 {
@@ -481,25 +513,105 @@ void RecompPageDraw(ImFont* title, ImFont* body)
 
     // The page's own tips (Reset to Defaults Y, Back B) are the game's; A (Change) goes left of them,
     // drawn like the game's button icons.
-    const PromptStyle style = CurrentPromptStyle();
-    const bool ps = style == PromptStyle::PS4 || style == PromptStyle::PS5;
-    const ImVec2 c = P(548, 516);
-    dl->AddCircleFilled(c, 8.5f * k, col(70, 70, 70));
-    dl->AddCircle(c, 8.5f * k, col(210, 210, 210), 0, 1.2f * k);
-    if (ps) // cross
-    {
-        dl->AddLine(ImVec2(c.x - 4 * k, c.y - 4 * k), ImVec2(c.x + 4 * k, c.y + 4 * k), col(255, 255, 255), 1.6f * k);
-        dl->AddLine(ImVec2(c.x - 4 * k, c.y + 4 * k), ImVec2(c.x + 4 * k, c.y - 4 * k), col(255, 255, 255), 1.6f * k);
-    }
-    else
-    {
-        // Keyboard: the first key bound to A ([Keyboard], keybinds.h), else the Xbox letter.
-        const std::vector<int> keys = CurrentKeyBindings()[Control::A];
-        const std::string label = style == PromptStyle::Keyboard && !keys.empty() ? KeyLabel(keys[0]) : "A";
-        const float size = label.size() > 1 ? 9.0f : 13.0f;
-        const ImVec2 sz = body->CalcTextSizeA(size * k, FLT_MAX, 0.0f, label.c_str());
-        dl->AddText(body, size * k, ImVec2(c.x - sz.x * 0.5f, c.y - sz.y * 0.5f), col(255, 255, 255), label.c_str());
-    }
+    PadIcon(dl, body, P(548, 516), k, alpha, false);
     const float labelW = body->CalcTextSizeA(16.0f * k, FLT_MAX, 0.0f, "Change").x / k;
     text(body, 16.0f, P(548 - 12 - labelW, 507), col(255, 255, 255), "Change");
+}
+
+// EXIT GAME (recomp_page.h). State: 0 off, 1 confirm box open, 2 cancelled (pad idle to the game until
+// every button is released, so the B does not also go back to PRESS START).
+static std::atomic<bool> g_hoverSettings{false};
+static std::atomic<int> g_exitState{0};
+void MainMenuHoverSettings(bool on) { g_hoverSettings = on; }
+
+static float IndexSeconds()
+{
+    const auto since = Clock::time_point(Clock::duration(g_indexSince.load()));
+    return std::chrono::duration<float>(Clock::now() - since).count();
+}
+
+static bool ExitRowShown() { return MainMenuOnIndexPage() && GuestInFrontEnd() && !RecompPageIsOpen() && IndexSeconds() > kTravelSeconds; }
+
+void MainMenuExitInput(XINPUT_GAMEPAD& g)
+{
+    static WORD last = 0;
+    const WORD now = Buttons(g), pressed = now & ~last;
+    last = now;
+    if (!ExitRowShown())
+    {
+        g_exitState = 0;
+        return;
+    }
+    switch (g_exitState.load())
+    {
+    case 0:
+        if (g_hoverSettings && (pressed & XINPUT_GAMEPAD_DPAD_DOWN))
+        {
+            g_exitState = 1;
+            g = XINPUT_GAMEPAD{};
+            RuntimeLog("[menu] EXIT GAME: confirm\n");
+        }
+        break;
+    case 1:
+        if (pressed & XINPUT_GAMEPAD_A)
+        {
+            RuntimeLog("[menu] EXIT GAME: exit\n");
+            ExitProcess(0); // as closing the window (host_window.cpp WM_CLOSE): guest threads have no shutdown path
+        }
+        if (pressed & (XINPUT_GAMEPAD_B | XINPUT_GAMEPAD_DPAD_UP))
+        {
+            g_exitState = 2;
+            RuntimeLog("[menu] EXIT GAME: cancelled\n");
+        }
+        g = XINPUT_GAMEPAD{};
+        break;
+    default:
+        if (!now)
+            g_exitState = 0;
+        g = XINPUT_GAMEPAD{};
+        break;
+    }
+}
+
+void MainMenuExitDraw(ImFont* body)
+{
+    if (!ExitRowShown())
+        return;
+    const float alpha = std::min((IndexSeconds() - kTravelSeconds) / kFadeSeconds, 1.0f);
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    float w = vp->Size.x, h = vp->Size.y;
+    if (w > h * 16.0f / 9.0f)
+        w = h * 16.0f / 9.0f;
+    else
+        h = w * 9.0f / 16.0f;
+    const float x0 = vp->Pos.x + (vp->Size.x - w) * 0.5f, y0 = vp->Pos.y + (vp->Size.y - h) * 0.5f;
+    const float k = h / 576.0f, kx = w / 1040.0f; // the game image: 1040x576 guest pixels
+    auto P = [&](float x, float y) { return ImVec2(x0 + x * kx, y0 + y * k); };
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    auto col = [&](int r, int g, int b, float a = 1.0f) { return IM_COL32(r, g, b, int(255 * a * alpha)); };
+    const bool confirm = g_exitState == 1;
+    // The row: one item step under SETTINGS (main page items ~22.5 guest px apart).
+    constexpr float kRowX = 187.0f, kRowY = 307.0f, kRowH = 21.0f, kSize = 21.0f;
+    if (confirm)
+        dl->AddRectFilledMultiColor(P(kRowX - 4, kRowY), P(kRowX + 250, kRowY + kRowH), col(150, 10, 10), col(150, 10, 10, 0.0f),
+            col(150, 10, 10, 0.0f), col(150, 10, 10));
+    const ImVec2 at = P(kRowX, kRowY);
+    dl->AddText(body, kSize * k, ImVec2(at.x + 1.5f * k, at.y + 1.5f * k), col(0, 0, 0, 0.6f), "EXIT GAME");
+    dl->AddText(body, kSize * k, at, col(255, 255, 255), "EXIT GAME");
+    if (!confirm)
+        return;
+    // Confirm box: the menu dimmed (the game's own SETTINGS highlight stays under it), a dark panel.
+    dl->AddRectFilled(vp->Pos, ImVec2(vp->Pos.x + vp->Size.x, vp->Pos.y + vp->Size.y), col(0, 0, 0, 0.55f));
+    const ImVec2 a = P(430, 220), b = P(810, 356);
+    dl->AddRectFilled(a, b, col(10, 10, 10, 0.97f));
+    dl->AddLine(ImVec2(a.x, a.y + 34 * k), ImVec2(b.x, a.y + 34 * k), col(176, 8, 8), 1.5f * k);
+    dl->AddText(body, 20.0f * k, P(446, 226), col(255, 255, 255), "EXIT GAME");
+    dl->AddText(body, 16.0f * k, P(446, 268), col(235, 235, 235), "Quit to the desktop?");
+    const float exitW = body->CalcTextSizeA(16.0f * k, FLT_MAX, 0.0f, "Exit").x / kx;
+    const float cancelW = body->CalcTextSizeA(16.0f * k, FLT_MAX, 0.0f, "Cancel").x / kx;
+    const float cx = 794 - cancelW, ex = cx - 40 - exitW;
+    PadIcon(dl, body, P(cx - 14, 334), k, alpha, true);
+    dl->AddText(body, 16.0f * k, P(cx, 325), col(255, 255, 255), "Cancel");
+    PadIcon(dl, body, P(ex - 14, 334), k, alpha, false);
+    dl->AddText(body, 16.0f * k, P(ex, 325), col(255, 255, 255), "Exit");
 }

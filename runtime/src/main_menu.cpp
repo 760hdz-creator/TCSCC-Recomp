@@ -141,6 +141,8 @@ PPC_FUNC(sub_82A8D3D8)
                    GuestText(file).c_str(), text, GuestText(text).c_str());
     if (!text || !sec || !key)
         return;
+    if (WideIs(sec, "MAINPAGE_DESC")) // the main page's hovered item: EXIT GAME follows SETTINGS
+        MainMenuHoverSettings(WideIs(key, "Settings"));
     if (WideIs(key, "PlayerStore") && WideIs(sec, "MAINPAGE"))
         StoreWide(text, "RECOMP SETTINGS");
     else if (WideIs(key, "PlayerStore") && WideIs(sec, "MAINPAGE_DESC"))

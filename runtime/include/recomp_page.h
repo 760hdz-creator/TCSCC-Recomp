@@ -20,3 +20,9 @@ void RecompPageDraw(ImFont* title, ImFont* body);
 // TRAVEL_MENU event; the player card (player_card.cpp) shows only there.
 void MainMenuSetIndexPage(bool on);
 bool MainMenuOnIndexPage();
+
+// EXIT GAME: a row drawn under the main page's SETTINGS (the Flash list is fixed). Down on SETTINGS
+// opens a confirm box (A exits the process, B cancels). main_menu.cpp reports the hovered item.
+void MainMenuHoverSettings(bool on);
+void MainMenuExitInput(XINPUT_GAMEPAD& g); // game thread, every input poll: takes the pad while confirming
+void MainMenuExitDraw(ImFont* body);       // render thread, inside an ImGui frame

@@ -542,7 +542,7 @@ void Toast()
     using S = updater::State;
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     const float pad = ImGui::GetFontSize();
-    ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x - pad, vp->WorkPos.y + pad), ImGuiCond_Always, ImVec2(1.0f, 0.0f));
+    ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + pad, vp->WorkPos.y + pad), ImGuiCond_Always, ImVec2(0.0f, 0.0f)); // top left: the main menu player card is top right
     ImGui::SetNextWindowBgAlpha(0.8f);
     const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
                                    ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs;
@@ -723,10 +723,12 @@ void Draw()
         ImFont* def = ImGui::GetIO().Fonts->Fonts[0];
         RecompPageDraw(g_pageTitle ? g_pageTitle : def, g_pageBody ? g_pageBody : def);
     }
-    else if (g_playerCard && !open && MainMenuOnIndexPage() && GuestInFrontEnd())
+    else if (!open && MainMenuOnIndexPage() && GuestInFrontEnd())
     {
         ImFont* def = ImGui::GetIO().Fonts->Fonts[0];
-        g_playerCard(g_pageBody ? g_pageBody : def, g_renderer->Device());
+        if (g_playerCard)
+            g_playerCard(g_pageBody ? g_pageBody : def, g_renderer->Device());
+        MainMenuExitDraw(g_pageBody ? g_pageBody : def);
     }
     ImGui::Render();
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
