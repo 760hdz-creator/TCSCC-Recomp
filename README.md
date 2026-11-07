@@ -6,7 +6,7 @@
 
 **Tom Clancy's Splinter Cell: Conviction (Xbox 360) as a native Windows program. No emulator.**
 
-![status](https://img.shields.io/badge/status-complete%20%E2%80%93%20testing-yellowgreen)
+![status](https://img.shields.io/badge/status-complete%20%E2%80%93%20ready%20to%20play-brightgreen)
 [![Report a bug](https://img.shields.io/badge/report-a%20bug-red?logo=gitlab)](https://gitlab.com/octagram-labs-group/TCSCC-Recomp/-/issues)
 ![platform](https://img.shields.io/badge/platform-Windows%20x64-blue)
 ![renderer](https://img.shields.io/badge/renderer-Direct3D%2011-informational)
@@ -16,10 +16,10 @@
 </div>
 
 > [!NOTE]
-> **Complete, now in the test phase.** All 11 story chapters load and play with sound and saves, Deniable Ops plays,
+> **Complete, ready to play.** All 11 story chapters load and play with sound and saves, Deniable Ops plays,
 > and co-op / Face-Off work online over Steam (System Link and Xbox LIVE Player Match). Please
 > [report](https://gitlab.com/octagram-labs-group/TCSCC-Recomp/-/issues) anything that looks or plays wrong.
-> No installer release has been published yet.
+> **Download:** [TCSCC Recomp 0.1.0](https://gitlab.com/octagram-labs-group/TCSCC-Recomp/-/releases/permalink/latest). Later versions install from the in-game update notification.
 
 > [!IMPORTANT]
 > **No game files are included, and none ever will be.** You need your own copy of the Xbox 360 game
