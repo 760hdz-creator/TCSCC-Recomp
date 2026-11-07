@@ -221,7 +221,10 @@ PPC_FUNC(sub_82DAA4F0)
             w = 0; // wrapper itself is gone
         if (w && PPC_LOAD_U32(w + 4) == movie)
         {
-            RuntimeLog("[gfx] HUD_Saving wrapper 0x%08X: movie 0x%08X destroyed, pointer cleared\n", w, movie);
+            RuntimeLog("[gfx] HUD_Saving wrapper 0x%08X: movie 0x%08X destroyed, pointer cleared (lr 0x%08X)\n", w,
+                       movie, uint32_t(ctx.lr));
+            if (!trace)
+                LogMovieLife("dtor", movie, base, ctx); // guest chain: which release path bypassed the keep
             PPC_STORE_U32(w + 4, 0);
         }
     }
@@ -370,19 +373,45 @@ PPC_FUNC(sub_82A8F6E8)
 }
 
 // D3D SetTexture sub_82511D28(dev, stage, tex, flags): user playtests (2026-11-04, 2026-11-06, both
-// right after a checkpoint save, 06_WindowlessBuilding the second time) crashed reading tex+48 with
-// tex = 1 / 0x1E0. Caller sub_82EF49D0 (batch draw) loads tex = holder+28, holder = batch+12 or the
-// default fill: the holder was freed and reused. Guest objects all live at >= 0x40000000, so a lower
-// non-null pointer is garbage: bind nothing for that draw instead of faulting. Root cause unknown.
+// right after a checkpoint save; 06_WindowlessBuilding, walking from the elevator checkpoint to the
+// weapon stash) crashed reading tex+48 with tex = 1 / 0x1E0. Caller sub_82EF49D0 (batch draw) loads
+// tex = holder+28, holder = batch+12 or the default fill: the holder was freed and reused. Chain runs
+// through sub_83425C58 -> sub_83425AC8 (same code region as the HUD_Saving wrapper). Guest objects
+// live at >= 0x40000000, and tex+28 is fetch constant dword 0 (type bits 0-1, texture = 2): either
+// check failing = garbage, bind nothing for that draw instead of faulting. Root cause unknown; the log
+// names the object being drawn (r3 of sub_83425C58) to tell HUD_Saving from other movies.
+// SCDA_COUNT_BADTEX=1: log every reject (check that real textures never fail the type test).
+static thread_local uint32_t t_gfxDrawThis;
+extern "C" PPC_FUNC(__imp__sub_83425C58);
+PPC_FUNC(sub_83425C58)
+{
+    const uint32_t prev = t_gfxDrawThis;
+    t_gfxDrawThis = ctx.r3.u32;
+    __imp__sub_83425C58(ctx, base);
+    t_gfxDrawThis = prev;
+}
+
 extern "C" PPC_FUNC(__imp__sub_82511D28);
 PPC_FUNC(sub_82511D28)
 {
-    if (ctx.r5.u32 && ctx.r5.u32 < 0x40000000)
+    static const bool countAll = getenv("SCDA_COUNT_BADTEX") != nullptr;
+    const uint32_t tex = ctx.r5.u32;
+    if (tex && (tex < 0x40000000 || (PPC_LOAD_U32(tex + 28) & 3) != 2))
     {
         static int logged;
-        if (logged++ < 8)
-            RuntimeLog("[gfx] SetTexture stage %u bad texture 0x%08X (lr 0x%08X, r28 0x%08X): unbound\n",
-                       ctx.r4.u32, ctx.r5.u32, uint32_t(ctx.lr), ctx.r28.u32);
+        if (countAll || logged++ < 8)
+        {
+            const uint32_t self = t_gfxDrawThis, batch = ctx.r28.u32;
+            bool saving = false;
+            for (uint32_t w : g_savingWrappers)
+                saving |= w && w == self;
+            const bool selfOk = self >= 0x40000000, batchOk = batch >= 0x40000000;
+            RuntimeLog("[gfx] SetTexture stage %u bad texture 0x%08X dw0 0x%08X (lr 0x%08X): unbound; drawing 0x%08X "
+                       "vt 0x%08X +4 0x%08X%s, batch 0x%08X holder 0x%08X\n",
+                       ctx.r4.u32, tex, tex >= 0x40000000 ? PPC_LOAD_U32(tex + 28) : 0, uint32_t(ctx.lr), self,
+                       selfOk ? PPC_LOAD_U32(self) : 0, selfOk ? PPC_LOAD_U32(self + 4) : 0,
+                       saving ? " (HUD_Saving wrapper)" : "", batch, batchOk ? PPC_LOAD_U32(batch + 12) : 0);
+        }
         ctx.r5.u64 = 0;
     }
     __imp__sub_82511D28(ctx, base);
