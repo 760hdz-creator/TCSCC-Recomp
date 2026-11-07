@@ -24,6 +24,11 @@ constexpr UINT kOverlayToggleMessage = WM_APP + 1;
 constexpr UINT kOverlayOpenMessage = WM_APP + 2;
 // Any thread (the game's OPTIONS > EXTRA SETTINGS button, menu_hooks.cpp): open the menu.
 void OverlayRequestOpen();
+// Posted by the render thread when the clickable update notification appears or goes: the window
+// thread re-evaluates the mouse-look cursor hold (OverlayWantsCursor).
+constexpr UINT kOverlayCursorMessage = WM_APP + 4;
+// Any thread: the menu is open, or the clickable update notification is up (the cursor must show).
+bool OverlayWantsCursor();
 
 // Any thread (the main menu's RECOMP SETTINGS page, main_menu.cpp): the display settings as the
 // menu has them, and a change to them (applied and saved to settings.ini on the next frame).

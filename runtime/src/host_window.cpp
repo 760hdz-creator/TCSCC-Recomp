@@ -87,9 +87,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
          (msg == kOverlayOpenMessage && !OverlayOpen())) &&
         (OverlayOpen() || msg == kOverlayOpenMessage || anywhere || !GuestInFrontEnd()))
     {
-        const bool open = OverlayToggle();
+        OverlayToggle();
         if (g_mouseLook)
-            HoldCursor(hwnd, !open && GetForegroundWindow() == hwnd);
+            HoldCursor(hwnd, !OverlayWantsCursor() && GetForegroundWindow() == hwnd);
         return 0;
     }
     // SCDA_DEBUG_KEYS=1: F9 occlusion queries all visible, F11 culling off (F10 is a system key) (draw_state.h), toggled live;
@@ -106,6 +106,13 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         std::atomic<bool>& flag = wp == VK_F9 ? g_debugQueriesVisible : g_debugNoCull;
         flag = !flag;
         RuntimeLog("[debug] %s: %s\n", wp == VK_F9 ? "queries all visible (F9)" : "culling off (F11)", flag ? "on" : "off");
+        return 0;
+    }
+    // The clickable update notification came or went: free the cursor for it, or hold it again.
+    if (msg == kOverlayCursorMessage)
+    {
+        if (g_mouseLook)
+            HoldCursor(hwnd, !OverlayWantsCursor() && GetForegroundWindow() == hwnd);
         return 0;
     }
     if (OverlayWndProc(hwnd, msg, wp, lp))
@@ -135,7 +142,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
     case WM_ACTIVATE:
         if (g_mouseLook)
-            HoldCursor(hwnd, LOWORD(wp) != WA_INACTIVE && !OverlayOpen());
+            HoldCursor(hwnd, LOWORD(wp) != WA_INACTIVE && !OverlayWantsCursor());
         break; // DefWindowProc gives the window keyboard focus
     case WM_INPUT:
     {

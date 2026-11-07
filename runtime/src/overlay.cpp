@@ -1,4 +1,5 @@
 ﻿#include <windows.h>
+#include <windowsx.h>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -61,11 +62,21 @@ int g_openTab = -1; // SCDA_MENU=<0-3>: the menu starts open on that tab (unatte
 constexpr int kTabs = 4;
 int g_tabStep = 0;  // L1/R1 (LB/RB) pressed in the menu: -1 previous tab, +1 next
 
-// Update notification: shown once, when the check has answered and the player has signed in at the
-// main menu (ProfileSignedIn), for kToastSeconds (an available update 3x longer).
+// Update notification, top left, once the check has answered and the player has signed in at the
+// main menu (ProfileSignedIn). An answer with nothing to do (up to date, no release, check failed)
+// shows for kToastSeconds. A newer release keeps it up and clickable while in the front end, until
+// used or dismissed: left click (or F1 / L3+R3) downloads it, the next one installs it (the game
+// closes, the installer updates it, the game starts again); right click dismisses it.
 constexpr double kToastSeconds = 8.0;
 bool g_toastStarted;
 std::chrono::steady_clock::time_point g_toastSince;
+bool g_toastDismissed;             // right click: gone for this run
+bool g_toastEngaged;               // clicked once: a re-check shows its answer again
+std::string g_toastError;          // the installer could not start
+std::atomic<bool> g_toastInteractive; // render thread -> window thread
+std::atomic<int> g_toastRect[4];      // client pixels: left, top, right, bottom
+std::atomic<int> g_toastClick;        // 1 act, 2 dismiss (window thread / pad poll -> render thread)
+std::atomic<int> g_mouseX{ -1 }, g_mouseY{ -1 }; // cursor in client pixels (hover highlight)
 bool g_padCombo;   // L3+R3 held at the last poll
 WORD g_padButtons;  // pad 0 buttons at the last poll
 bool g_padConnected;        // pad 0 present at the last poll
@@ -429,18 +440,46 @@ void UpdateTab()
                            st.title.c_str());
         break;
     case S::NoReleases: ImGui::TextUnformatted("Latest release: none published yet."); break;
-    case S::Failed: ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.4f, 1.0f), "Check failed: %s", st.error.c_str()); break;
+    case S::Failed:
+        ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.4f, 1.0f), "%s failed: %s", st.download ? "Download" : "Check", st.error.c_str());
+        break;
+    case S::Downloading:
+        ImGui::Text("Downloading %s...", st.latest.c_str());
+        ImGui::ProgressBar(st.percent / 100.0f, ImVec2(ImGui::GetFontSize() * 16.0f, 0.0f));
+        break;
+    case S::Downloaded: ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "Version %s is downloaded.", st.latest.c_str()); break;
     }
     ImGui::Spacing();
-    ImGui::BeginDisabled(st.state == S::Checking);
+    ImGui::BeginDisabled(st.state == S::Checking || st.state == S::Downloading);
     if (ImGui::Button("Check for updates"))
         updater::Check();
-    ImGui::EndDisabled();
     ImGui::SameLine();
-    if (ImGui::Button(st.state == S::Available ? "Download from the release page" : "Open the releases page"))
+    if (st.state == S::Available || (st.state == S::Failed && st.download))
+    {
+        if (ImGui::Button("Download and install"))
+            updater::Download();
+        ImGui::SameLine();
+    }
+    else if (st.state == S::Downloaded && updater::CanInstall())
+    {
+        if (ImGui::Button("Install now (the game restarts)"))
+        {
+            std::string error;
+            if (updater::Install(error))
+                ExitProcess(0); // as closing the window (host_window.cpp WM_CLOSE); the watcher updates and restarts
+            g_toastError = error;
+        }
+        ImGui::SameLine();
+    }
+    ImGui::EndDisabled();
+    if (ImGui::Button("Open the releases page"))
         updater::OpenReleasePage();
+    if (!g_toastError.empty())
+        ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.4f, 1.0f), "Install failed: %s", g_toastError.c_str());
+    if (st.state == S::Downloaded && !updater::CanInstall())
+        ImGui::TextWrapped("This copy is not an installed one: run TCSCC_Setup.exe from the releases page to update it.");
     ImGui::Spacing();
-    ImGui::TextDisabled("Releases: github.com/%s", updater::Repo().c_str());
+    ImGui::TextDisabled("Releases: gitlab.com/%s", updater::Repo().c_str());
 }
 
 void Menu()
@@ -520,18 +559,60 @@ void Menu()
     ImGui::End();
 }
 
+// The notification waits for a click: a newer release offered, downloading, downloaded, or its download failed.
+bool ToastClickable(const updater::Status& st)
+{
+    using S = updater::State;
+    return st.state == S::Available || st.state == S::Downloading || st.state == S::Downloaded || (st.state == S::Failed && st.download);
+}
+
 bool ToastVisible()
 {
-    const updater::State st = updater::Get().state;
-    if (st == updater::State::Idle || st == updater::State::Checking || !ProfileSignedIn())
+    const updater::Status st = updater::Get();
+    using S = updater::State;
+    if (st.state == S::Idle || g_toastDismissed || !ProfileSignedIn())
         return false;
+    if (st.state == S::Checking)
+        return g_toastEngaged; // a click re-checks: keep the note up meanwhile
+    if (ToastClickable(st))
+        return GuestInFrontEnd(); // until used or dismissed; hidden in missions, back at the menus
     if (!g_toastStarted)
     {
         g_toastStarted = true;
         g_toastSince = std::chrono::steady_clock::now();
     }
-    const double age = std::chrono::duration<double>(std::chrono::steady_clock::now() - g_toastSince).count();
-    return age <= kToastSeconds * (st == updater::State::Available ? 3.0 : 1.0);
+    return std::chrono::duration<double>(std::chrono::steady_clock::now() - g_toastSince).count() <= kToastSeconds;
+}
+
+// A click on the notification (render thread, before the frame): download, install, or dismiss.
+void ToastTakeClick()
+{
+    const int click = g_toastClick.exchange(0);
+    if (!click || !g_toastInteractive)
+        return;
+    if (click == 2)
+    {
+        g_toastDismissed = true;
+        RuntimeLog("[update] notification dismissed\n");
+        return;
+    }
+    const updater::Status st = updater::Get();
+    using S = updater::State;
+    RuntimeLog("[update] notification clicked (state %d)\n", int(st.state));
+    g_toastEngaged = true;
+    g_toastStarted = false; // the answer to a re-check gets its own kToastSeconds
+    if (st.state == S::Available || st.state == S::Failed)
+        updater::Download();
+    else if (st.state == S::Downloaded && !updater::CanInstall())
+        updater::OpenReleasePage();
+    else if (st.state == S::Downloaded)
+    {
+        std::string error;
+        if (updater::Install(error))
+            ExitProcess(0); // as closing the window (host_window.cpp WM_CLOSE); the watcher updates and restarts
+        g_toastError = error;
+        RuntimeLog("[update] install failed: %s\n", error.c_str());
+    }
 }
 
 void Toast()
@@ -540,26 +621,77 @@ void Toast()
         return;
     const updater::Status st = updater::Get();
     using S = updater::State;
+    const bool clickable = g_toastInteractive;
+    const ImVec4 green(0.4f, 1.0f, 0.4f, 1.0f), red(1.0f, 0.5f, 0.4f, 1.0f);
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     const float pad = ImGui::GetFontSize();
+    const int mx = g_mouseX, my = g_mouseY;
+    const bool hover = clickable && mx >= g_toastRect[0] && mx < g_toastRect[2] && my >= g_toastRect[1] && my < g_toastRect[3];
     ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + pad, vp->WorkPos.y + pad), ImGuiCond_Always, ImVec2(0.0f, 0.0f)); // top left: the main menu player card is top right
-    ImGui::SetNextWindowBgAlpha(0.8f);
+    ImGui::SetNextWindowBgAlpha(hover ? 0.95f : 0.8f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, clickable ? 2.0f : 1.0f);
+    if (clickable)
+        ImGui::PushStyleColor(ImGuiCol_Border, hover ? ImVec4(0.6f, 1.0f, 0.6f, 1.0f) : ImVec4(0.36f, 0.56f, 0.42f, 1.0f));
+    // The window takes no ImGui input: clicks come from OverlayWndProc / the pad poll against g_toastRect.
     const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
                                    ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs;
     if (ImGui::Begin("##update toast", nullptr, flags))
     {
-        ImGui::Text("TCSCC Recomp %s", updater::CurrentVersion());
+        const char* act = "Click, F1 or L3+R3";
         switch (st.state)
         {
-        case S::UpToDate: ImGui::TextUnformatted("You are on the latest release."); break;
-        case S::Available: ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "Update available: %s", st.latest.c_str()); break;
-        case S::NoReleases: ImGui::TextUnformatted("No release published yet."); break;
-        case S::Failed: ImGui::TextUnformatted("Could not check for updates."); break;
+        case S::Available:
+            ImGui::TextColored(green, "UPDATE AVAILABLE");
+            ImGui::Text("Version %s is ready (you have %s).", st.latest.c_str(), updater::CurrentVersion());
+            ImGui::TextDisabled("%s: download and install   Right-click: dismiss", act);
+            break;
+        case S::Checking:
+            ImGui::Text("TCSCC Recomp %s", updater::CurrentVersion());
+            ImGui::TextUnformatted("Checking for updates...");
+            break;
+        case S::Downloading:
+            ImGui::TextColored(green, "DOWNLOADING UPDATE");
+            ImGui::Text("Version %s  -  %d%%", st.latest.c_str(), st.percent);
+            ImGui::ProgressBar(st.percent / 100.0f, ImVec2(pad * 16.0f, pad * 0.5f), "");
+            break;
+        case S::Downloaded:
+            ImGui::TextColored(green, "UPDATE READY");
+            if (!g_toastError.empty())
+                ImGui::TextColored(red, "The installer could not start: %s", g_toastError.c_str());
+            if (updater::CanInstall())
+            {
+                ImGui::Text("Version %s is downloaded.", st.latest.c_str());
+                ImGui::TextDisabled("%s: install - the game closes and restarts", act);
+            }
+            else
+            {
+                ImGui::TextUnformatted("This copy is not an installed one.");
+                ImGui::TextDisabled("%s: open the releases page   Right-click: dismiss", act);
+            }
+            break;
+        case S::Failed:
+            ImGui::TextColored(red, st.download ? "UPDATE FAILED" : "TCSCC Recomp %s", updater::CurrentVersion());
+            ImGui::TextUnformatted(st.download ? st.error.c_str() : "Could not check for updates.");
+            if (st.download)
+                ImGui::TextDisabled("%s: try again   Right-click: dismiss", act);
+            break;
+        case S::UpToDate:
+            ImGui::Text("TCSCC Recomp %s", updater::CurrentVersion());
+            ImGui::TextUnformatted("You are on the latest release.");
+            break;
+        case S::NoReleases:
+            ImGui::Text("TCSCC Recomp %s", updater::CurrentVersion());
+            ImGui::TextUnformatted("No release published yet.");
+            break;
         default: break;
         }
-        ImGui::TextDisabled("F1 or L3+R3: Extra Settings%s", st.state == S::Available ? " > Update" : "");
+        const ImVec2 pos = ImGui::GetWindowPos(), size = ImGui::GetWindowSize();
+        g_toastRect[0] = int(pos.x), g_toastRect[1] = int(pos.y), g_toastRect[2] = int(pos.x + size.x), g_toastRect[3] = int(pos.y + size.y);
     }
     ImGui::End();
+    if (clickable)
+        ImGui::PopStyleColor();
+    ImGui::PopStyleVar();
 }
 
 // L3+R3 on pad 0 (pressed together, on the press) asks the window thread to toggle the menu, like F1.
@@ -586,7 +718,9 @@ void PollPadCombo()
     g_padButtons = buttons;
     constexpr WORD combo = XINPUT_GAMEPAD_LEFT_THUMB | XINPUT_GAMEPAD_RIGHT_THUMB;
     const bool held = (buttons & combo) == combo;
-    if (held && !g_padCombo)
+    if (held && !g_padCombo && !open && g_toastInteractive && GuestInFrontEnd())
+        g_toastClick = 1; // the clickable update notification takes L3+R3 (the menu does not open in the front end)
+    else if (held && !g_padCombo)
         PostMessageW(g_hwnd, kOverlayToggleMessage, 0, 0);
     else if (open && g_padArmed && (pressed & (XINPUT_GAMEPAD_START | XINPUT_GAMEPAD_BACK)))
         PostMessageW(g_hwnd, kOverlayToggleMessage, 0, 0);
@@ -777,6 +911,10 @@ void OverlayAttach(D3D11Renderer& renderer, HWND hwnd, const DisplaySettings& se
             g_shared = g_settings;
         }
         PollPadCombo();
+        ToastTakeClick();
+        const bool interactive = !g_open && ToastVisible() && ToastClickable(updater::Get());
+        if (interactive != g_toastInteractive.exchange(interactive))
+            PostMessageW(g_hwnd, kOverlayCursorMessage, 0, 0); // show / hide the cursor (mouse look holds it)
         // Nothing to draw: no ImGui frame at all (the plain game image, no cost).
         if (!g_open && !ToastVisible() && !RecompPageIsOpen() && !(g_playerCard && MainMenuOnIndexPage() && GuestInFrontEnd()))
             return;
@@ -820,8 +958,41 @@ void OverlayRequestOpen()
         PostMessageW(g_hwnd, kOverlayOpenMessage, 0, 0);
 }
 
+bool OverlayWantsCursor() { return g_open || g_toastInteractive; }
+
 bool OverlayWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
+    // The clickable update notification: clicks on it (and F1) are its, not the game's.
+    if (!g_open && g_toastInteractive)
+    {
+        const int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
+        const bool inside = x >= g_toastRect[0] && x < g_toastRect[2] && y >= g_toastRect[1] && y < g_toastRect[3];
+        switch (msg)
+        {
+        case WM_MOUSEMOVE: g_mouseX = x, g_mouseY = y; break;
+        case WM_LBUTTONDOWN:
+        case WM_RBUTTONDOWN:
+            if (inside)
+            {
+                g_toastClick = msg == WM_LBUTTONDOWN ? 1 : 2;
+                return true;
+            }
+            break;
+        case WM_LBUTTONUP:
+        case WM_RBUTTONUP:
+        case WM_LBUTTONDBLCLK:
+            if (inside)
+                return true;
+            break;
+        case WM_KEYDOWN:
+            if (wp == VK_F1 && !(lp & (1 << 30)))
+            {
+                g_toastClick = 1;
+                return true;
+            }
+            break;
+        }
+    }
     if (!g_open)
         return false;
     switch (msg)

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(TCSCCRecomp VERSION 0.0.1 LANGUAGES CXX C)
+project(TCSCCRecomp VERSION 0.1.0 LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -27,8 +27,9 @@ else()
     add_library(scda_xma STATIC src/xma_null.c)
 endif()
 
-# This build's version (F1 menu > Update compares it with the latest GitHub release of SCDA_UPDATE_REPO).
-set(SCDA_UPDATE_REPO "" CACHE STRING "GitHub owner/name the update check asks" FORCE)
+# This build's version (project VERSION; the in-game updater compares it with the latest GitLab release
+# of SCDA_UPDATE_REPO; tools/installer/build.bat reads the same number). Release tag = v<VERSION>.
+set(SCDA_UPDATE_REPO "octagram-labs-group/TCSCC-Recomp" CACHE STRING "GitLab group/project the in-game updater checks" FORCE)
 
 # SDL3 (zlib): native PlayStation / Switch / other gamepads (src/pad.cpp), linked static so an
 # update that replaces scda.exe alone carries it. Source: external/SDL (github.com/libsdl-org/SDL

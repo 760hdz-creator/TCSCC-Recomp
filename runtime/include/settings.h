@@ -74,8 +74,8 @@ struct InputSettings
 
 struct UpdateSettings
 {
-    bool checkOnStart = true; // [Update] CheckOnStart: ask GitHub for the latest release at startup
-    std::string repo;         // [Update] Repo=owner/name: overrides the build's repository (testing)
+    bool checkOnStart = true; // [Update] CheckOnStart: ask GitLab for the latest release at startup
+    std::string repo;         // [Update] Repo=group/project: overrides the build's GitLab project (testing)
 };
 
 DisplaySettings LoadDisplaySettings(const std::filesystem::path& ini); // defaults if missing/invalid
