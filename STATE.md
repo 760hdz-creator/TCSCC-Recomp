@@ -38,7 +38,7 @@
 - Step 4 DONE on loopback 2026-11-05: Xbox LIVE PLAYER MATCH = XSession (no Ubisoft servers), LIVE identity = Steam name. Two instances: search finds host, join, lobby, ready, co-op Banya plays on both. User watched it 2026-11-05: OK. User guide = README "Playing online". Online code is adapted from shihabal3amri TTT2 (unlicensed; user has permission, credited in THIRD_PARTY_NOTICES).
 ## User playtest 2026-11-04 (installer build) — open
 - Sam's eyes look strange in cutscenes (user 2026-11-04; unseen).
-- Crash: sub_82511D28 (D3D SetTexture-like, r3 dev 0x40102080, stage r4 0) got texture ptr r5=1 -> read 0x31; after content enumerate (checkpoint). Not reproduced.
+- Crash sub_82511D28 SetTexture, tex r5=1 (11-04) / 0x1E0 (11-06, 06_WindowlessBuilding), both right after a checkpoint save; caller batch draw sub_82EF49D0 tex = holder(+12)+28 = freed holder. GUARDED 2026-11-06 (gfx_log.cpp: tex < 0x40000000 -> unbound, log [gfx] SetTexture ... bad texture). Root cause open.
 - Mission 3 (Grim frees Sam; user corrected from 2) foreground blur pixelated/blocky: NOT REPRODUCED 2026-11-05 (03_Airfield intro, 2560x1440, FPS60=0, Scale 1 vs 3 same frames: identical, smooth). DOF bufs 288x144/544x288 scale (pitch>160). Need user moment/screenshot (gameplay? 60 fps?). Car mirror (look under door): user re-test 2026-11-04 on installer build 658eb11 = OK (no capture).
 - FIXED (user 2026-11-05): climb/vault white box, execute arrows red. FIXED: F1 rows under footer + live Window mode (47715ab); stutters = blocking shader compiles -> async (c3d7316, [hitch] log).
 ## Ruled out (debug switches: docs/debug_switches.md)

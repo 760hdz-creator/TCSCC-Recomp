@@ -368,3 +368,22 @@ PPC_FUNC(sub_82A8F6E8)
     else
         SwitchToThread();
 }
+
+// D3D SetTexture sub_82511D28(dev, stage, tex, flags): user playtests (2026-11-04, 2026-11-06, both
+// right after a checkpoint save, 06_WindowlessBuilding the second time) crashed reading tex+48 with
+// tex = 1 / 0x1E0. Caller sub_82EF49D0 (batch draw) loads tex = holder+28, holder = batch+12 or the
+// default fill: the holder was freed and reused. Guest objects all live at >= 0x40000000, so a lower
+// non-null pointer is garbage: bind nothing for that draw instead of faulting. Root cause unknown.
+extern "C" PPC_FUNC(__imp__sub_82511D28);
+PPC_FUNC(sub_82511D28)
+{
+    if (ctx.r5.u32 && ctx.r5.u32 < 0x40000000)
+    {
+        static int logged;
+        if (logged++ < 8)
+            RuntimeLog("[gfx] SetTexture stage %u bad texture 0x%08X (lr 0x%08X, r28 0x%08X): unbound\n",
+                       ctx.r4.u32, ctx.r5.u32, uint32_t(ctx.lr), ctx.r28.u32);
+        ctx.r5.u64 = 0;
+    }
+    __imp__sub_82511D28(ctx, base);
+}
