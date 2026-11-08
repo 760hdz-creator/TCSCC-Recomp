@@ -89,7 +89,9 @@ const char* const kModeIni[] = { "windowed", "borderless", "fullscreen" };
 const char* const kUpscalingLabels[] = { "Off (use Internal resolution)", "Native", "Quality (1.5x)", "Balanced (1.7x)", "Performance (2x)",
                                          "Ultra Performance (3x)" };
 
-uint32_t EffectiveScale(const DisplaySettings& s) { return UpscalingScale(s.upscaling, g_renderer->Height(), s.scale); }
+float EffectiveScale(const DisplaySettings& s) { return UpscalingScale(s.upscaling, g_renderer->Height(), s.scale); }
+int ScaleIndex(float scale) { return int(std::find(std::begin(kScales), std::end(kScales), NearestScale(scale)) - std::begin(kScales)); }
+std::string ScaleText(float scale) { char b[16]; snprintf(b, sizeof(b), "%g", scale); return b; }
 
 // Pushes the menu's settings to the renderer (every frame: the window height can change the scale).
 void Apply(const DisplaySettings& s)
@@ -101,7 +103,7 @@ void Apply(const DisplaySettings& s)
     fx.nis = s.upscaler == DisplaySettings::UpscalerNis;
     fx.sharpness = float(s.sharpening) / 100.0f;
     g_renderer->SetPostFx(fx);
-    if (const uint32_t scale = EffectiveScale(s); scale != g_renderer->Scale())
+    if (const float scale = EffectiveScale(s); scale != g_renderer->Scale())
         g_renderer->SetScale(scale);
     g_renderer->SetVsync(s.vsync);
     g_renderer->SetAnisotropy(s.anisotropy);
@@ -128,7 +130,7 @@ void Save(const DisplaySettings& before, const DisplaySettings& after)
     const auto path = SettingsPath();
     auto save = [&](const char* key, const std::string& value) { SaveSetting(path, "Display", key, value); };
     if (before.scale != after.scale)
-        save("Scale", std::to_string(after.scale));
+        save("Scale", ScaleText(after.scale));
     if (before.mode != after.mode)
         save("Mode", kModeIni[after.mode]);
     if (before.vsync != after.vsync)
@@ -164,7 +166,7 @@ void Save(const DisplaySettings& before, const DisplaySettings& after)
         save("Upscaler", after.upscaler == DisplaySettings::UpscalerNis ? "NIS" : "Lanczos");
 }
 
-std::string Resolution(uint32_t scale) { return std::to_string(1280 * scale) + "x" + std::to_string(720 * scale); }
+std::string Resolution(float scale) { return std::to_string(uint32_t(1280 * scale)) + "x" + std::to_string(uint32_t(720 * scale)); }
 
 void Hint(const char* text)
 {
@@ -187,10 +189,10 @@ void DisplayTab(DisplaySettings& s)
     Hint("Applies at once. Borderless and Fullscreen both fill the monitor the window is on (borderless, so Alt+Tab and this menu keep working).");
     ImGui::Checkbox("VSync", &s.vsync);
     ImGui::BeginDisabled(s.upscaling != DisplaySettings::UpOff);
-    int scale = int(s.scale);
-    const std::string label = Resolution(s.scale);
-    if (ImGui::SliderInt("Internal resolution", &scale, 1, 4, ("x%d  " + label).c_str()))
-        s.scale = uint32_t(scale);
+    int scale = ScaleIndex(s.scale);
+    const std::string label = "x" + ScaleText(s.scale) + "  " + Resolution(s.scale);
+    if (ImGui::SliderInt("Internal resolution", &scale, 0, int(std::size(kScales)) - 1, label.c_str()))
+        s.scale = kScales[scale];
     ImGui::EndDisabled();
     Hint("Renders at 1280x720 times this and filters down to the window (supersampling). "
          "Scale 2 holds 30 fps on the heaviest map. Graphics > Upscaling picks it from the window size instead.");
@@ -266,7 +268,7 @@ void Preset(DisplaySettings& s, int level)
     s.anisotropy = aniso[level];
     s.sharpening = sharpen[level];
     if (level == 3)
-        s.scale = std::min<uint32_t>(4, UpscalingScale(DisplaySettings::UpNative, g_renderer->Height(), 1) + 1);
+        s.scale = kScales[std::min<int>(int(std::size(kScales)) - 1, ScaleIndex(UpscalingScale(DisplaySettings::UpNative, g_renderer->Height(), 1)) + 1)];
 }
 
 void GraphicsTab(DisplaySettings& s)
@@ -309,8 +311,8 @@ void GraphicsTab(DisplaySettings& s)
          "any GPU) sharpens while it scales (strength: Sharpening, else a light default); it covers up to 2x, larger "
          "steps use Lanczos.");
     Hint("FSR 1-style: picks the internal resolution from the window height divided by the mode's ratio "
-         "(in 720-row steps), then upscales with a Lanczos filter, or filters down when it is larger. The menu stays sharp.");
-    const uint32_t scale = EffectiveScale(s);
+         "(nearest of 720, 1080, 1440, 2160, 2880 rows), then upscales with a Lanczos filter, or filters down when it is larger. The menu stays sharp.");
+    const float scale = EffectiveScale(s);
     const uint32_t w = g_renderer->Width(), h = g_renderer->Height();
     const char* how = 720 * scale > h ? "filtered down" : 720 * scale < h ? (s.upscaling != DisplaySettings::UpOff ? "Lanczos upscale" : "bilinear") : "1:1";
     ImGui::Text("Internal %s  ->  Output %ux%u  (%s)", Resolution(scale).c_str(), w, h, how);
@@ -893,7 +895,7 @@ void OverlayAttach(D3D11Renderer& renderer, HWND hwnd, const DisplaySettings& se
         static uint64_t testFrame = testScale ? strtoull(testScale, nullptr, 10) : 0;
         if (testScale && testFrame && Frames().FramesEnded() >= testFrame)
         {
-            g_settings.scale = uint32_t(std::clamp(atoi(strchr(testScale, ':') ? strchr(testScale, ':') + 1 : "1"), 1, 4));
+            g_settings.scale = NearestScale(atof(strchr(testScale, ':') ? strchr(testScale, ':') + 1 : "1"));
             testFrame = 0;
         }
         {

@@ -12,7 +12,7 @@ static std::filesystem::path Ini(const char* text)
 TEST(settings_defaults_when_missing)
 {
     DisplaySettings s = LoadDisplaySettings("C:/nonexistent/settings.ini");
-    CHECK_EQ(s.scale, 1u);
+    CHECK_EQ(s.scale, 1.0f);
     CHECK(s.mode == DisplaySettings::Windowed);
     CHECK(s.vsync);
     CHECK(!s.cleanGoggles); // authentic goggle overlay unless asked
@@ -28,7 +28,9 @@ TEST(settings_parsed)
     CHECK_EQ(LoadDisplaySettings(Ini("[Display]\nFOV=95\n")).fov, 95u);
     CHECK_EQ(LoadDisplaySettings(Ini("[Display]\nFOV=300\n")).fov, 90u);
     CHECK_EQ(LoadDisplaySettings(Ini("[Display]\nFOV=60\n")).fov, 90u); // below the range
-    CHECK_EQ(s.scale, 2u);
+    CHECK_EQ(s.scale, 2.0f);
+    CHECK_EQ(LoadDisplaySettings(Ini("[Display]\nScale=1.5\n")).scale, 1.5f); // 1920x1080
+    CHECK_EQ(LoadDisplaySettings(Ini("[Display]\nScale=2.5\n")).scale, 1.0f); // not a choice
     CHECK(s.mode == DisplaySettings::Borderless);
     CHECK(!s.vsync);
 }
@@ -36,7 +38,7 @@ TEST(settings_parsed)
 TEST(settings_invalid_values_fall_back)
 {
     DisplaySettings s = LoadDisplaySettings(Ini("[Display]\nScale=99\nMode=banana\n"));
-    CHECK_EQ(s.scale, 1u);
+    CHECK_EQ(s.scale, 1.0f);
     CHECK(s.mode == DisplaySettings::Windowed);
 }
 
@@ -105,13 +107,17 @@ TEST(settings_draw_distance_parsed)
 
 TEST(upscaling_scale_from_window_height)
 {
-    CHECK_EQ(UpscalingScale(DisplaySettings::UpOff, 2160, 3), 3u);
-    CHECK_EQ(UpscalingScale(DisplaySettings::UpNative, 1080, 1), 2u);  // 1.5 rounds up
-    CHECK_EQ(UpscalingScale(DisplaySettings::UpNative, 2160, 1), 3u);
-    CHECK_EQ(UpscalingScale(DisplaySettings::UpQuality, 2160, 1), 2u); // 1440 rows
-    CHECK_EQ(UpscalingScale(DisplaySettings::UpPerformance, 1440, 4), 1u);
-    CHECK_EQ(UpscalingScale(DisplaySettings::UpUltraPerformance, 720, 1), 1u);
-    CHECK_EQ(UpscalingScale(DisplaySettings::UpNative, 4320, 1), 4u);  // clamped
+    CHECK_EQ(UpscalingScale(DisplaySettings::UpOff, 2160, 3.0f), 3.0f);
+    CHECK_EQ(UpscalingScale(DisplaySettings::UpOff, 2160, 1.5f), 1.5f);
+    CHECK_EQ(UpscalingScale(DisplaySettings::UpNative, 1080, 1.0f), 1.5f);  // 1920x1080
+    CHECK_EQ(UpscalingScale(DisplaySettings::UpNative, 2160, 1.0f), 3.0f);
+    CHECK_EQ(UpscalingScale(DisplaySettings::UpQuality, 2160, 1.0f), 2.0f); // 1440 rows
+    CHECK_EQ(UpscalingScale(DisplaySettings::UpPerformance, 2160, 1.0f), 1.5f); // 1080 rows
+    CHECK_EQ(UpscalingScale(DisplaySettings::UpBalanced, 2160, 1.0f), 2.0f); // 1270 rows: nearest 1440
+    CHECK_EQ(UpscalingScale(DisplaySettings::UpPerformance, 1440, 4.0f), 1.0f);
+    CHECK_EQ(UpscalingScale(DisplaySettings::UpUltraPerformance, 720, 1.0f), 1.0f);
+    CHECK_EQ(UpscalingScale(DisplaySettings::UpNative, 4320, 1.0f), 4.0f);  // clamped
+    CHECK_EQ(UpscalingScale(DisplaySettings::UpNative, 1200, 1.0f), 1.5f);  // 1.67: nearest step
 }
 
 TEST(save_setting_keeps_other_lines)

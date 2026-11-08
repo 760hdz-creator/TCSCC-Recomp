@@ -39,6 +39,10 @@ CbStats g_cbStats{};
 
 using Microsoft::WRL::ComPtr;
 
+// Guest pixels -> host texels at a (possibly fractional: 1.5 = 1920x1080) internal resolution scale.
+static uint32_t Scaled(uint32_t v, float scale) { return uint32_t(std::lround(double(v) * scale)); }
+static uint32_t Scaled(int32_t v, float scale) { return Scaled(uint32_t(std::max(v, 0)), scale); }
+
 template <class T> static void Release(T*& p)
 {
     if (p)
@@ -306,10 +310,12 @@ void main(uint3 id : SV_DispatchThreadID)
     float m = 0.0;
     if (mode == 0)
     {
-        const int2 b = (rect.xy + p) * block;
-        for (int y = 0; y < block.y; y++)
-            for (int x = 0; x < block.x; x++)
-                m = max(m, src[b + int2(x, y)]);
+        // block = host texels per level-0 texel x2 (1.5x scale: 3 = 1.5 texels): max over every
+        // source texel the block overlaps.
+        const int2 b0 = ((rect.xy + p) * block) / 2, b1 = ((rect.xy + p + 1) * block + 1) / 2;
+        for (int y = b0.y; y < b1.y; y++)
+            for (int x = b0.x; x < b1.x; x++)
+                m = max(m, src[int2(x, y)]);
     }
     else
     {
@@ -409,7 +415,7 @@ struct DrawResources
 {
     // EDRAM surfaces, sample pitch x EdramSampleRows (x scale) each (EdramSurfaceLayout), kept across
     // frames like EDRAM. Depth is float with stencil: it holds both guest formats (D24S8, D24FS8).
-    uint32_t scale = 1; // host texels per guest pixel, each axis (targets and resolve copies)
+    float scale = 1; // host texels per guest pixel, each axis (targets and resolve copies; kScales, 1.5 = 1920x1080)
     uint32_t anisotropy = 1; // settings minimum for linear-filtered textures
     int32_t lodBiasTenths = 0; // settings mip LOD bias (tenths) for the same textures
     std::unordered_map<uint32_t, ColorTarget> colorTargets;
@@ -575,7 +581,7 @@ struct DrawResources
         ComPtr<ID3D11ShaderResourceView> srv;
         ComPtr<ID3D11UnorderedAccessView> uav; // float formats: saturating copies (kSaturateCs)
         uint32_t width = 0, height = 0; // guest pixels; the texture is scale times larger
-        uint32_t scale = 0;             // host texels per guest pixel of the texture (TargetScale of its source)
+        float scale = 0;                // host texels per guest pixel of the texture (TargetScale of its source)
         DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN; // the source target's
         uint32_t rowBytes = 0; // guest bytes per row (RB_COPY_DEST_INFO format x width)
         uint32_t destFormat = 0; // RB_COPY_DEST_INFO bits 7-12
@@ -646,11 +652,11 @@ static ComPtr<IDXGIAdapter1> PickAdapter()
 
 D3D11Renderer::~D3D11Renderer() { ReleaseAll(); }
 
-bool D3D11Renderer::Init(HWND hwnd, uint32_t width, uint32_t height, bool vsync, uint32_t scale, uint32_t anisotropy)
+bool D3D11Renderer::Init(HWND hwnd, uint32_t width, uint32_t height, bool vsync, float scale, uint32_t anisotropy)
 {
-    m_scale = std::clamp<uint32_t>(scale, 1, 4);
+    m_scale = NearestScale(scale);
     m_anisotropy = std::clamp<uint32_t>(anisotropy, 1, 16);
-    RuntimeLog("[d3d11] internal resolution %ux%u (scale %u)\n", kTargetWidth * m_scale, 720 * m_scale, m_scale);
+    RuntimeLog("[d3d11] internal resolution %ux%u (scale %g)\n", Scaled(kTargetWidth, m_scale), Scaled(720u, m_scale), double(m_scale));
     m_vsync = vsync;
     m_hwnd = hwnd;
     m_width = width;
@@ -1103,9 +1109,9 @@ static ID3D11ShaderResourceView* ResolvedView(ID3D11Device* device, ID3D11Device
     auto& crop = res.crops[(w << 16) | h];
     D3D11_TEXTURE2D_DESC sd;
     res.texture->GetDesc(&sd);
-    const uint32_t scale = sd.Width / res.width;
-    w *= scale;
-    h *= scale;
+    const float scale = float(sd.Width) / float(res.width);
+    w = Scaled(w, scale);
+    h = Scaled(h, scale);
     if (!crop.srv)
     {
         D3D11_TEXTURE2D_DESC td{};
@@ -1133,10 +1139,10 @@ static ID3D11ShaderResourceView* ResolvedView(ID3D11Device* device, ID3D11Device
 // Scaled, Okhotsk's point-sampled ripple sim (neighbours 1/128 apart) split into independent
 // sub-lattices and blew up into a checkerboard: moire rings on the water. Colour and depth of a
 // surface share the sample pitch, so they always agree. SCDA_SCALE_SMALL_TARGETS=1: old (all scaled).
-static uint32_t TargetScale(const DrawResources& r, uint32_t samplePitch)
+static float TargetScale(const DrawResources& r, uint32_t samplePitch)
 {
     static const bool scaleAll = getenv("SCDA_SCALE_SMALL_TARGETS") != nullptr;
-    return !scaleAll && samplePitch <= 160 ? 1 : r.scale;
+    return !scaleAll && samplePitch <= 160 ? 1.0f : r.scale;
 }
 
 static ColorTarget* ColorTargetFor(ID3D11Device* device, ID3D11DeviceContext* context, DrawResources& r, uint32_t key)
@@ -1146,8 +1152,8 @@ static ColorTarget* ColorTargetFor(ID3D11Device* device, ID3D11DeviceContext* co
     if (r.colorTargets.size() >= kMaxEdramTargets)
         return nullptr;
     D3D11_TEXTURE2D_DESC td{};
-    td.Width = EdramKeySamplePitch(key) * TargetScale(r, EdramKeySamplePitch(key));
-    td.Height = EdramSampleRows(EdramKeySamplePitch(key)) * TargetScale(r, EdramKeySamplePitch(key));
+    td.Width = Scaled(EdramKeySamplePitch(key), TargetScale(r, EdramKeySamplePitch(key)));
+    td.Height = Scaled(EdramSampleRows(EdramKeySamplePitch(key)), TargetScale(r, EdramKeySamplePitch(key)));
     td.MipLevels = td.ArraySize = 1;
     td.Format = DXGI_FORMAT(HostColorFormat((key >> 12) & 0xF));
     td.SampleDesc.Count = 1;
@@ -1171,8 +1177,8 @@ static ID3D11DepthStencilView* DepthTargetFor(ID3D11Device* device, ID3D11Device
     if (r.depthTargets.size() >= kMaxEdramTargets)
         return nullptr;
     D3D11_TEXTURE2D_DESC td{};
-    td.Width = EdramKeySamplePitch(key) * TargetScale(r, EdramKeySamplePitch(key));
-    td.Height = EdramSampleRows(EdramKeySamplePitch(key)) * TargetScale(r, EdramKeySamplePitch(key));
+    td.Width = Scaled(EdramKeySamplePitch(key), TargetScale(r, EdramKeySamplePitch(key)));
+    td.Height = Scaled(EdramSampleRows(EdramKeySamplePitch(key)), TargetScale(r, EdramKeySamplePitch(key)));
     td.MipLevels = td.ArraySize = 1;
     // Typeless so depth-source resolves can read it (depthSrvs: depth as R32_FLOAT).
     td.Format = DXGI_FORMAT_R32G8X24_TYPELESS;
@@ -1498,9 +1504,9 @@ void D3D11Renderer::BindRegisterState(const RegisterFile& regs, uint32_t texSlot
     SharedConstants shared = BuildSharedConstants(regs, layout.pitch, layout.sampleRows / layout.samplesY);
     shared.exportBase = r.exportBase;
     shared.exportBytes = r.exportBytes;
-    const uint32_t targetScale = TargetScale(r, layout.samplePitch);
-    shared.positionScale[0] = 1.0f / float(targetScale * layout.samplesX);
-    shared.positionScale[1] = 1.0f / float(targetScale * layout.samplesY);
+    const float targetScale = TargetScale(r, layout.samplePitch);
+    shared.positionScale[0] = 1.0f / (targetScale * float(layout.samplesX));
+    shared.positionScale[1] = 1.0f / (targetScale * float(layout.samplesY));
 
     // Render targets: RT0, RT1-3 with a colour mask (MRT), and the depth surface.
     static constexpr uint32_t kInfo[4] = { kRegRbColorInfo, kRegRbColor1Info, kRegRbColor2Info, kRegRbColor3Info };
@@ -1535,7 +1541,7 @@ void D3D11Renderer::BindRegisterState(const RegisterFile& regs, uint32_t texSlot
     {
         m_context->OMSetRenderTargets(count, rtvs, DepthTargetFor(m_device, m_context, r, keys[4]));
         r.srvShadow = false;
-        D3D11_VIEWPORT vp{ 0, 0, float(layout.samplePitch * targetScale), float(layout.sampleRows * targetScale), 0, 1 };
+        D3D11_VIEWPORT vp{ 0, 0, float(Scaled(layout.samplePitch, targetScale)), float(Scaled(layout.sampleRows, targetScale)), 0, 1 };
         m_context->RSSetViewports(1, &vp);
         std::copy(keys, keys + 5, r.boundKeys);
         r.bound = true;
@@ -1610,7 +1616,7 @@ void D3D11Renderer::BindRegisterState(const RegisterFile& regs, uint32_t texSlot
     // Polygon offset (HostDepthBias); the slope is per host pixel: x host pixels per guest pixel.
     float slope = 0;
     const int32_t depthBias = HostDepthBias(regs, slope);
-    slope *= float(targetScale * layout.samplesX);
+    slope *= targetScale * float(layout.samplesX);
     auto& raster = r.raster[{ cull | (ccw << 4) | (noClip << 5), depthBias, slope }];
     if (!raster)
     {
@@ -1697,7 +1703,7 @@ void D3D11Renderer::BindRegisterState(const RegisterFile& regs, uint32_t texSlot
             auto hit = r.resolved.find(t.physical);
             RuntimeLog("[rtrace] draw %u slot %u fetch %08X fmt %u %ux%ux%u dim %u st %d tiled %d resolve %ux%u fmt %u scale %u\n", m_lastDrawn + m_lastSkipped, slot, t.physical,
                 t.format, t.width, t.height, t.depth, t.dimension, t.stacked, t.tiled, hit != r.resolved.end() ? hit->second.width : 0, hit != r.resolved.end() ? hit->second.height : 0,
-                hit != r.resolved.end() ? hit->second.destFormat : 0, hit != r.resolved.end() ? hit->second.scale : 0);
+                hit != r.resolved.end() ? hit->second.destFormat : 0, hit != r.resolved.end() ? unsigned(hit->second.scale * 2) : 0); // x2: 3 = 1.5
         }
         // A depth-source resolve's destination fetched as k_24_8 / k_24_8_FLOAT: the depth pyramid
         // (ExecuteResolve). Same address can also hold a colour resolve of another format (the menu
@@ -3073,8 +3079,8 @@ void D3D11Renderer::ExecuteDraw(const DrawCall& d, const Frame& frame)
         const uint32_t wo = r.regs[kRegPaScWindowOffset];
         const bool useOffset = (r.regs[0x2205] >> 16) & 1;
         const int ox = useOffset ? int32_t(wo << 17) >> 17 : 0, oy = useOffset ? int32_t(wo << 1) >> 17 : 0;
-        const uint32_t watchScale = TargetScale(r, r.lastLayout.samplePitch);
-        const int hx = (watchX + ox) * int(r.lastLayout.samplesX * watchScale), hy = (watchY + oy) * int(r.lastLayout.samplesY * watchScale);
+        const float watchScale = TargetScale(r, r.lastLayout.samplePitch);
+        const int hx = int((watchX + ox) * r.lastLayout.samplesX * watchScale), hy = int((watchY + oy) * r.lastLayout.samplesY * watchScale);
         D3D11_TEXTURE2D_DESC td;
         r.last->texture->GetDesc(&td);
         static std::unordered_map<uint32_t, ComPtr<ID3D11Texture2D>> staging;
@@ -3191,8 +3197,8 @@ void D3D11Renderer::ExecuteQuery(const OcclusionQuery& q)
         if (q.end)
         {
             const SurfaceLayout l = EdramSurfaceLayout(r.regs[kRegRbSurfaceInfo]);
-            const uint32_t qs = TargetScale(r, l.samplePitch);
-            r.pendingQueries.push_back({ r.activeQuery, q.address, q.generation, GetTickCount64(), qs * qs * l.samplesX * l.samplesY, r.querySeq++ });
+            const float qs = TargetScale(r, l.samplePitch);
+            r.pendingQueries.push_back({ r.activeQuery, q.address, q.generation, GetTickCount64(), std::max(1u, uint32_t(std::lround(qs * qs * l.samplesX * l.samplesY))), r.querySeq++ });
         }
         r.activeQuery.Reset();
     }
@@ -3348,7 +3354,7 @@ void D3D11Renderer::ExecuteResolve(const Resolve& res)
                 r.bound = false;
                 r.srvShadow = false;
                 const SurfaceLayout layout = EdramSurfaceLayout(res.surfaceInfo);
-                const uint32_t scale = TargetScale(r, layout.samplePitch);
+                const float scale = TargetScale(r, layout.samplePitch);
                 m_context->CSSetShader(r.depthPyramidCs.Get(), nullptr, 0);
                 m_context->CSSetConstantBuffers(0, 1, r.saturateRect.GetAddressOf());
                 uint32_t lw = w, lh = h;
@@ -3357,7 +3363,7 @@ void D3D11Renderer::ExecuteResolve(const Resolve& res)
                     // rect.xy = source origin (level 0), rect.zw = previous level's size (levels 1+).
                     const int32_t q[8] = { res.hasRect ? std::max(res.rect[0], 0) : 0, res.hasRect ? std::max(res.rect[1], 0) : 0,
                         m ? int32_t(std::max(w >> (m - 1), 1u)) : 0, m ? int32_t(std::max(h >> (m - 1), 1u)) : 0,
-                        int32_t(scale * layout.samplesX), int32_t(scale * layout.samplesY), m ? 1 : 0, 0 };
+                        int32_t(std::lround(2 * scale * layout.samplesX)), int32_t(std::lround(2 * scale * layout.samplesY)), m ? 1 : 0, 0 }; // block x2
                     m_context->UpdateSubresource(r.saturateRect.Get(), 0, nullptr, q, 0, 0);
                     ID3D11ShaderResourceView* srv = m ? z.mipSrv[m - 1].Get() : zsrv->second.Get();
                     ID3D11UnorderedAccessView* uav = z.mipUav[m].Get();
@@ -3372,7 +3378,7 @@ void D3D11Renderer::ExecuteResolve(const Resolve& res)
                     lh = std::max(lh / 2, 1u);
                 }
                 // Full-scale level 0 (block = MSAA samples only): what single-level fetches bind.
-                const uint32_t fw = w * scale, fh = h * scale;
+                const uint32_t fw = Scaled(w, scale), fh = Scaled(h, scale);
                 if (scale > 1 && (z.fullW != fw || z.fullH != fh || !z.full))
                 {
                     z.full = nullptr; z.fullSrv = nullptr; z.fullUav = nullptr; z.fullW = z.fullH = 0;
@@ -3394,8 +3400,8 @@ void D3D11Renderer::ExecuteResolve(const Resolve& res)
                     z.full = nullptr, z.fullSrv = nullptr, z.fullUav = nullptr, z.fullW = z.fullH = 0;
                 if (z.fullUav)
                 {
-                    const int32_t q[8] = { int32_t(scale) * (res.hasRect ? std::max(res.rect[0], 0) : 0), int32_t(scale) * (res.hasRect ? std::max(res.rect[1], 0) : 0),
-                        0, 0, int32_t(layout.samplesX), int32_t(layout.samplesY), 0, 0 };
+                    const int32_t q[8] = { int32_t(Scaled(res.hasRect ? std::max(res.rect[0], 0) : 0, scale)), int32_t(Scaled(res.hasRect ? std::max(res.rect[1], 0) : 0, scale)),
+                        0, 0, int32_t(2 * layout.samplesX), int32_t(2 * layout.samplesY), 0, 0 }; // block x2
                     m_context->UpdateSubresource(r.saturateRect.Get(), 0, nullptr, q, 0, 0);
                     ID3D11ShaderResourceView* srv = zsrv->second.Get();
                     ID3D11UnorderedAccessView* uav = z.fullUav.Get();
@@ -3444,7 +3450,7 @@ void D3D11Renderer::ExecuteResolve(const Resolve& res)
                                 }
                             m_context->Unmap(st.Get(), 0);
                             RuntimeLog("[hiz] %08X %ux%u key %08X rect %d,%d block %ux%u: min %g max %g zeros %u ones %u of %u\n", base, w, h, depthKey,
-                                res.hasRect ? res.rect[0] : -1, res.hasRect ? res.rect[1] : -1, scale * layout.samplesX, scale * layout.samplesY,
+                                res.hasRect ? res.rect[0] : -1, res.hasRect ? res.rect[1] : -1, unsigned(scale * layout.samplesX), unsigned(scale * layout.samplesY),
                                 lo, hi, zeros, ones, w * h);
                         }
                     }
@@ -3463,7 +3469,7 @@ void D3D11Renderer::ExecuteResolve(const Resolve& res)
         D3D11_TEXTURE2D_DESC sd;
         source->texture->GetDesc(&sd);
         const uint32_t base = res.destBase & 0x1FFFF000;
-        const uint32_t srcScale = TargetScale(r, EdramSurfaceLayout(res.surfaceInfo).samplePitch);
+        const float srcScale = TargetScale(r, EdramSurfaceLayout(res.surfaceInfo).samplePitch);
         if ((res.destBase & 0xFFF) && TraceResolveOnce((3ull << 60) | res.destBase))
             RuntimeLog("[resolve] dest %08X has sub-page offset %03X (dropped)\n", res.destBase, res.destBase & 0xFFF);
         if (TraceResolveOnce((4ull << 60) | res.colorInfo | (uint64_t(res.surfaceInfo & 0x3FFF) << 32)))
@@ -3509,8 +3515,8 @@ void D3D11Renderer::ExecuteResolve(const Resolve& res)
             if (w && h && (dst.width != w || dst.height != h || dst.format != sd.Format || dst.scale != srcScale))
             {
                 D3D11_TEXTURE2D_DESC td{};
-                td.Width = w * srcScale;
-                td.Height = h * srcScale;
+                td.Width = Scaled(w, srcScale);
+                td.Height = Scaled(h, srcScale);
                 td.MipLevels = td.ArraySize = 1;
                 td.Format = sd.Format;
                 td.SampleDesc.Count = 1;
@@ -3555,9 +3561,8 @@ void D3D11Renderer::ExecuteResolve(const Resolve& res)
                 // Destination host texels from here on (scale per guest pixel); the source also has the
                 // surface's MSAA samples per pixel, averaged when copy_sample_select (RB_COPY_CONTROL bits
                 // 4-6) is 4+ (0-3 = that sample: sample 0 here).
-                const int32_t s = int32_t(srcScale);
-                x0 *= s, y0 *= s, x1 *= s, y1 *= s;
-                const uint32_t hostDy = dy * srcScale;
+                x0 = int32_t(Scaled(x0, srcScale)), y0 = int32_t(Scaled(y0, srcScale)), x1 = int32_t(Scaled(x1, srcScale)), y1 = int32_t(Scaled(y1, srcScale));
+                const uint32_t hostDy = Scaled(dy, srcScale);
                 const uint32_t destFormat = (res.destInfo >> 7) & 0x3F;
                 const SurfaceLayout layout = EdramSurfaceLayout(res.surfaceInfo);
                 const bool multisampled = layout.samplesX * layout.samplesY > 1;
@@ -3847,10 +3852,10 @@ void D3D11Renderer::SetAnisotropy(uint32_t anisotropy)
 // A new internal resolution between guest frames: every resolve copy is stretched into a texture of
 // the new size (render-to-texture results made once, e.g. at load, survive); EDRAM targets are made
 // again at the new size by the next bind (the title clears or redraws them each frame).
-void D3D11Renderer::ApplyScale(uint32_t scale)
+void D3D11Renderer::ApplyScale(float scale)
 {
     DrawResources& r = *m_draw;
-    scale = std::clamp<uint32_t>(scale, 1, 4);
+    scale = NearestScale(scale);
     if (scale == r.scale)
         return;
     m_context->OMSetRenderTargets(0, nullptr, nullptr);
@@ -3859,8 +3864,8 @@ void D3D11Renderer::ApplyScale(uint32_t scale)
         auto& old = it->second;
         D3D11_TEXTURE2D_DESC td{};
         old.texture->GetDesc(&td);
-        td.Width = old.width * scale;
-        td.Height = old.height * scale;
+        td.Width = Scaled(old.width, scale);
+        td.Height = Scaled(old.height, scale);
         UINT support = 0;
         const bool rtv = SUCCEEDED(m_device->CheckFormatSupport(td.Format, &support)) && (support & D3D11_FORMAT_SUPPORT_RENDER_TARGET);
         td.BindFlags |= rtv ? D3D11_BIND_RENDER_TARGET : 0;
@@ -3896,7 +3901,7 @@ void D3D11Renderer::ApplyScale(uint32_t scale)
     r.bound = false; r.srvShadow = false;
     r.stateDirty = true;
     r.scale = m_scale = scale;
-    RuntimeLog("[d3d11] internal resolution %ux%u (scale %u)\n", kTargetWidth * m_scale, 720 * m_scale, m_scale);
+    RuntimeLog("[d3d11] internal resolution %ux%u (scale %g)\n", Scaled(kTargetWidth, m_scale), Scaled(720u, m_scale), double(m_scale));
 }
 
 static std::vector<uint32_t> ReadTarget(ID3D11Device* device, ID3D11DeviceContext* context, ID3D11Texture2D* target);
@@ -3955,7 +3960,7 @@ void D3D11Renderer::Present(const Frame& frame)
             r.pendingFences.clear();
         }
         // A new internal resolution (F1 menu) starts with a guest frame, never between its partials.
-        if (const uint32_t scale = m_pendingScale; scale && !m_midGuestFrame)
+        if (const float scale = m_pendingScale; scale > 0 && !m_midGuestFrame)
         {
             m_pendingScale = 0;
             ApplyScale(scale);
@@ -4318,10 +4323,11 @@ uint32_t D3D11Renderer::ReadTargetTexel(uint32_t x, uint32_t y)
         return 0;
     std::vector<uint32_t> texels = ReadTarget(m_device, m_context, m_draw->last->texture.Get());
     const ColorTarget& t = *m_draw->last;
-    const uint32_t sx = m_draw->scale * m_draw->lastLayout.samplesX, sy = m_draw->scale * m_draw->lastLayout.samplesY;
-    if (texels.empty() || x * sx >= t.width || y * sy >= t.height)
+    const float sx = m_draw->scale * m_draw->lastLayout.samplesX, sy = m_draw->scale * m_draw->lastLayout.samplesY;
+    const uint32_t hx = uint32_t(x * sx), hy = uint32_t(y * sy);
+    if (texels.empty() || hx >= t.width || hy >= t.height)
         return 0;
-    return texels[size_t(y * sy) * t.width + x * sx];
+    return texels[size_t(hy) * t.width + hx];
 }
 
 void D3D11Renderer::Dump(const std::string& path, ID3D11Texture2D* source, bool ramp)

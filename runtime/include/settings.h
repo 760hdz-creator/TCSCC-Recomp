@@ -6,7 +6,7 @@
 
 struct DisplaySettings
 {
-    uint32_t scale = 1; // internal resolution = 1280x720 * scale (1..4)
+    float scale = 1; // internal resolution = 1280x720 * scale, one of kScales ([Display] Scale=1|1.5|2|3|4)
     enum Mode { Windowed, Borderless, Fullscreen } mode = Windowed;
     bool vsync = true;
     uint32_t anisotropy = 1; // minimum anisotropic filtering for linear-filtered textures (1 = off .. 16)
@@ -51,10 +51,14 @@ struct DisplaySettings
     enum Upscaler { UpscalerLanczos, UpscalerNis } upscaler = UpscalerLanczos;
 };
 
+// Internal resolution scales: 1280x720, 1920x1080, 2560x1440, 3840x2160, 5120x2880.
+inline constexpr float kScales[] = { 1.0f, 1.5f, 2.0f, 3.0f, 4.0f };
 // Internal resolution scale for an upscaling mode: the window height divided by the mode's ratio
-// (Native 1, Quality 1.5, Balanced 1.7, Performance 2, Ultra Performance 3), in 720-row steps,
-// rounded, 1..4. UpOff returns manualScale.
-uint32_t UpscalingScale(DisplaySettings::Upscaling mode, uint32_t windowHeight, uint32_t manualScale);
+// (Native 1, Quality 1.5, Balanced 1.7, Performance 2, Ultra Performance 3) / 720, the nearest of
+// kScales. UpOff returns manualScale.
+float UpscalingScale(DisplaySettings::Upscaling mode, uint32_t windowHeight, float manualScale);
+// The kScales entry nearest to v.
+float NearestScale(double v);
 // FrameRate setting choices.
 inline constexpr uint32_t kFrameRates[] = { 30, 60, 120, 144, 165, 240 };
 const char* UpscalingName(DisplaySettings::Upscaling mode);     // ini value ("UltraPerformance")

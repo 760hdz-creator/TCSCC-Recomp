@@ -239,8 +239,8 @@ static void RenderThread(DisplaySettings s)
     GetClientRect(hwnd, &rc);
     // Effective display settings, so a user's log shows what they ran with.
     static const char* kModes[] = { "windowed", "borderless", "fullscreen" };
-    RuntimeLog("[settings] window %ldx%ld %s, FrameRate %u, VSync %d, Scale %u, Upscaling %s, AA %s, DrawDistance %s, Anisotropy %u\n",
-        rc.right, rc.bottom, kModes[s.mode], s.frameRate, s.vsync ? 1 : 0, s.scale, UpscalingName(s.upscaling),
+    RuntimeLog("[settings] window %ldx%ld %s, FrameRate %u, VSync %d, Scale %g, Upscaling %s, AA %s, DrawDistance %s, Anisotropy %u\n",
+        rc.right, rc.bottom, kModes[s.mode], s.frameRate, s.vsync ? 1 : 0, double(s.scale), UpscalingName(s.upscaling),
         AntiAliasingName(s.antiAliasing), DrawDistanceName(s.drawDistance), s.anisotropy);
     D3D11Renderer renderer;
     renderer.SetCleanGoggles(s.cleanGoggles);

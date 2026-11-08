@@ -85,9 +85,9 @@ DisplaySettings LoadDisplaySettings(const std::filesystem::path& ini)
     {
         if (key == "scale")
         {
-            int v = atoi(value.c_str());
-            if (v >= 1 && v <= 4)
-                s.scale = uint32_t(v);
+            const double v = atof(value.c_str());
+            if (std::abs(NearestScale(v) - v) < 0.01)
+                s.scale = NearestScale(v);
         }
         else if (key == "mode")
         {
@@ -190,13 +190,22 @@ const char* AntiAliasingName(DisplaySettings::AntiAliasing aa)
     return aa == DisplaySettings::AaFxaa ? "FXAA" : aa == DisplaySettings::AaSmaa ? "SMAA" : "Off";
 }
 
-uint32_t UpscalingScale(DisplaySettings::Upscaling mode, uint32_t windowHeight, uint32_t manualScale)
+float NearestScale(double v)
+{
+    float best = kScales[0];
+    for (float s : kScales)
+        if (std::abs(s - v) < std::abs(best - v))
+            best = s;
+    return best;
+}
+
+float UpscalingScale(DisplaySettings::Upscaling mode, uint32_t windowHeight, float manualScale)
 {
     static const double ratios[] = { 1.0, 1.0, 1.5, 1.7, 2.0, 3.0 };
     if (mode == DisplaySettings::UpOff || !windowHeight)
-        return std::clamp<uint32_t>(manualScale, 1, 4);
+        return NearestScale(manualScale);
     const double rows = double(windowHeight) / ratios[std::clamp(int(mode), 0, 5)];
-    return std::clamp<uint32_t>(uint32_t(std::lround(rows / 720.0)), 1, 4);
+    return NearestScale(rows / 720.0);
 }
 
 UpdateSettings LoadUpdateSettings(const std::filesystem::path& ini)

@@ -22,9 +22,9 @@ public:
 
     D3D11Renderer();
     ~D3D11Renderer() override;
-    // scale: internal resolution factor (settings.ini [Display] Scale, 1-4) for EDRAM targets and resolves;
+    // scale: internal resolution factor (settings.ini [Display] Scale: kScales, 1 / 1.5 / 2 / 3 / 4) for EDRAM targets and resolves;
     // anisotropy: minimum for linear-filtered textures ([Display] Anisotropy, 1-16).
-    bool Init(HWND hwnd, uint32_t width, uint32_t height, bool vsync, uint32_t scale = 1, uint32_t anisotropy = 1);
+    bool Init(HWND hwnd, uint32_t width, uint32_t height, bool vsync, float scale = 1, uint32_t anisotropy = 1);
     void Present(const Frame& frame) override;
     void Resize(uint32_t width, uint32_t height);
     uint64_t PresentedFrames() const { return m_presented; }
@@ -71,8 +71,8 @@ public:
     void SetPostFx(const PostFx& fx) { m_postFx = fx; }
     // Internal resolution scale (1-4), changed between guest frames: resolve copies are rescaled, EDRAM
     // targets rebuilt.
-    void SetScale(uint32_t scale) { m_pendingScale = scale; }
-    uint32_t Scale() const { return m_scale; }
+    void SetScale(float scale) { m_pendingScale = scale; }
+    float Scale() const { return m_scale; }
     void SetVsync(bool on) { m_vsync = on; }
     void SetAnisotropy(uint32_t anisotropy);
     // Mip LOD bias for linear-filtered, mipmapped textures (0 = the guest's choice; negative = sharper).
@@ -109,7 +109,7 @@ private:
     // Where the frame goes in the back buffer: the largest 16:9 rect, centred (pillar/letterbox);
     // the whole window when it is 16:9 within 1%. Clears the bars when they exist.
     D3D11_VIEWPORT PresentViewport();
-    void ApplyScale(uint32_t scale);
+    void ApplyScale(float scale);
     // ramp: apply the display gamma ramp (presented frames, so dumps match the window).
     void Dump(const std::string& path, ID3D11Texture2D* source, bool ramp = false);
     HWND m_hwnd = nullptr;
@@ -120,7 +120,8 @@ private:
     ID3D11RenderTargetView* m_backBuffer = nullptr;
     std::unique_ptr<DrawResources> m_draw;
     bool m_vsync = true;
-    uint32_t m_scale = 1, m_anisotropy = 1;
+    float m_scale = 1;
+    uint32_t m_anisotropy = 1;
     uint64_t m_readbackUs = 0; // renderer thread only
     bool m_cleanGoggles = false;
     float m_gamma = 1.0f;
@@ -131,7 +132,7 @@ private:
     bool m_lastFrontbuffer = false;
     std::string m_dumpPath, m_backDumpPath;
     PostFx m_postFx;
-    uint32_t m_pendingScale = 0;
+    float m_pendingScale = 0;
     bool m_midGuestFrame = false; // the last Frame was partial: the guest frame continues
     std::function<void()> m_overlay;
 };
