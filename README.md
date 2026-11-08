@@ -93,7 +93,7 @@ otherwise. **Online is on by default** (without Steam running the game plays off
 | **Ultrawide** | In a window wider than 16:9, shows more at the sides (Hor+) instead of black bars. The HUD and menus are stretched; objective markers stay on their targets. |
 | **Draw distance** | Console (default), High, Ultra or Maximum. Small objects stay visible and models keep their detailed versions 2x (High) or 4x (Ultra) further away. Maximum never hides or simplifies them. No measurable fps cost at 60 fps on 01_Market. |
 | Field of view | 70-120 degrees (horizontal; the game uses 90). Zoomed views keep their own. |
-| Internal resolution | Renders at 1x-4x and filters down (supersampling). The game itself renders at 1040x576. |
+| Internal resolution | 1280x720, 1920x1080, 2560x1440, 3840x2160 or 5120x2880; above the window it filters down (supersampling). The game itself renders at 1040x576. |
 | **Anti-aliasing** | Off, FXAA or **SMAA** (sharper on fine detail). The game's own 4x MSAA is always on. |
 | **Brightness** | Display gamma on top of the game's own brightness (50-150%); black stays black. |
 | **Texture sharpness** | Default, Sharp or Sharper: more detailed textures at a distance. |
