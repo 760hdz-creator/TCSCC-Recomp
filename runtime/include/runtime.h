@@ -34,6 +34,9 @@ void TimelineEvent(char kind, uint32_t a = 0, uint32_t b = 0);
 // Guest time blocked in D3D BlockOnFence (wait_trace.cpp adds, timeline.cpp keeps): us since the last Take.
 void GuestGpuWaitAdd(uint32_t us);
 uint64_t GuestGpuWaitUsTake();
+// Guest time polling occlusion-query results until ready (GetData sub_825283A0), for [perf].
+void GuestQueryWaitAdd(uint32_t us);
+uint64_t GuestQueryWaitUsTake();
 
 // The title has read the signed-in profile's settings (main menu, after the profile is picked):
 // the update notification waits for it.

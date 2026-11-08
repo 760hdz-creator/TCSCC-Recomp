@@ -30,6 +30,8 @@ public:
     uint64_t PresentedFrames() const { return m_presented; }
     // Draws executed / skipped (unsupported primitive, index source or shader) in the last frame.
     uint32_t LastDrawn() const { return m_lastDrawn; }
+    // Microseconds spent blocked in GPU -> CPU readbacks (PS memexport) since the last call.
+    uint64_t ReadbackUsTake() { const uint64_t us = m_readbackUs; m_readbackUs = 0; return us; }
     uint32_t LastSkipped() const { return m_lastSkipped; }
     // Resolves that copied the target in the last frame; whether it presented the swap's frontbuffer
     // resolve (else the render target itself).
@@ -119,6 +121,7 @@ private:
     std::unique_ptr<DrawResources> m_draw;
     bool m_vsync = true;
     uint32_t m_scale = 1, m_anisotropy = 1;
+    uint64_t m_readbackUs = 0; // renderer thread only
     bool m_cleanGoggles = false;
     float m_gamma = 1.0f;
     bool m_ultrawide = false; // Hor+ in windows wider than 16:9 (PresentViewport, camera.cpp)

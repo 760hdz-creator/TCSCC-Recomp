@@ -428,6 +428,12 @@ static void RenderThread(DisplaySettings s)
                 (unsigned long long)frame.stats.frame, ms, ShaderCompilerCompileCount(), ShaderCompilerFailedCount(),
                 ShaderCompilerPendingCount(), frame.stats.draws);
         busyDraws += renderer.LastDrawn();
+        // [perf] renderer time over every Frame, partials included (most draws of a guest frame run
+        // in its partials: the whole-frame "render" figure misses them).
+        static LONGLONG perfAllTicks = 0;
+        static uint32_t perfPartials = 0;
+        perfAllTicks += t1.QuadPart - t0.QuadPart;
+        perfPartials += frame.partial;
         if (frame.partial)
             continue;
         busyFrames++;
@@ -439,7 +445,7 @@ static void RenderThread(DisplaySettings s)
         {
             static LONGLONG perfStart = t1.QuadPart, lastPresent = 0, renderTicks = 0, renderMax = 0;
             static uint32_t frames = 0, gapMaxUs = 0, gaps40 = 0, gaps60 = 0;
-            renderTicks += t1.QuadPart - t0.QuadPart; // whole frame only; partials are rare
+            renderTicks += t1.QuadPart - t0.QuadPart; // whole frame only (partials: "renderer busy")
             renderMax = std::max<LONGLONG>(renderMax, t1.QuadPart - t0.QuadPart);
             if (lastPresent)
             {
@@ -456,6 +462,11 @@ static void RenderThread(DisplaySettings s)
                 RuntimeLog("[perf] %.1f fps, frames over 40 ms %u, over 60 ms %u, longest %.1f ms; render %.1f ms/frame (max %.1f); guest GPU wait %.0f ms/s\n",
                     frames / secs, gaps40, gaps60, gapMaxUs / 1000.0, double(renderTicks) * tickMs / frames, double(renderMax) * tickMs,
                     double(GuestGpuWaitUsTake()) / 1000.0 / secs);
+                RuntimeLog("[perf] renderer busy %.0f ms/s (partials included), partials %.1f/frame, GPU readback stalls %.0f ms/s, guest query wait %.0f ms/s\n",
+                    double(perfAllTicks) * tickMs / secs, double(perfPartials) / frames, double(renderer.ReadbackUsTake()) / 1000.0 / secs,
+                    double(GuestQueryWaitUsTake()) / 1000.0 / secs);
+                perfAllTicks = 0;
+                perfPartials = 0;
                 perfStart = t1.QuadPart;
                 renderTicks = renderMax = 0;
                 frames = gapMaxUs = gaps40 = gaps60 = 0;

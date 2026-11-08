@@ -312,18 +312,24 @@ PPC_FUNC(sub_825283A0)
 {
     static const bool spin = getenv("SCDA_GETDATA_SPIN") != nullptr;
     thread_local uint32_t lastQuery = 0, run = 0;
-    thread_local std::chrono::steady_clock::time_point lastPending;
+    thread_local std::chrono::steady_clock::time_point lastPending, firstPending;
     const uint32_t query = ctx.r3.u32;
     const uint32_t seq = GpuWriteSeq().load(std::memory_order_acquire);
     __imp__sub_825283A0(ctx, base);
     if (spin || ctx.r3.u32 != 1)
     {
+        // [perf]: a poll run on this query just ended (ready): its length was spent waiting.
+        if (run && query == lastQuery)
+            GuestQueryWaitAdd(uint32_t(std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - firstPending).count()));
         run = 0;
         return;
     }
     const auto now = std::chrono::steady_clock::now();
     if (query != lastQuery || now - lastPending > std::chrono::microseconds(200))
         run = 0;
+    if (!run)
+        firstPending = now;
     lastQuery = query;
     lastPending = now;
     if (++run < 16)

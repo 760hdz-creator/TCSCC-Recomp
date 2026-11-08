@@ -63,3 +63,6 @@ void TimelineStart()
 static std::atomic<uint64_t> g_guestGpuWaitUs;
 void GuestGpuWaitAdd(uint32_t us) { g_guestGpuWaitUs += us; }
 uint64_t GuestGpuWaitUsTake() { return g_guestGpuWaitUs.exchange(0); }
+static std::atomic<uint64_t> g_guestQueryWaitUs{ 0 };
+void GuestQueryWaitAdd(uint32_t us) { g_guestQueryWaitUs += us; }
+uint64_t GuestQueryWaitUsTake() { return g_guestQueryWaitUs.exchange(0); }

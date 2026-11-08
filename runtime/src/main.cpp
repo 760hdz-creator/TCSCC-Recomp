@@ -328,6 +328,10 @@ namespace steamnet { int RunBridge(int argc, char** argv); } // online/steam_bri
 void NetSelfTestStart();                                      // online/net_selftest.cpp
 namespace xnet { void OnlineStartEarly(); }                  // online/xnet.cpp
 
+// NVIDIA Optimus / AMD PowerXpress laptops: run on the dedicated GPU, not the integrated one.
+extern "C" __declspec(dllexport) unsigned long NvOptimusEnablement = 1;
+extern "C" __declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
+
 int main(int argc, char** argv)
 {
     // Per-monitor DPI aware: on a scaled display (e.g. 4K at 150%) the window, the back buffer and the

@@ -13,6 +13,7 @@
 #include <unordered_set>
 #include <vector>
 #include <wrl/client.h>
+#include <dxgi1_6.h>
 #include <gpu/d3d11_renderer.h>
 #include "../camera.h"
 #include <gpu/draw_state.h>
@@ -614,6 +615,35 @@ void D3D11Renderer::ReleaseAll()
     Release(m_device);
 }
 
+// High-performance adapter (IDXGIFactory6 GPU preference; older Windows: enumeration order).
+// Null = none found: the default device.
+static ComPtr<IDXGIAdapter1> PickAdapter()
+{
+    ComPtr<IDXGIFactory1> factory;
+    if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))))
+        return nullptr;
+    ComPtr<IDXGIFactory6> f6;
+    factory.As(&f6);
+    auto at = [&](UINT i, ComPtr<IDXGIAdapter1>& a) {
+        if (f6)
+            return SUCCEEDED(f6->EnumAdapterByGpuPreference(i, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, IID_PPV_ARGS(&a)));
+        return SUCCEEDED(factory->EnumAdapters1(i, &a));
+    };
+    const char* forced = getenv("SCDA_ADAPTER");
+    ComPtr<IDXGIAdapter1> pick, a;
+    for (UINT i = 0; at(i, a); i++, a.Reset())
+    {
+        DXGI_ADAPTER_DESC1 d{};
+        a->GetDesc1(&d);
+        const bool software = (d.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0;
+        RuntimeLog("[d3d11] adapter %u: %ls (vendor %04X, %llu MB)%s\n", i, d.Description, d.VendorId,
+            (unsigned long long)(d.DedicatedVideoMemory >> 20), software ? " software" : "");
+        if (forced ? i == UINT(atoi(forced)) : !pick && !software)
+            pick = a;
+    }
+    return pick;
+}
+
 D3D11Renderer::~D3D11Renderer() { ReleaseAll(); }
 
 bool D3D11Renderer::Init(HWND hwnd, uint32_t width, uint32_t height, bool vsync, uint32_t scale, uint32_t anisotropy)
@@ -638,11 +668,22 @@ bool D3D11Renderer::Init(HWND hwnd, uint32_t width, uint32_t height, bool vsync,
     D3D_FEATURE_LEVEL level = D3D_FEATURE_LEVEL_11_0;
     // SCDA_D3D_DEBUG=1: debug layer; its messages go to the runtime log after each frame.
     UINT flags = getenv("SCDA_D3D_DEBUG") ? D3D11_CREATE_DEVICE_DEBUG : 0;
-    HRESULT hr = D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, flags, &level, 1,
+    // Laptops with integrated + dedicated graphics: the first adapter Windows lists can be the
+    // integrated one. Ask DXGI for the high-performance GPU (SCDA_ADAPTER=<n>: that index of the
+    // same order instead, for tests on a second GPU). Every adapter is logged.
+    ComPtr<IDXGIAdapter1> chosen = PickAdapter();
+    const D3D_DRIVER_TYPE driver = chosen ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE;
+    HRESULT hr = D3D11CreateDeviceAndSwapChain(chosen.Get(), driver, nullptr, flags, &level, 1,
         D3D11_SDK_VERSION, &sd, &m_swapChain, &m_device, nullptr, &m_context);
     if (FAILED(hr) && flags)
     {
         printf("[d3d11] debug layer unavailable (install Graphics Tools)\n");
+        hr = D3D11CreateDeviceAndSwapChain(chosen.Get(), driver, nullptr, 0, &level, 1,
+            D3D11_SDK_VERSION, &sd, &m_swapChain, &m_device, nullptr, &m_context);
+    }
+    if (FAILED(hr) && chosen)
+    {
+        RuntimeLog("[d3d11] preferred adapter failed (0x%08X): default adapter\n", unsigned(hr));
         hr = D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, &level, 1,
             D3D11_SDK_VERSION, &sd, &m_swapChain, &m_device, nullptr, &m_context);
     }
@@ -3001,7 +3042,13 @@ void D3D11Renderer::ExecuteDraw(const DrawCall& d, const Frame& frame)
         m_context->CopySubresourceRegion(r.exportStaging.Get(), 0, 0, 0, 0, r.exportBuf.Get(), 0, &box);
         m_context->CopySubresourceRegion(r.exportStaging.Get(), 0, (4u << 20) - 8, 0, 0, r.exportBuf.Get(), 0, &rangeBox);
         D3D11_MAPPED_SUBRESOURCE map;
-        if (SUCCEEDED(m_context->Map(r.exportStaging.Get(), 0, D3D11_MAP_READ, 0, &map)))
+        LARGE_INTEGER m0, m1, qf;
+        QueryPerformanceCounter(&m0);
+        const HRESULT mapped = m_context->Map(r.exportStaging.Get(), 0, D3D11_MAP_READ, 0, &map);
+        QueryPerformanceCounter(&m1);
+        QueryPerformanceFrequency(&qf);
+        m_readbackUs += uint64_t((m1.QuadPart - m0.QuadPart) * 1000000 / qf.QuadPart); // [perf] GPU readback stalls
+        if (SUCCEEDED(mapped))
         {
             const uint8_t* data = static_cast<const uint8_t*>(map.pData);
             uint32_t lo, hi;
