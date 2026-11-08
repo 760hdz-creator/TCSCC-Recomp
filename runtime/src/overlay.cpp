@@ -335,7 +335,7 @@ void ControlsTab()
     bool look = in.mouseLook;
     if (ImGui::Checkbox("Mouse look", &look))
         SaveSetting(ini, "Input", "MouseLook", look ? "1" : "0"), InputSettingsChanged();
-    Hint("The mouse moves the camera (right stick). Applies the next time the game starts.");
+    Hint("The mouse moves the camera (right stick).");
     float sens = in.mouseSensitivity;
     static float dragging = -1; // saved when the slider is released, not every drag frame
     if (dragging >= 0)

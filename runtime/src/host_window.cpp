@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <bit>
+#include <climits>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -20,8 +21,12 @@
 
 static std::atomic<HWND> g_hwnd;
 static std::atomic<uint32_t> g_resizeW, g_resizeH;
-static bool g_mouseLook;   // capture the cursor and feed raw motion to the right stick
+static bool g_rawMouse;    // raw mouse input registered (every run but scripted ones)
 static bool g_cursorHeld;  // cursor hidden and clipped to the client area now
+static int g_absX = INT_MIN, g_absY; // last absolute raw position (INT_MIN: none yet)
+
+// Mouse look on: capture the cursor and feed raw motion to the right stick. Follows the F1 setting live.
+static bool MouseLookOn() { return g_rawMouse && CurrentInputSettings().mouseLook; }
 static std::atomic<bool> g_dumpKeyRequest{ false }; // F8 (SCDA_DEBUG_KEYS): dump the next frame
 
 // Mouse look while the window is in the foreground: the cursor is hidden and kept inside the
@@ -88,8 +93,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         (OverlayOpen() || msg == kOverlayOpenMessage || anywhere || !GuestInFrontEnd()))
     {
         OverlayToggle();
-        if (g_mouseLook)
-            HoldCursor(hwnd, !OverlayWantsCursor() && GetForegroundWindow() == hwnd);
+        if (g_rawMouse)
+            HoldCursor(hwnd, MouseLookOn() && !OverlayWantsCursor() && GetForegroundWindow() == hwnd);
         return 0;
     }
     // SCDA_DEBUG_KEYS=1: F9 occlusion queries all visible, F11 culling off (F10 is a system key) (draw_state.h), toggled live;
@@ -111,8 +116,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     // The clickable update notification came or went: free the cursor for it, or hold it again.
     if (msg == kOverlayCursorMessage)
     {
-        if (g_mouseLook)
-            HoldCursor(hwnd, !OverlayWantsCursor() && GetForegroundWindow() == hwnd);
+        if (g_rawMouse)
+            HoldCursor(hwnd, MouseLookOn() && !OverlayWantsCursor() && GetForegroundWindow() == hwnd);
         return 0;
     }
     if (OverlayWndProc(hwnd, msg, wp, lp))
@@ -141,16 +146,36 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             ApplyWindowMode(hwnd, DisplaySettings::Mode(g_windowMode.load()));
         return 0;
     case WM_ACTIVATE:
-        if (g_mouseLook)
-            HoldCursor(hwnd, LOWORD(wp) != WA_INACTIVE && !OverlayWantsCursor());
+        g_absX = INT_MIN; // an absolute pointer re-enters anywhere: no jump on the first motion
+        if (g_rawMouse)
+            HoldCursor(hwnd, MouseLookOn() && LOWORD(wp) != WA_INACTIVE && !OverlayWantsCursor());
         break; // DefWindowProc gives the window keyboard focus
     case WM_INPUT:
     {
         RAWINPUT raw;
         UINT size = sizeof(raw);
         if (GetRawInputData(reinterpret_cast<HRAWINPUT>(lp), RID_INPUT, &raw, &size, sizeof(RAWINPUTHEADER)) != UINT(-1) &&
-            raw.header.dwType == RIM_TYPEMOUSE && !(raw.data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE))
-            MouseAccumulate(raw.data.mouse.lLastX, raw.data.mouse.lLastY, 0);
+            raw.header.dwType == RIM_TYPEMOUSE && (raw.data.mouse.lLastX || raw.data.mouse.lLastY))
+        {
+            const RAWMOUSE& m = raw.data.mouse;
+            const bool absolute = (m.usFlags & MOUSE_MOVE_ABSOLUTE) != 0;
+            static bool logged[2];
+            if (!logged[absolute])
+                logged[absolute] = true, RuntimeLog("[input] mouse motion: %s\n", absolute ? "absolute (remote desktop, streaming, VM or tablet)" : "relative");
+            if (absolute)
+            {
+                // Remote Desktop, game streaming (Parsec, Moonlight), VMs and pen tablets send positions
+                // (0-65535 over the screen), not motion: the change since the last one is the motion.
+                const bool virt = (m.usFlags & MOUSE_VIRTUAL_DESKTOP) != 0;
+                const int x = MulDiv(m.lLastX, GetSystemMetrics(virt ? SM_CXVIRTUALSCREEN : SM_CXSCREEN), 65535);
+                const int y = MulDiv(m.lLastY, GetSystemMetrics(virt ? SM_CYVIRTUALSCREEN : SM_CYSCREEN), 65535);
+                if (g_absX != INT_MIN)
+                    MouseAccumulate(x - g_absX, y - g_absY, 0);
+                g_absX = x, g_absY = y;
+            }
+            else
+                MouseAccumulate(m.lLastX, m.lLastY, 0);
+        }
         return DefWindowProcW(hwnd, msg, wp, lp);
     }
     case WM_MOUSEWHEEL:
@@ -212,12 +237,14 @@ static void WindowThread(DisplaySettings s)
     }
     g_windowMode = int(s.mode);
     // Scripted runs (SCDA_AUTOPRESS) never take the mouse: an unattended window must not trap the cursor.
-    g_mouseLook = LoadInputSettings(SettingsPath()).mouseLook && !getenv("SCDA_AUTOPRESS");
-    if (g_mouseLook)
+    // Raw mouse input is always registered, so turning Mouse look on in F1 works without a restart.
+    if (!getenv("SCDA_AUTOPRESS"))
     {
         RAWINPUTDEVICE rid{ 0x01 /* generic desktop */, 0x02 /* mouse */, 0, hwnd };
-        RegisterRawInputDevices(&rid, 1, sizeof(rid));
-        if (GetForegroundWindow() == hwnd)
+        g_rawMouse = RegisterRawInputDevices(&rid, 1, sizeof(rid)) != FALSE;
+        RuntimeLog("[input] mouse look %s, raw mouse input %s (error %lu)\n", CurrentInputSettings().mouseLook ? "on" : "off",
+            g_rawMouse ? "registered" : "FAILED", g_rawMouse ? 0ul : GetLastError());
+        if (MouseLookOn() && GetForegroundWindow() == hwnd)
             HoldCursor(hwnd, true);
     }
     g_hwnd = hwnd;

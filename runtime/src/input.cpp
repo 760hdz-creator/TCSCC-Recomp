@@ -270,7 +270,8 @@ SCDA_IMPORT(XamInputGetState)
         g.bRightTrigger |= k.bRightTrigger;
         if (!connected || StickIdle(g.sThumbLX, g.sThumbLY, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE))
             g.sThumbLX = k.sThumbLX, g.sThumbLY = k.sThumbLY;
-        if (!connected || StickIdle(g.sThumbRX, g.sThumbRY, XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE))
+        // Mouse motion this poll wins over the pad's right stick (a drifting stick must not lock the mouse out).
+        if (!connected || StickIdle(g.sThumbRX, g.sThumbRY, XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE) || (mouse.mouseLook && (dx || dy)))
         {
             int16_t rx = 0, ry = 0;
             if (mouse.mouseLook)
