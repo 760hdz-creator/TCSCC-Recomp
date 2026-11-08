@@ -237,6 +237,11 @@ static void RenderThread(DisplaySettings s)
     HWND hwnd = g_hwnd.load();
     RECT rc;
     GetClientRect(hwnd, &rc);
+    // Effective display settings, so a user's log shows what they ran with.
+    static const char* kModes[] = { "windowed", "borderless", "fullscreen" };
+    RuntimeLog("[settings] window %ldx%ld %s, FrameRate %u, VSync %d, Scale %u, Upscaling %s, AA %s, DrawDistance %s, Anisotropy %u\n",
+        rc.right, rc.bottom, kModes[s.mode], s.frameRate, s.vsync ? 1 : 0, s.scale, UpscalingName(s.upscaling),
+        AntiAliasingName(s.antiAliasing), DrawDistanceName(s.drawDistance), s.anisotropy);
     D3D11Renderer renderer;
     renderer.SetCleanGoggles(s.cleanGoggles);
     renderer.SetUltrawide(s.ultrawide);
@@ -429,6 +434,33 @@ static void RenderThread(DisplaySettings s)
         static uint64_t presents = 0;
         static const ULONGLONG startTick = GetTickCount64();
         presents++;
+        // [perf] every 30 s (always on): fps, gaps between presents (a 30 fps cap that misses a guest
+        // vblank shows as 50 ms gaps), renderer time per frame, guest time blocked on GPU fences.
+        {
+            static LONGLONG perfStart = t1.QuadPart, lastPresent = 0, renderTicks = 0, renderMax = 0;
+            static uint32_t frames = 0, gapMaxUs = 0, gaps40 = 0, gaps60 = 0;
+            renderTicks += t1.QuadPart - t0.QuadPart; // whole frame only; partials are rare
+            renderMax = std::max<LONGLONG>(renderMax, t1.QuadPart - t0.QuadPart);
+            if (lastPresent)
+            {
+                const uint32_t gapUs = uint32_t((t1.QuadPart - lastPresent) * 1000000 / qpf.QuadPart);
+                gapMaxUs = std::max(gapMaxUs, gapUs);
+                gaps40 += gapUs > 40000;
+                gaps60 += gapUs > 60000;
+            }
+            lastPresent = t1.QuadPart;
+            frames++;
+            if (const double secs = double(t1.QuadPart - perfStart) / double(qpf.QuadPart); secs >= 30.0)
+            {
+                const double tickMs = 1000.0 / double(qpf.QuadPart);
+                RuntimeLog("[perf] %.1f fps, frames over 40 ms %u, over 60 ms %u, longest %.1f ms; render %.1f ms/frame (max %.1f); guest GPU wait %.0f ms/s\n",
+                    frames / secs, gaps40, gaps60, gapMaxUs / 1000.0, double(renderTicks) * tickMs / frames, double(renderMax) * tickMs,
+                    double(GuestGpuWaitUsTake()) / 1000.0 / secs);
+                perfStart = t1.QuadPart;
+                renderTicks = renderMax = 0;
+                frames = gapMaxUs = gaps40 = gaps60 = 0;
+            }
+        }
         // SCDA_TRACE_PRESENT=1: one line per present (frame, draws, frontbuffer address, fallback).
         static const bool tracePresent = getenv("SCDA_TRACE_PRESENT") != nullptr;
         if (tracePresent)

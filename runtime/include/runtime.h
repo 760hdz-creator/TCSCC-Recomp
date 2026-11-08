@@ -31,6 +31,9 @@ uint32_t GuestTitleAllocatedBytes();
 void RuntimeLog(const char* fmt, ...);
 // SCDA_TIMELINE debug events (profiler.cpp); a no-op outside the window.
 void TimelineEvent(char kind, uint32_t a = 0, uint32_t b = 0);
+// Guest time blocked in D3D BlockOnFence (wait_trace.cpp adds, timeline.cpp keeps): us since the last Take.
+void GuestGpuWaitAdd(uint32_t us);
+uint64_t GuestGpuWaitUsTake();
 
 // The title has read the signed-in profile's settings (main menu, after the profile is picked):
 // the update notification waits for it.

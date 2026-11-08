@@ -58,3 +58,8 @@ void TimelineStart()
             RuntimeLog("[tl] %9.3f %c %08X %u\n", 1000.0 * double(e.t - g_tlStart) / double(g_tlFreq), e.kind, e.a, e.b);
     }).detach();
 }
+
+// Guest time blocked on GPU fences (added by wait_trace.cpp), read by the [perf] line.
+static std::atomic<uint64_t> g_guestGpuWaitUs;
+void GuestGpuWaitAdd(uint32_t us) { g_guestGpuWaitUs += us; }
+uint64_t GuestGpuWaitUsTake() { return g_guestGpuWaitUs.exchange(0); }
