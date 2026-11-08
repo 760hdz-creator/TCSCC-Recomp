@@ -159,6 +159,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         {
             const RAWMOUSE& m = raw.data.mouse;
             const bool absolute = (m.usFlags & MOUSE_MOVE_ABSOLUTE) != 0;
+            MouseEvent(absolute ? MouseEventKind::RawAbsolute : MouseEventKind::RawRelative);
             static bool logged[2];
             if (!logged[absolute])
                 logged[absolute] = true, RuntimeLog("[input] mouse motion: %s\n", absolute ? "absolute (remote desktop, streaming, VM or tablet)" : "relative");
@@ -178,6 +179,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         return DefWindowProcW(hwnd, msg, wp, lp);
     }
+    case WM_MOUSEMOVE: // counted only: the mouse summary in tcscc.log compares it with raw input
+        MouseEvent(MouseEventKind::WindowMove);
+        break;
     case WM_MOUSEWHEEL:
         MouseAccumulate(0, 0, GET_WHEEL_DELTA_WPARAM(wp) / WHEEL_DELTA);
         return 0;

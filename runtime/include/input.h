@@ -20,6 +20,10 @@ XINPUT_GAMEPAD KeyboardGamepad(bool (*down)(int vk), const KeyBindings& keys, bo
 void MouseAccumulate(int dx, int dy, int wheel);
 void MouseTake(int& dx, int& dy, int& wheel);
 void MouseToStick(int dx, int dy, float sensitivity, bool invertY, int16_t& rx, int16_t& ry);
+// Mouse diagnostics for tcscc.log: the window thread counts what Windows sends (MouseEvent), each
+// XamInputGetState poll counts what reaches the stick, and every 10 s a summary line is written.
+enum class MouseEventKind { RawRelative, RawAbsolute, WindowMove };
+void MouseEvent(MouseEventKind kind);
 
 // The F1 menu is open: the title sees an idle pad (no pad, keyboard or mouse input reaches it).
 void SetInputBlocked(bool blocked);

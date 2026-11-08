@@ -69,6 +69,9 @@ XINPUT_GAMEPAD KeyboardGamepad(bool (*down)(int vk), const KeyBindings& keys, bo
 }
 
 static std::atomic<int> g_mouseDx, g_mouseDy, g_mouseWheel;
+static std::atomic<uint32_t> g_mouseEvents[3];
+
+void MouseEvent(MouseEventKind kind) { g_mouseEvents[int(kind)]++; }
 
 void MouseAccumulate(int dx, int dy, int wheel)
 {
@@ -248,7 +251,8 @@ SCDA_IMPORT(XamInputGetState)
     const bool padActive = connected && (g.wButtons || g.bLeftTrigger > XINPUT_GAMEPAD_TRIGGER_THRESHOLD ||
         g.bRightTrigger > XINPUT_GAMEPAD_TRIGGER_THRESHOLD || !StickIdle(g.sThumbLX, g.sThumbLY, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE) ||
         !StickIdle(g.sThumbRX, g.sThumbRY, XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE));
-    bool keyboardActive = false;
+    bool keyboardActive = false, padStickHeld = false;
+    int16_t mouseRx = 0, mouseRy = 0;
     int dx, dy, wheel;
     MouseTake(dx, dy, wheel); // drained every poll so unfocused motion never piles up
     // A scripted run ignores the keyboard and mouse, so typing elsewhere cannot leak into it.
@@ -270,12 +274,14 @@ SCDA_IMPORT(XamInputGetState)
         g.bRightTrigger |= k.bRightTrigger;
         if (!connected || StickIdle(g.sThumbLX, g.sThumbLY, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE))
             g.sThumbLX = k.sThumbLX, g.sThumbLY = k.sThumbLY;
+        padStickHeld = connected && !StickIdle(g.sThumbRX, g.sThumbRY, XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE);
         // Mouse motion this poll wins over the pad's right stick (a drifting stick must not lock the mouse out).
         if (!connected || StickIdle(g.sThumbRX, g.sThumbRY, XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE) || (mouse.mouseLook && (dx || dy)))
         {
             int16_t rx = 0, ry = 0;
             if (mouse.mouseLook)
                 MouseToStick(dx, dy, mouse.mouseSensitivity, mouse.mouseInvertY, rx, ry);
+            mouseRx = rx, mouseRy = ry;
             g.sThumbRX = rx ? rx : k.sThumbRX;
             g.sThumbRY = ry ? ry : k.sThumbRY;
         }
@@ -318,6 +324,33 @@ SCDA_IMPORT(XamInputGetState)
     static uint32_t packet = 1;
     {
         std::lock_guard lock(m);
+        // Mouse summary every 10 s while the window is focused (first 60 lines): what Windows sent,
+        // what reached the right stick and what the title got, so a 'mouse look does nothing' log says why.
+        static struct { uint32_t polls, focused, motion, mouseStick, padHeld, padConnected, blocked, stickOut; int64_t adx, ady; } st{};
+        static ULONGLONG since = GetTickCount64();
+        static int lines = 0;
+        const bool focused = script.empty() && GameWindowFocused();
+        st.polls++, st.focused += focused, st.motion += (dx || dy), st.mouseStick += (mouseRx || mouseRy);
+        st.padHeld += padStickHeld, st.padConnected += connected, st.blocked += InputBlocked();
+        st.stickOut += (g.sThumbRX || g.sThumbRY), st.adx += std::abs(dx), st.ady += std::abs(dy);
+        if (GetTickCount64() - since >= 10000)
+        {
+            if (st.focused && lines < 60)
+            {
+                lines++;
+                RuntimeLog("[input] mouse 10s: windows sent raw %u relative / %u absolute, %u window moves | polls %u (focused %u), "
+                    "with motion %u (|dx| %lld |dy| %lld), mouse to stick %u, right stick to game %u | pad connected %u, pad stick held %u, "
+                    "menu open %u | look %d sens %.2f invert %d\n",
+                    g_mouseEvents[0].exchange(0), g_mouseEvents[1].exchange(0), g_mouseEvents[2].exchange(0), st.polls, st.focused,
+                    st.motion, (long long)st.adx, (long long)st.ady, st.mouseStick, st.stickOut, st.padConnected, st.padHeld,
+                    st.blocked, int(mouse.mouseLook), double(mouse.mouseSensitivity), int(mouse.mouseInvertY));
+            }
+            else
+                for (auto& e : g_mouseEvents)
+                    e = 0;
+            st = {};
+            since = GetTickCount64();
+        }
         if (memcmp(&g, &last, sizeof(g)))
         {
             last = g;
