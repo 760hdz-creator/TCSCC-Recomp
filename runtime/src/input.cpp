@@ -221,6 +221,7 @@ static bool GameWindowFocused()
 void PawnTraceTick(uint64_t frame);
 void PeekTick(uint64_t frame);
 void AutopilotApply(uint64_t frame, XINPUT_GAMEPAD& g);
+bool MouseDirectApply(int dx, int dy, float unitsPerCount, bool invertY); // pawn_trace.cpp
 
 SCDA_IMPORT(XamInputGetState)
 {
@@ -308,7 +309,11 @@ SCDA_IMPORT(XamInputGetState)
         if (!connected || StickIdle(g.sThumbRX, g.sThumbRY, XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE) || (mouse.mouseLook && (frameDx || frameDy)))
         {
             int16_t rx = 0, ry = 0;
-            if (mouse.mouseLook)
+            // Mouse look turns the view rotation directly when the gameplay camera is up; the right
+            // stick (below) is the fallback.
+            if (mouse.mouseLook && MouseDirectApply(dx, dy, kMouseUnitsPerCount * mouse.mouseSensitivity, mouse.mouseInvertY))
+                ;
+            else if (mouse.mouseLook)
                 MouseToStick(frameDx, frameDy, mouse.mouseSensitivity, mouse.mouseInvertY, rx, ry);
             mouseRx = rx, mouseRy = ry;
             g.sThumbRX = rx ? rx : k.sThumbRX;

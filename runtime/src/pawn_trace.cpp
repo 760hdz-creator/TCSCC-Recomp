@@ -20,6 +20,23 @@
 // objects whose first word is a rodata vtable (0x82000000-0x824B0000) and whose Location is
 // within radius (default 800) of the listener; log them.
 // SCDA_TRACE_ACTOR=<addr>[:every]: log that actor's Location/Rotation every n frames (default 30).
+static std::vector<uint32_t> g_rotCands; // SCDA_FIND_ROT survivors (pitch, yaw at +4)
+// SCDA_FIND_ROT: guest word at o tracks the camera pitch p (int units, 65536 = 360 deg): the same int, or a
+// float in degrees or radians (either sign).
+static bool TracksPitch(uint32_t o, int32_t p)
+{
+    const uint32_t w = GuestLoad32(o);
+    if (int32_t(w) == p)
+        return true;
+    const float f = std::bit_cast<float>(w);
+    if (!std::isfinite(f) || f == 0)
+        return false;
+    for (const double unit : { 360.0 / 65536, 6.283185307 / 65536 })
+        for (const double sign : { 1.0, -1.0 })
+            if (std::abs(f - sign * unit * p) <= std::abs(unit * p) * 0.002)
+                return true;
+    return false;
+}
 namespace
 {
 constexpr uint32_t kListenerPtr = 0x837BEDBC;
@@ -224,9 +241,114 @@ void PawnTraceTick(uint64_t frame)
             nextCamera = GetTickCount64() + 2000;
             camera = FindCamera(lx, ly);
         }
+        // SCDA_FIND_ROT=1 (research): every int32 in guest memory that tracks the camera pitch through its changes.
+        static const bool findRot = getenv("SCDA_FIND_ROT") != nullptr;
+        std::vector<uint32_t>& cands = g_rotCands;
+        static int32_t lastP = 0;
+        static bool scanned = false;
+        static uint32_t scanCamera = 0;
+        if (findRot && camera)
+        {
+            if (camera != scanCamera || (scanned && cands.empty()))
+                scanCamera = camera, scanned = false, cands.clear();
+            const int32_t p = int32_t(GuestLoad32(camera + 0xA0));
+            if (p != lastP && p != 0 && (p < -64 || p > 64))
+            {
+                if (!scanned)
+                {
+                    scanned = true;
+                    for (uint64_t a = 0x40000000; a < 0x80000000ull;)
+                    {
+                        uint32_t end;
+                        const bool ok = Committed(uint32_t(a), end);
+                        if (end <= a)
+                            break;
+                        if (ok)
+                            for (uint32_t o = uint32_t(a); o + 4 <= end; o += 4)
+                                if (TracksPitch(o, p))
+                                    cands.push_back(o);
+                        a = end;
+                    }
+                }
+                else
+                    std::erase_if(cands, [&](uint32_t o) { return !TracksPitch(o, p); });
+                std::string list;
+                for (size_t i = 0; i < cands.size() && i < 40; i++)
+                {
+                    char b[64];
+                    snprintf(b, sizeof(b), " %08X=%08X(+4 %08X)", cands[i], GuestLoad32(cands[i]), GuestLoad32(cands[i] + 4));
+                    list += b;
+                }
+                RuntimeLog("[findrot] pitch %d: %zu candidates%s\n", p, cands.size(), list.c_str());
+                // Where does each non-camera candidate live: nearest 0x82xxxxxx word below it (vtable?) and
+                // which guest words point near it (with their own nearest 0x82 word).
+                static bool camRefs = false;
+                if (!camRefs && scanned)
+                {
+                    camRefs = true;
+                    RuntimeLog("[findrot] camera %08X, listener *%08X = %08X\n", camera, kListenerPtr, GuestLoad32(kListenerPtr));
+                    int n = 0;
+                    for (uint64_t a = 0x40000000; a < 0x84000000ull && n < 30;)
+                    {
+                        uint32_t end;
+                        const bool ok = Committed(uint32_t(a), end);
+                        if (end <= a)
+                            break;
+                        if (ok)
+                            for (uint32_t o = uint32_t(a); o + 4 <= end && n < 30; o += 4)
+                                if (GuestLoad32(o) == camera)
+                                {
+                                    uint32_t oa = 0, ov = 0;
+                                    for (uint32_t q = o; q > o - 0x2000; q -= 4)
+                                        if ((GuestLoad32(q) >> 24) == 0x82) { oa = q, ov = GuestLoad32(q); break; }
+                                    n++;
+                                    RuntimeLog("[findrot]   camera ref at %08X, owner %08X vt %08X (+%X)\n", o, oa, ov, o - oa);
+                                }
+                        a = end;
+                    }
+                }
+                static int dumps = 0;
+                auto owner = [](uint32_t o) -> std::pair<uint32_t, uint32_t>
+                {
+                    for (uint32_t q = o & ~3u; q > o - 0x2000; q -= 4)
+                        if ((GuestLoad32(q) >> 24) == 0x82)
+                            return { q, GuestLoad32(q) };
+                    return { 0, 0 };
+                };
+                if (dumps < 8 && scanned && cands.size() <= 9)
+                    for (uint32_t c : cands)
+                    {
+                        if (c == camera + 0xA0)
+                            continue;
+                        dumps++;
+                        const auto [vtAt, vt] = owner(c);
+                        RuntimeLog("[findrot] %08X: nearest 82 word at %08X = %08X (offset %X)\n", c, vtAt, vt, c - vtAt);
+                        int refs = 0;
+                        for (uint64_t a = 0x40000000; a < 0x80000000ull && refs < 12;)
+                        {
+                            uint32_t end;
+                            const bool ok = Committed(uint32_t(a), end);
+                            if (end <= a)
+                                break;
+                            if (ok)
+                                for (uint32_t o = uint32_t(a); o + 4 <= end && refs < 12; o += 4)
+                                    if (const uint32_t w = GuestLoad32(o); w >= 0x40000000 && w <= c && w + 0x800 > c)
+                                    {
+                                        const auto [oa, ov] = owner(o);
+                                        refs++;
+                                        RuntimeLog("[findrot]   ref at %08X -> %08X (+%X), owner %08X vt %08X (+%X)\n", o, w, c - w, oa, ov, o - oa);
+                                    }
+                            a = end;
+                        }
+                    }
+                lastP = p;
+            }
+        }
         RuntimeLog("[speed] t %.3f frame %llu clock %08X %.4f lis %.1f %.1f %.1f yaw %d pitch %d\n", double(GetTickCount64()) / 1000.0,
             (unsigned long long)frame, clock, double(std::bit_cast<float>(clock)), lx, ly, lis ? F(lis + kLisLoc + 8) : 0.f,
             camera ? int32_t(GuestLoad32(camera + 0xA4)) : 0, camera ? int32_t(GuestLoad32(camera + 0xA0)) : 0);
+        if (getenv("SCDA_FIND_ROT"))
+            RuntimeLog("[speed] camera %08X global %08X\n", camera, GuestLoad32(0x83743E88));
     }
     static uint64_t last = ~0ull;
     if (frame == last)
@@ -278,6 +400,46 @@ uint32_t FindCamera(float px, float py)
     return bestD < 1500.f * 1500.f ? best : 0;
 }
 } // namespace
+
+// Mouse look straight into the view rotation (no right stick, so no stick top speed): called on the
+// guest thread from XamInputGetState. kCurrentCamera holds the camera actor in use (intro, gameplay);
+// returns false when there is no gameplay camera to turn, and the mouse then drives the right stick.
+// unitsPerCount: FRotator units (65536 = 360 deg) per mouse count. SCDA_MOUSE_DIRECT=0 turns it off.
+bool MouseDirectApply(int dx, int dy, float unitsPerCount, bool invertY)
+{
+    static const bool off = getenv("SCDA_MOUSE_DIRECT") && atoi(getenv("SCDA_MOUSE_DIRECT")) == 0;
+    constexpr uint32_t kCurrentCamera = 0x83743E88; // found by SCDA_FIND_ROT's camera ref scan
+    const uint32_t camera = off ? 0 : GuestLoad32(kCurrentCamera);
+    if (camera < 0x40000000 || camera >= 0x7FFFF000 || GuestLoad32(camera) != kCameraVt)
+        return false;
+    const float k = unitsPerCount;
+    // The view rotation the camera copies every frame: camera +0x580 -> view struct, int pitch/yaw at
+    // +0x264FC (found with SCDA_FIND_ROT: the only copy whose writes stick). Checked against the camera's
+    // own copy so a stale or different struct is never written.
+    const uint32_t view = GuestLoad32(camera + 0x580);
+    if (view < 0x40000000 || view >= 0x7FFD9000)
+        return false;
+    const uint32_t rot = view + 0x264FC;
+    uint32_t end;
+    if (!Committed(rot, end) || end < rot + 8)
+        return false;
+    const int32_t pitch = int32_t(GuestLoad32(rot)), yaw = int32_t(GuestLoad32(rot + 4));
+    const int32_t camPitch = int32_t(GuestLoad32(camera + kRot)), camYaw = int32_t(GuestLoad32(camera + kRot + 4));
+    if (std::abs(pitch - camPitch) > 4096 || std::abs(int16_t(uint16_t(yaw - camYaw))) > 4096)
+    {
+        static int bad = 0;
+        if (bad < 5)
+            bad++, RuntimeLog("[mouse-direct] view %08X pitch %d yaw %d != camera %d %d\n", view, pitch, yaw, camPitch, camYaw);
+        return false;
+    }
+    if (dx || dy)
+    {
+        // The title clamps the top itself (12731) but not the bottom: keep the stick's floor (measured -8919).
+        GuestStore32(rot, uint32_t(std::clamp(pitch + int32_t(std::lround((invertY ? dy : -dy) * k)), -8919, 16384)));
+        GuestStore32(rot + 4, uint32_t(yaw + int32_t(std::lround(dx * k))));
+    }
+    return true;
+}
 
 void AutopilotApply(uint64_t frame, XINPUT_GAMEPAD& g)
 {

@@ -21,6 +21,8 @@ XINPUT_GAMEPAD KeyboardGamepad(bool (*down)(int vk), const KeyBindings& keys, bo
 // response is undone (power kMouseStickCurve), so the camera turns about as fast as the mouse moves.
 void MouseAccumulate(int dx, int dy, int wheel);
 void MouseTake(int& dx, int& dy, int& wheel);
+// Direct mouse look (MouseDirectApply): view rotation units (65536 = 360 deg) per mouse count at sensitivity 1.
+constexpr float kMouseUnitsPerCount = 5.0f;
 constexpr float kMouseStickDeadzone = 7849.0f / 32767.0f; // measured: 0.22 does nothing, 0.27 turns slowly
 constexpr float kMouseStickCurve = 1.6f;                  // measured turn rate ~ (stick past deadzone)^1.6
 void MouseToStick(float dx, float dy, float sensitivity, bool invertY, int16_t& rx, int16_t& ry);
