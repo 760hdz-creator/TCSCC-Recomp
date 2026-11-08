@@ -75,20 +75,25 @@ TEST(keyboard_bindings_load_from_settings)
     CHECK_EQ(KeyLabel(VK_SPACE), std::string("SPACE"));
 }
 
-// Raw mouse motion -> right stick: 50 px = full deflection at sensitivity 1, screen-down = stick down.
+// Raw mouse motion -> right stick: 50 px per 1/60 s = full deflection at sensitivity 1, screen-down =
+// stick down; any motion lands past the title's deadzone, and the response grows with the motion.
 TEST(mouse_motion_maps_to_right_stick)
 {
     int16_t rx, ry;
-    MouseToStick(25, 0, 1.0f, false, rx, ry);
-    CHECK_EQ(rx, int16_t(16383));
-    CHECK_EQ(ry, int16_t(0));
+    MouseToStick(0, 0, 1.0f, false, rx, ry);
+    CHECK(rx == 0 && ry == 0);
+    MouseToStick(0.5f, 0, 1.0f, false, rx, ry);
+    CHECK(rx > int16_t(7849));
     MouseToStick(-500, 10, 1.0f, false, rx, ry);
     CHECK_EQ(rx, int16_t(-32767));
-    CHECK(ry < 0);
+    CHECK(ry < -7849);
     MouseToStick(0, 10, 1.0f, true, rx, ry);
-    CHECK(ry > 0);
-    MouseToStick(10, 0, 2.0f, false, rx, ry);
-    CHECK_EQ(rx, int16_t(13106));
+    CHECK(ry > 7849);
+    int16_t a, b, c;
+    MouseToStick(5, 0, 1.0f, false, a, ry);
+    MouseToStick(10, 0, 1.0f, false, b, ry);
+    MouseToStick(5, 0, 2.0f, false, c, ry);
+    CHECK(a < b && b < 32767 && b == c);
     MouseAccumulate(3, -4, 1);
     MouseAccumulate(2, 0, 0);
     int dx, dy, wheel;

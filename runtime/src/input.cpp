@@ -3,6 +3,7 @@
 // window has focus) and SCDA_AUTOPRESS.
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -87,9 +88,16 @@ void MouseTake(int& dx, int& dy, int& wheel)
     wheel = g_mouseWheel.exchange(0);
 }
 
-void MouseToStick(int dx, int dy, float sensitivity, bool invertY, int16_t& rx, int16_t& ry)
+void MouseToStick(float dx, float dy, float sensitivity, bool invertY, int16_t& rx, int16_t& ry)
 {
-    auto stick = [&](int d) { return int16_t(std::clamp(d * sensitivity / 50.0f, -1.0f, 1.0f) * 32767.0f); };
+    auto stick = [&](float d)
+    {
+        const float v = std::min(std::abs(d) * sensitivity / 50.0f, 1.0f);
+        if (v <= 0)
+            return int16_t(0);
+        const float s = kMouseStickDeadzone + (1.0f - kMouseStickDeadzone) * std::pow(v, 1.0f / kMouseStickCurve);
+        return int16_t((d < 0 ? -s : s) * 32767.0f);
+    };
     rx = stick(dx);
     ry = stick(invertY ? dy : -dy);
 }
@@ -255,8 +263,29 @@ SCDA_IMPORT(XamInputGetState)
     int16_t mouseRx = 0, mouseRy = 0;
     int dx, dy, wheel;
     MouseTake(dx, dy, wheel); // drained every poll so unfocused motion never piles up
+    // The title polls twice per frame and steers by the last poll: the mouse stick is the motion of the
+    // whole guest frame so far (both polls see it), scaled by the last frame time to pixels per 1/60 s.
+    float frameDx, frameDy;
+    {
+        static std::mutex fm;
+        static uint64_t mouseFrame = ~0ull;
+        static int sumX, sumY;
+        static auto frameStart = std::chrono::steady_clock::now();
+        static double frameMs = 1000.0 / 60;
+        std::lock_guard lock(fm);
+        if (const uint64_t f = Frames().FramesEnded(); f != mouseFrame)
+        {
+            const auto now = std::chrono::steady_clock::now();
+            frameMs = std::clamp(std::chrono::duration<double, std::milli>(now - frameStart).count(), 4.0, 66.0);
+            frameStart = now, mouseFrame = f, sumX = sumY = 0;
+        }
+        sumX += dx, sumY += dy;
+        const float to60 = float((1000.0 / 60) / frameMs);
+        frameDx = sumX * to60, frameDy = sumY * to60;
+    }
     // A scripted run ignores the keyboard and mouse, so typing elsewhere cannot leak into it.
-    if (script.empty() && GameWindowFocused())
+    static const bool scriptMouse = getenv("SCDA_AUTOPRESS_MOUSE") != nullptr; // tests: mouse live in a scripted run
+    if ((script.empty() || scriptMouse) && GameWindowFocused())
     {
         // A wheel notch holds its binding for 3 polls (one poll can be missed by the title's edge detection).
         static int wheelUpHold, wheelDownHold;
@@ -276,11 +305,11 @@ SCDA_IMPORT(XamInputGetState)
             g.sThumbLX = k.sThumbLX, g.sThumbLY = k.sThumbLY;
         padStickHeld = connected && !StickIdle(g.sThumbRX, g.sThumbRY, XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE);
         // Mouse motion this poll wins over the pad's right stick (a drifting stick must not lock the mouse out).
-        if (!connected || StickIdle(g.sThumbRX, g.sThumbRY, XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE) || (mouse.mouseLook && (dx || dy)))
+        if (!connected || StickIdle(g.sThumbRX, g.sThumbRY, XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE) || (mouse.mouseLook && (frameDx || frameDy)))
         {
             int16_t rx = 0, ry = 0;
             if (mouse.mouseLook)
-                MouseToStick(dx, dy, mouse.mouseSensitivity, mouse.mouseInvertY, rx, ry);
+                MouseToStick(frameDx, frameDy, mouse.mouseSensitivity, mouse.mouseInvertY, rx, ry);
             mouseRx = rx, mouseRy = ry;
             g.sThumbRX = rx ? rx : k.sThumbRX;
             g.sThumbRY = ry ? ry : k.sThumbRY;

@@ -224,9 +224,9 @@ void PawnTraceTick(uint64_t frame)
             nextCamera = GetTickCount64() + 2000;
             camera = FindCamera(lx, ly);
         }
-        RuntimeLog("[speed] t %.3f frame %llu clock %08X %.4f lis %.1f %.1f %.1f yaw %d\n", double(GetTickCount64()) / 1000.0,
+        RuntimeLog("[speed] t %.3f frame %llu clock %08X %.4f lis %.1f %.1f %.1f yaw %d pitch %d\n", double(GetTickCount64()) / 1000.0,
             (unsigned long long)frame, clock, double(std::bit_cast<float>(clock)), lx, ly, lis ? F(lis + kLisLoc + 8) : 0.f,
-            camera ? int32_t(GuestLoad32(camera + 0xA4)) : 0);
+            camera ? int32_t(GuestLoad32(camera + 0xA4)) : 0, camera ? int32_t(GuestLoad32(camera + 0xA0)) : 0);
     }
     static uint64_t last = ~0ull;
     if (frame == last)

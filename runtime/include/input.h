@@ -15,11 +15,15 @@ struct KeyBindings;
 XINPUT_GAMEPAD KeyboardGamepad(bool (*down)(int vk), const KeyBindings& keys, bool wheelUp = false, bool wheelDown = false);
 
 // Mouse look. The window thread adds raw motion and wheel notches; each XamInputGetState poll
-// takes them (MouseTake zeroes the totals) and turns the motion into the right stick: full
-// deflection at 50 / sensitivity pixels, +dy (down) pulls the stick down unless inverted.
+// takes them (MouseTake zeroes the totals) and turns the motion into the right stick. MouseToStick takes
+// pixels per 1/60 s: full deflection at 50 / sensitivity, +dy (down) pulls the stick down unless inverted.
+// Any motion lands past the title's stick deadzone (kMouseStickDeadzone) and the title's steep stick
+// response is undone (power kMouseStickCurve), so the camera turns about as fast as the mouse moves.
 void MouseAccumulate(int dx, int dy, int wheel);
 void MouseTake(int& dx, int& dy, int& wheel);
-void MouseToStick(int dx, int dy, float sensitivity, bool invertY, int16_t& rx, int16_t& ry);
+constexpr float kMouseStickDeadzone = 7849.0f / 32767.0f; // measured: 0.22 does nothing, 0.27 turns slowly
+constexpr float kMouseStickCurve = 1.6f;                  // measured turn rate ~ (stick past deadzone)^1.6
+void MouseToStick(float dx, float dy, float sensitivity, bool invertY, int16_t& rx, int16_t& ry);
 // Mouse diagnostics for tcscc.log: the window thread counts what Windows sends (MouseEvent), each
 // XamInputGetState poll counts what reaches the stick, and every 10 s a summary line is written.
 enum class MouseEventKind { RawRelative, RawAbsolute, WindowMove };

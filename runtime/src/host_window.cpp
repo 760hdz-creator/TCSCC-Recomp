@@ -242,7 +242,7 @@ static void WindowThread(DisplaySettings s)
     g_windowMode = int(s.mode);
     // Scripted runs (SCDA_AUTOPRESS) never take the mouse: an unattended window must not trap the cursor.
     // Raw mouse input is always registered, so turning Mouse look on in F1 works without a restart.
-    if (!getenv("SCDA_AUTOPRESS"))
+    if (!getenv("SCDA_AUTOPRESS") || getenv("SCDA_AUTOPRESS_MOUSE"))
     {
         RAWINPUTDEVICE rid{ 0x01 /* generic desktop */, 0x02 /* mouse */, 0, hwnd };
         g_rawMouse = RegisterRawInputDevices(&rid, 1, sizeof(rid)) != FALSE;
