@@ -9,7 +9,7 @@
 #include <watchdog.h>
 
 // Conviction: Scaleform GFx log sink sub_832FA860(log + 20, fmt, ...) (GFxLoader "Error: ..." strings
-// at 0x823EAEF8+). Copies each message to scda.log as [gfx], then runs the original.
+// at 0x823EAEF8+). Copies each message to tcscc.log as [gfx], then runs the original.
 // Varargs: integer args in r5-r10; %s is a guest char*. Floats are not decoded.
 extern "C" PPC_FUNC(__imp__sub_832FA860);
 

@@ -348,7 +348,7 @@ int main(int argc, char** argv)
     const char* localAppData = getenv("LOCALAPPDATA");
     g_contentDir = (localAppData ? std::string(localAppData) + "\\TCSCCRecomp" : std::string(exeDir)) + "\\content";
     g_profileDir = (localAppData ? std::string(localAppData) + "\\TCSCCRecomp" : std::string(exeDir)) + "\\profile";
-    g_log = fopen((std::string(exeDir) + "\\scda.log").c_str(), "w");
+    g_log = fopen((std::string(exeDir) + "\\tcscc.log").c_str(), "w");
     AddVectoredExceptionHandler(1, CrashHandler);
     NetSelfTestStart(); // SCDA_NET_SELFTEST=1 only
     xnet::OnlineStartEarly();

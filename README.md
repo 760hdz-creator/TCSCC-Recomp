@@ -180,7 +180,7 @@ Private Match (Y) and Steam invites to a Player Match don't work yet.
 
 - *You need to be signed into Xbox LIVE*: ONLINE is off, or the game wasn't restarted after turning it on.
 - Nothing is found: check that Steam is running and that both players have ONLINE on.
-- Send `scda.log` and `steam_helper.log` (next to `tcscc.exe`) with a bug report.
+- Send `tcscc.log` and `steam_helper.log` (next to `tcscc.exe`) with a bug report.
 
 ## Patch notes
 
@@ -268,14 +268,14 @@ You need your own game disc image. Nothing from the game is in this repository.
 5. Optional, for online play: put the [Steamworks SDK](https://partner.steamgames.com/downloads/list) 1.65 in
    `external/steamworks_sdk_165` (its `sdk` folder inside). Without it the build has no Steam support.
 6. Build the runtime: `tools/build_runtime.bat` -> `runtime/build/tcscc.exe` (and `steam_api64.dll` next to it).
-7. Run it from a folder holding the game's files. Its log is `scda.log`.
+7. Run it from a folder holding the game's files. Its log is `tcscc.log`.
 
 Tests: `python -I -m unittest discover -s tools/tests -t .` and `tools/test_runtime.bat`.
 
 ## Reporting bugs
 
 [Open an issue](https://gitlab.com/octagram-labs-group/TCSCC-Recomp/-/issues) with a screenshot or video, the mission and
-place, and your `scda.log`.
+place, and your `tcscc.log`.
 
 ## Credits and license
 
