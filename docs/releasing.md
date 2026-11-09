@@ -13,7 +13,10 @@ and offers the release only when its tag is a strictly higher version than the r
    Push `main`, tag `vx.y.z`, and create the release with two links. The exe link must be named
    exactly `TCSCC_Setup.exe`, because the updater picks that name.
    `glab release create vx.y.z "path\TCSCC_Setup.exe#TCSCC_Setup.exe" "path\TCSCC_Setup_x.y.z.zip#TCSCC_Setup_x.y.z.zip" -n "TCSCC Recomp x.y.z" -R octagram-labs-group/TCSCC-Recomp`
-5. Check the feed anonymously: `curl -s .../releases/permalink/latest` returns the tag and both
+5. Label it: name the new release `TCSCC Recomp x.y.z (Latest)` and strip `(Latest)` from the
+   previous one (`glab api -X PUT projects/88518401/releases/<tag> -f "name=..."`). Same rule on
+   every repo of the user. The updater reads the tag, so the name is display only.
+6. Check the feed anonymously: `curl -s .../releases/permalink/latest` returns the tag and both
    links; the exe link starts with `MZ` and has the local size.
 
 Test an update without a new release: `SCDA_VERSION_OVERRIDE=0.0.1` (pretend to be older);
