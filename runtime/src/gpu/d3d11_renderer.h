@@ -97,6 +97,7 @@ private:
     void ExecuteResolve(const Resolve& r);
     void ExecuteQuery(const OcclusionQuery& q);
     void ExecuteFence(const Fence& f);
+    void FlushMemExport(char why);
     void WritePendingFences();
     void BindRegisterState(const RegisterFile& regs, uint32_t texSlots);
     void ApplyRegisterWrites(const Frame& frame, size_t end);

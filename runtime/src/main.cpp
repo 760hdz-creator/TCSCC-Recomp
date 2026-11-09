@@ -11,6 +11,7 @@
 #include <mutex>
 #include <string>
 #include <vector>
+#pragma comment(lib, "advapi32.lib")
 #include <alloc_tracker.h>
 #include <command_processor.h>
 #include <gpu/d3d11_renderer.h>
@@ -291,6 +292,15 @@ static DWORD WINAPI TitleThread(void*)
     WatchdogRegisterThread(1, ctx);
     TitleThreadRegister(1);
     RuntimeLog("[thread] 1 (main) host %lu\n", GetCurrentThreadId());
+    // The CPU, for the log reader ([perf] lines).
+    {
+        char cpu[128] = "?";
+        DWORD size = sizeof(cpu);
+        RegGetValueA(HKEY_LOCAL_MACHINE, "HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0", "ProcessorNameString", RRF_RT_REG_SZ, nullptr, cpu, &size);
+        for (size_t n = strlen(cpu); n && cpu[n - 1] == ' '; n--)
+            cpu[n - 1] = 0;
+        RuntimeLog("[cpu] %s, %lu logical processors\n", cpu, GetActiveProcessorCount(ALL_PROCESSOR_GROUPS));
+    }
     // SCDA_ASPECT=<w/h float>: overwrite the title's only 16/9 float (rodata 0x820016FC; loaded by
     // sub_824B5B50, sub_824F4318, sub_82CFDD50, sub_82EDA228, sub_82EDA830) - aspect experiment.
     if (const char* a = getenv("SCDA_ASPECT"))

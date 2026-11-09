@@ -1,6 +1,7 @@
 // Vd* (video) kernel HLE: records the GPU setup for the command processor and reports
 // a 1280x720 widescreen display. Struct layouts follow Xenia's xboxkrnl_video.cc (BSD).
 #include <windows.h>
+#include <atomic>
 #include <cstring>
 #include <gpu_state.h>
 #include <runtime.h>
@@ -126,8 +127,19 @@ SCDA_IMPORT(VdGetSystemCommandBuffer)
 // packet. Fill them with one NOP carrying kSwapMarker so the command processor flags the swap
 // when it reaches this point in the stream. r4 points at the frontbuffer's texture fetch
 // constant; its base address (dword 1) follows the marker.
+extern std::atomic<HANDLE> g_titleGpuThread; // host_window.cpp
+
 SCDA_IMPORT(VdSwap)
 {
+    // [perf] CPU time of the thread that swaps (the title's D3D thread). A new swapping thread gets a
+    // new handle; old ones are left open (the [perf] reader may hold one; this happens once or twice).
+    static std::atomic<DWORD> swapThread{ 0 };
+    if (swapThread.exchange(GetCurrentThreadId()) != GetCurrentThreadId())
+    {
+        HANDLE h = nullptr;
+        if (DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &h, THREAD_QUERY_LIMITED_INFORMATION, FALSE, 0))
+            g_titleGpuThread = h;
+    }
     uint32_t buffer = ctx.r3.u32;
     uint32_t frontbuffer = ctx.r4.u32 ? GuestLoad32(ctx.r4.u32 + 4) & 0xFFFFF000 : 0;
     // Frame pacing: at most 2 swaps in flight ahead of vsync, as the hardware queue allows.

@@ -35,6 +35,28 @@ struct CbStats
     unsigned long long aluBinds[2], aluUploads[2], sharedBinds, sharedUploads;
 };
 CbStats g_cbStats{};
+
+// b0-b2 are DYNAMIC and rewritten with Map(WRITE_DISCARD): most draws change them, and
+// UpdateSubresource into a DEFAULT buffer the GPU still reads can cost a GPU copy + sync per draw
+// (AMD). SCDA_CB_DEFAULT=1: DEFAULT buffers + UpdateSubresource (old behaviour).
+static bool CbDefaultUsage()
+{
+    static const bool on = getenv("SCDA_CB_DEFAULT") != nullptr;
+    return on;
+}
+static void UploadConstants(ID3D11DeviceContext* context, ID3D11Buffer* buffer, const void* data, size_t bytes)
+{
+    if (CbDefaultUsage())
+    {
+        context->UpdateSubresource(buffer, 0, nullptr, data, 0, 0);
+        return;
+    }
+    D3D11_MAPPED_SUBRESOURCE map;
+    if (FAILED(context->Map(buffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &map)))
+        return;
+    memcpy(map.pData, data, bytes);
+    context->Unmap(buffer, 0);
+}
 }
 
 using Microsoft::WRL::ComPtr;
@@ -494,6 +516,10 @@ struct DrawResources
     ComPtr<ID3D11Buffer> exportBuf, exportStaging;
     ComPtr<ID3D11UnorderedAccessView> exportUav;
     uint32_t exportBase = 0, exportBytes = 0;
+    // The last memexport draw's window, copied into exportStaging but not yet written back to guest
+    // RAM (FlushMemExport).
+    bool exportPending = false;
+    uint32_t exportPendingBase = 0, exportPendingBytes = 0, exportPendingDrawn = 0;
     // Dynamic ring for per-draw index data (NO_OVERWRITE appends, DISCARD on wrap).
     ComPtr<ID3D11Buffer> indexRing;
     uint32_t indexRingBytes = 0, indexRingPos = 0;
@@ -804,6 +830,11 @@ bool D3D11Renderer::CreateDrawResources()
         D3D11_BUFFER_DESC bd{};
         bd.ByteWidth = cbSizes[i];
         bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+        if (!CbDefaultUsage())
+        {
+            bd.Usage = D3D11_USAGE_DYNAMIC;
+            bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+        }
         if (FAILED(m_device->CreateBuffer(&bd, nullptr, &r->constants[i])))
             return false;
     }
@@ -1493,7 +1524,7 @@ void D3D11Renderer::BindRegisterState(const RegisterFile& regs, uint32_t texSlot
             continue; // b0/b1 already hold these constants
         g_cbStats.aluUploads[pixel]++;
         // b0/b1 = ALU constants 0-1023 / 1024-2047, straight from the register file.
-        m_context->UpdateSubresource(r.constants[pixel].Get(), 0, nullptr, regs.Data() + kRegAluConstants + (pixel ? 1024 : 0), 0, 0);
+        UploadConstants(m_context, r.constants[pixel].Get(), regs.Data() + kRegAluConstants + (pixel ? 1024 : 0), 4096);
         r.aluDirty[pixel] = false;
     }
     // Window pixels -> the host target: guest pitch x rows wide (EdramSurfaceLayout), MSAA surfaces
@@ -2051,7 +2082,7 @@ void D3D11Renderer::BindRegisterState(const RegisterFile& regs, uint32_t texSlot
     g_cbStats.sharedBinds++;
     if (noCbSkip || !r.sharedValid || memcmp(&shared, &r.lastShared, sizeof shared) != 0)
     {
-        m_context->UpdateSubresource(r.constants[2].Get(), 0, nullptr, &shared, 0, 0);
+        UploadConstants(m_context, r.constants[2].Get(), &shared, sizeof shared);
         r.lastShared = shared;
         r.sharedValid = true;
         g_cbStats.sharedUploads++;
@@ -2846,10 +2877,19 @@ void D3D11Renderer::ExecuteDraw(const DrawCall& d, const Frame& frame)
         const D3D11_BOX box{ 0, 0, 0, bytes, 1, 1 };
         if (r.exportUav && r.exportStaging)
         {
-            m_context->UpdateSubresource(r.exportBuf.Get(), 0, &box, PhysicalPtr(r.exportBase), 0, 0);
-            static const uint32_t kNoRange[2] = { ~0u, 0 }; // MemExport's written [min, max]
-            const D3D11_BOX rangeBox{ (4u << 20) - 8, 0, 0, 4u << 20, 1, 1 };
-            m_context->UpdateSubresource(r.exportBuf.Get(), 0, &rangeBox, kNoRange, 0, 0);
+            // Back-to-back export draws over the same window (the l3d pass issues 3-4 per frame): the
+            // window already holds the guest bytes plus the earlier draws' writes, i.e. what a
+            // write-back + reseed would give; keep it and the [min, max] range (the union gets written
+            // back once). Otherwise write the previous window back (the seed reads guest RAM) and reseed.
+            const bool chained = r.exportPending && r.exportPendingBase == r.exportBase && r.exportPendingBytes == r.exportBytes;
+            if (!chained)
+            {
+                FlushMemExport('E');
+                m_context->UpdateSubresource(r.exportBuf.Get(), 0, &box, PhysicalPtr(r.exportBase), 0, 0);
+                static const uint32_t kNoRange[2] = { ~0u, 0 }; // MemExport's written [min, max]
+                const D3D11_BOX rangeBox{ (4u << 20) - 8, 0, 0, 4u << 20, 1, 1 };
+                m_context->UpdateSubresource(r.exportBuf.Get(), 0, &rangeBox, kNoRange, 0, 0);
+            }
             ID3D11UnorderedAccessView* uav = r.exportUav.Get();
             m_context->OMSetRenderTargetsAndUnorderedAccessViews(D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL, nullptr, nullptr, 7, 1, &uav, nullptr);
         }
@@ -3037,8 +3077,9 @@ void D3D11Renderer::ExecuteDraw(const DrawCall& d, const Frame& frame)
     else
         m_context->Draw(d.indexCount, autoOffset);
     m_lastDrawn++;
-    // PS memexport: unbind u7 and write the window back to guest RAM (the CPU reads it, e.g. l3d
-    // visibility bytes in sub_82EF9990). Blocks on this draw.
+    // PS memexport: unbind u7 and copy the window into exportStaging. The write-back to guest RAM (the
+    // CPU reads it, e.g. l3d visibility bytes in sub_82EF9990) waits for FlushMemExport: the title can
+    // only see it behind a later fence, so mapping right here only stalled the CPU on the GPU.
     if (memExportDraw && r.exportUav && r.exportStaging)
     {
         ID3D11UnorderedAccessView* none = nullptr;
@@ -3047,26 +3088,14 @@ void D3D11Renderer::ExecuteDraw(const DrawCall& d, const Frame& frame)
         const D3D11_BOX rangeBox{ (4u << 20) - 8, 0, 0, 4u << 20, 1, 1 };
         m_context->CopySubresourceRegion(r.exportStaging.Get(), 0, 0, 0, 0, r.exportBuf.Get(), 0, &box);
         m_context->CopySubresourceRegion(r.exportStaging.Get(), 0, (4u << 20) - 8, 0, 0, r.exportBuf.Get(), 0, &rangeBox);
-        D3D11_MAPPED_SUBRESOURCE map;
-        LARGE_INTEGER m0, m1, qf;
-        QueryPerformanceCounter(&m0);
-        const HRESULT mapped = m_context->Map(r.exportStaging.Get(), 0, D3D11_MAP_READ, 0, &map);
-        QueryPerformanceCounter(&m1);
-        QueryPerformanceFrequency(&qf);
-        m_readbackUs += uint64_t((m1.QuadPart - m0.QuadPart) * 1000000 / qf.QuadPart); // [perf] GPU readback stalls
-        if (SUCCEEDED(mapped))
-        {
-            const uint8_t* data = static_cast<const uint8_t*>(map.pData);
-            uint32_t lo, hi;
-            memcpy(&lo, data + (4u << 20) - 8, 4);
-            memcpy(&hi, data + (4u << 20) - 4, 4);
-            if (lo <= hi && hi < r.exportBytes) // only the bytes the draw wrote (and those between)
-                memcpy(const_cast<uint8_t*>(PhysicalPtr(r.exportBase)) + lo, data + lo, hi - lo + 1);
-            static uint32_t logged;
-            if (logged++ < 4)
-                RuntimeLog("[memexport] draw wrote phys 0x%08X..0x%08X\n", r.exportBase + lo, r.exportBase + hi);
-            m_context->Unmap(r.exportStaging.Get(), 0);
-        }
+        r.exportPending = true;
+        r.exportPendingBase = r.exportBase;
+        r.exportPendingBytes = r.exportBytes;
+        // SCDA_MEMEXPORT_SYNC=1: write back right after the draw (old behaviour).
+        static const bool sync = getenv("SCDA_MEMEXPORT_SYNC") != nullptr;
+        r.exportPendingDrawn = m_lastDrawn;
+        if (sync)
+            FlushMemExport('S');
     }
     // SCDA_PIXEL_WATCH=<frame>,<x>,<y>: in that presented frame, after every draw, read RT0 at guest
     // window pixel (x, y) (window offset and MSAA/scale applied) and log the draw when it changed.
@@ -3216,11 +3245,49 @@ void D3D11Renderer::ExecuteQuery(const OcclusionQuery& q)
         m_context->Begin(r.activeQuery.Get());
 }
 
+// Writes the pending memexport window back to guest RAM (waits for the GPU to reach its copy). Runs
+// before every fence (the title reads the bytes behind one), before the next memexport draw seeds the
+// window, and at the end of every Frame.
+void D3D11Renderer::FlushMemExport(char why)
+{
+    if (!m_draw || !m_draw->exportPending)
+        return;
+    DrawResources& r = *m_draw;
+    r.exportPending = false;
+    D3D11_MAPPED_SUBRESOURCE map;
+    LARGE_INTEGER m0, m1, qf;
+    QueryPerformanceCounter(&m0);
+    const HRESULT mapped = m_context->Map(r.exportStaging.Get(), 0, D3D11_MAP_READ, 0, &map);
+    QueryPerformanceCounter(&m1);
+    QueryPerformanceFrequency(&qf);
+    const uint32_t us = uint32_t((m1.QuadPart - m0.QuadPart) * 1000000 / qf.QuadPart);
+    m_readbackUs += us; // [perf] GPU readback stalls
+    // SCDA_TRACE_MEMEXPORT=1: why each write-back ran (E next export draw, F fence, P/W end of partial/whole
+    // Frame, S sync), draws issued since the export draw, Map wait.
+    static const bool trace = getenv("SCDA_TRACE_MEMEXPORT") != nullptr;
+    static uint32_t traced;
+    if (trace && traced++ < 400)
+        RuntimeLog("[memexport] present %llu flush %c after %u draws, map %u us\n", (unsigned long long)m_presented, why, m_lastDrawn - r.exportPendingDrawn, us);
+    if (FAILED(mapped))
+        return;
+    const uint8_t* data = static_cast<const uint8_t*>(map.pData);
+    uint32_t lo, hi;
+    memcpy(&lo, data + (4u << 20) - 8, 4);
+    memcpy(&hi, data + (4u << 20) - 4, 4);
+    if (lo <= hi && hi < r.exportPendingBytes) // only the bytes the draw wrote (and those between)
+        memcpy(const_cast<uint8_t*>(PhysicalPtr(r.exportPendingBase)) + lo, data + lo, hi - lo + 1);
+    static uint32_t logged;
+    if (logged++ < 4)
+        RuntimeLog("[memexport] draw wrote phys 0x%08X..0x%08X\n", r.exportPendingBase + lo, r.exportPendingBase + hi);
+    m_context->Unmap(r.exportStaging.Get(), 0);
+}
+
 // EVENT_WRITE_SHD: written now unless a query ended before it is still pending (then with its
 // answer, WritePendingFences). The title reads query counts behind a passed fence.
 void D3D11Renderer::ExecuteFence(const Fence& f)
 {
     DrawResources& r = *m_draw;
+    FlushMemExport('F');
     if (r.pendingQueries.empty() && r.pendingFences.empty())
     {
         Frames().VisibleWrite([&] { WriteFence(f); return true; });
@@ -4008,8 +4075,29 @@ void D3D11Renderer::Present(const Frame& frame)
                 PrecompileShaders(blobs, cacheDir);
         }
         size_t next = 0, nextQuery = 0, nextFence = 0;
+        // SCDA_GPU_PROFILE=<frame>: GPU time of every draw (with the resolves, queries and uploads
+        // before it) in that guest frame's Frames, from timestamp queries; logs the total and the
+        // costliest draws and pixel shaders. Waits for the GPU once per profiled Frame.
+        static const long long profFrame = getenv("SCDA_GPU_PROFILE") ? atoll(getenv("SCDA_GPU_PROFILE")) : -1;
+        const size_t profDraws = std::min(frame.draws.size(), drawLimit);
+        std::vector<ComPtr<ID3D11Query>> profTs;
+        ComPtr<ID3D11Query> profDisjoint;
+        if (profFrame >= 0 && frame.stats.frame == uint64_t(profFrame))
+        {
+            D3D11_QUERY_DESC qd{ D3D11_QUERY_TIMESTAMP_DISJOINT, 0 };
+            if (SUCCEEDED(m_device->CreateQuery(&qd, &profDisjoint)))
+            {
+                profTs.resize(profDraws + 2);
+                qd.Query = D3D11_QUERY_TIMESTAMP;
+                for (auto& q : profTs)
+                    m_device->CreateQuery(&qd, &q);
+                m_context->Begin(profDisjoint.Get());
+            }
+        }
         for (size_t i = 0; i <= std::min(frame.draws.size(), drawLimit); i++)
         {
+            if (!profTs.empty() && profTs[i])
+                m_context->End(profTs[i].Get());
             for (; next < frame.resolves.size() && frame.resolves[next].drawIndex <= i; next++)
             {
                 // SCDA_TRACE_FB=1: every 1280-wide fmt-6 resolve (frontbuffer tiles) with its Frame.
@@ -4059,7 +4147,58 @@ void D3D11Renderer::Present(const Frame& frame)
                 }
             }
         }
+        if (!profTs.empty())
+        {
+            if (profTs.back())
+                m_context->End(profTs.back().Get());
+            m_context->End(profDisjoint.Get());
+            D3D11_QUERY_DATA_TIMESTAMP_DISJOINT dj{};
+            while (m_context->GetData(profDisjoint.Get(), &dj, sizeof(dj), 0) == S_FALSE)
+                SwitchToThread();
+            std::vector<uint64_t> t(profTs.size(), 0);
+            for (size_t k = 0; k < profTs.size(); k++)
+                while (profTs[k] && m_context->GetData(profTs[k].Get(), &t[k], sizeof(uint64_t), 0) == S_FALSE)
+                    SwitchToThread();
+            if (!dj.Disjoint && dj.Frequency && t.back() > t.front())
+            {
+                const double toMs = 1000.0 / double(dj.Frequency);
+                std::vector<std::pair<double, size_t>> seg;
+                std::unordered_map<uint64_t, std::pair<double, uint32_t>> byPs;
+                for (size_t k = 0; k + 1 < t.size(); k++)
+                {
+                    const double ms = t[k + 1] >= t[k] ? double(t[k + 1] - t[k]) * toMs : 0.0;
+                    seg.push_back({ ms, k });
+                    if (k < profDraws)
+                    {
+                        auto& e = byPs[frame.draws[k].ps ? frame.draws[k].ps->hash : 0];
+                        e.first += ms;
+                        e.second++;
+                    }
+                }
+                RuntimeLog("[gpuprof] frame %llu%s: %zu draws, %.2f ms GPU\n", (unsigned long long)frame.stats.frame, frame.partial ? " partial" : "",
+                    profDraws, double(t.back() - t.front()) * toMs);
+                std::sort(seg.begin(), seg.end(), std::greater<>());
+                for (size_t k = 0; k < seg.size() && k < 25; k++)
+                {
+                    const size_t i = seg[k].second;
+                    const DrawCall* d = i < profDraws ? &frame.draws[i] : nullptr;
+                    uint32_t res = 0;
+                    for (const auto& rs : frame.resolves)
+                        res += rs.drawIndex == i;
+                    RuntimeLog("[gpuprof]   draw %zu %.3f ms: vs %016llx ps %016llx prim %u count %u, resolves before %u\n", i, seg[k].first,
+                        d && d->vs ? (unsigned long long)d->vs->hash : 0ull, d && d->ps ? (unsigned long long)d->ps->hash : 0ull, d ? d->primType : 0u,
+                        d ? d->indexCount : 0u, res);
+                }
+                std::vector<std::pair<double, uint64_t>> ps;
+                for (const auto& [h, e] : byPs)
+                    ps.push_back({ e.first, h });
+                std::sort(ps.begin(), ps.end(), std::greater<>());
+                for (size_t k = 0; k < ps.size() && k < 12; k++)
+                    RuntimeLog("[gpuprof]   ps %016llx %.3f ms over %u draws\n", (unsigned long long)ps[k].second, ps[k].first, byPs[ps[k].second].second);
+            }
+        }
         ApplyRegisterWrites(frame, frame.regWrites.size()); // draws past SCDA_DRAW_LIMIT still wrote registers
+        FlushMemExport(frame.partial ? 'P' : 'W');
         for (; nextFence < frame.fences.size(); nextFence++) // past SCDA_DRAW_LIMIT
             ExecuteFence(frame.fences[nextFence]);
         if (r.activeQuery && !frame.partial) // begun but never ended this frame: drop it

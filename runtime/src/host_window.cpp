@@ -20,6 +20,7 @@
 #include <runtime.h>
 
 static std::atomic<HWND> g_hwnd;
+std::atomic<HANDLE> g_titleGpuThread{ nullptr }; // the title thread that calls VdSwap ([perf] CPU time; video.cpp)
 static std::atomic<uint32_t> g_resizeW, g_resizeH;
 static bool g_rawMouse;    // raw mouse input registered (every run but scripted ones)
 static bool g_cursorHeld;  // cursor hidden and clipped to the client area now
@@ -496,6 +497,26 @@ static void RenderThread(DisplaySettings s)
                 RuntimeLog("[perf] renderer busy %.0f ms/s (partials included), partials %.1f/frame, GPU readback stalls %.0f ms/s, guest query wait %.0f ms/s\n",
                     double(perfAllTicks) * tickMs / secs, double(perfPartials) / frames, double(renderer.ReadbackUsTake()) / 1000.0 / secs,
                     double(GuestQueryWaitUsTake()) / 1000.0 / secs);
+                // CPU actually used (kernel + user) vs wall time: a renderer near 1000 ms/s with little
+                // readback stall is CPU-bound; a title D3D thread near 1000 ms/s limits the frame rate.
+                {
+                    auto cpuMs = [](HANDLE h, bool process)
+                    {
+                        FILETIME c, e, k, u;
+                        if (!h || !(process ? GetProcessTimes(h, &c, &e, &k, &u) : GetThreadTimes(h, &c, &e, &k, &u)))
+                            return 0.0;
+                        return double((uint64_t(k.dwHighDateTime) << 32 | k.dwLowDateTime) + (uint64_t(u.dwHighDateTime) << 32 | u.dwLowDateTime)) / 10000.0;
+                    };
+                    static double lastRenderer = 0, lastMain = 0, lastProcess = 0;
+                    const double rendererMs = cpuMs(GetCurrentThread(), false), mainMs = cpuMs(g_titleGpuThread.load(), false),
+                                 processMs = cpuMs(GetCurrentProcess(), true);
+                    if (lastProcess > 0)
+                        RuntimeLog("[perf] CPU time: renderer thread %.0f ms/s, title D3D thread %.0f ms/s, whole process %.0f ms/s\n",
+                            (rendererMs - lastRenderer) / secs, (mainMs - lastMain) / secs, (processMs - lastProcess) / secs);
+                    lastRenderer = rendererMs;
+                    lastMain = mainMs;
+                    lastProcess = processMs;
+                }
                 perfAllTicks = 0;
                 perfPartials = 0;
                 perfStart = t1.QuadPart;
