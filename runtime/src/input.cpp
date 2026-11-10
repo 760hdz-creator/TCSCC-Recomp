@@ -264,6 +264,22 @@ SCDA_IMPORT(XamInputGetState)
     int16_t mouseRx = 0, mouseRy = 0;
     int dx, dy, wheel;
     MouseTake(dx, dy, wheel); // drained every poll so unfocused motion never piles up
+    // SCDA_TEST_MOUSE=dx,dy: synthetic mouse counts per poll, direction flipped every 256 polls (tests; also
+    // feeds unfocused windows, so two instances can both turn).
+    static const std::pair<int, int> testMouse = []
+    {
+        const char* env = getenv("SCDA_TEST_MOUSE");
+        int x = 0, y = 0;
+        if (env)
+            sscanf(env, "%d,%d", &x, &y);
+        return std::pair{ x, y };
+    }();
+    if (testMouse.first || testMouse.second)
+    {
+        static std::atomic<uint32_t> polls;
+        const int sign = (polls++ >> 8) & 1 ? -1 : 1;
+        dx += sign * testMouse.first, dy += sign * testMouse.second;
+    }
     // The title polls twice per frame and steers by the last poll: the mouse stick is the motion of the
     // whole guest frame so far (both polls see it), scaled by the last frame time to pixels per 1/60 s.
     float frameDx, frameDy;
@@ -286,7 +302,7 @@ SCDA_IMPORT(XamInputGetState)
     }
     // A scripted run ignores the keyboard and mouse, so typing elsewhere cannot leak into it.
     static const bool scriptMouse = getenv("SCDA_AUTOPRESS_MOUSE") != nullptr; // tests: mouse live in a scripted run
-    if ((script.empty() || scriptMouse) && GameWindowFocused())
+    if ((script.empty() || scriptMouse) && (GameWindowFocused() || testMouse.first || testMouse.second))
     {
         // A wheel notch holds its binding for 3 polls (one poll can be missed by the title's edge detection).
         static int wheelUpHold, wheelDownHold;

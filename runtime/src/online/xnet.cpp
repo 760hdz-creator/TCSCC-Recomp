@@ -286,6 +286,8 @@ uint64_t PeerOfAddr(uint32_t addr)
 
 void NoteHeardFrom(uint64_t peer)
 {
+    if (peer != LocalPeer())
+        online::NoteRemotePacket();
     std::lock_guard l(g_peerMutex);
     if (g_heard.size() > 64)
         g_heard.clear();

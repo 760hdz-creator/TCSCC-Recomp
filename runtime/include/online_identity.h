@@ -15,4 +15,8 @@ struct Identity
 };
 Identity GetIdentity();
 void SetIdentity(const Identity& id);
+// online/xsocket.cpp notes each packet from a remote peer; true when one arrived in the last `ms`
+// (a System Link / LIVE lobby or match is up).
+void NoteRemotePacket();
+bool RemotePacketWithin(uint64_t ms);
 } // namespace online

@@ -1,6 +1,7 @@
 #include <windows.h>
 #include <xinput.h>
 #include <runtime.h>
+#include <online_identity.h>
 #include <algorithm>
 #include <bit>
 #include <cmath>
@@ -409,6 +410,15 @@ bool MouseDirectApply(int dx, int dy, float unitsPerCount, bool invertY)
 {
     static const bool off = getenv("SCDA_MOUSE_DIRECT") && atoi(getenv("SCDA_MOUSE_DIRECT")) == 0;
     constexpr uint32_t kCurrentCamera = 0x83743E88; // found by SCDA_FIND_ROT's camera ref scan
+    // Co-op / multiplayer run one simulation on every machine from the exchanged inputs: a rotation written
+    // here bypasses that stream and the session ends "OUT OF SYNC" (GitLab #2). Online, the stick carries it.
+    if (online::RemotePacketWithin(5000))
+    {
+        static bool logged;
+        if (!logged)
+            logged = true, RuntimeLog("[mouse-direct] online match: mouse look goes through the right stick (synced input)\n");
+        return false;
+    }
     const uint32_t camera = off ? 0 : GuestLoad32(kCurrentCamera);
     if (camera < 0x40000000 || camera >= 0x7FFFF000 || GuestLoad32(camera) != kCameraVt)
         return false;
@@ -434,6 +444,9 @@ bool MouseDirectApply(int dx, int dy, float unitsPerCount, bool invertY)
     }
     if (dx || dy)
     {
+        static uint32_t lastView;
+        if (view != lastView)
+            lastView = view, RuntimeLog("[mouse-direct] turning camera %08X view %08X (pitch %d yaw %d)\n", camera, view, pitch, yaw);
         // The title clamps the top itself (12731) but not the bottom: keep the stick's floor (measured -8919).
         GuestStore32(rot, uint32_t(std::clamp(pitch + int32_t(std::lround((invertY ? dy : -dy) * k)), -8919, 16384)));
         GuestStore32(rot + 4, uint32_t(yaw + int32_t(std::lround(dx * k))));
