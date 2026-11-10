@@ -5,8 +5,10 @@
 #include <windows.h>
 #include <dbghelp.h>
 #include <psapi.h>
+#include <csignal>
 #include <cstdarg>
 #include <cstdlib>
+#include <exception>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -362,8 +364,14 @@ int main(int argc, char** argv)
     const char* localAppData = getenv("LOCALAPPDATA");
     g_contentDir = (localAppData ? std::string(localAppData) + "\\TCSCCRecomp" : std::string(exeDir)) + "\\content";
     g_profileDir = (localAppData ? std::string(localAppData) + "\\TCSCCRecomp" : std::string(exeDir)) + "\\profile";
-    g_log = fopen((std::string(exeDir) + "\\tcscc.log").c_str(), "w");
+    // Keep the previous run's log: players relaunch after a crash before sending it.
+    const std::string logPath = std::string(exeDir) + "\\tcscc.log";
+    MoveFileExA(logPath.c_str(), (std::string(exeDir) + "\\tcscc_prev.log").c_str(), MOVEFILE_REPLACE_EXISTING);
+    g_log = fopen(logPath.c_str(), "w");
     AddVectoredExceptionHandler(1, CrashHandler);
+    // abort() / std::terminate end the process without an exception the handler sees.
+    signal(SIGABRT, [](int) { RuntimeLog("[fatal] abort()\n"); });
+    std::set_terminate([] { RuntimeLog("[fatal] std::terminate (unhandled C++ exception)\n"); std::abort(); });
     NetSelfTestStart(); // SCDA_NET_SELFTEST=1 only
     xnet::OnlineStartEarly();
 
