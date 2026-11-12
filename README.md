@@ -7,19 +7,22 @@
 **Tom Clancy's Splinter Cell: Conviction (Xbox 360) as a native Windows program. No emulator.**
 
 ![status](https://img.shields.io/badge/status-complete%20%E2%80%93%20ready%20to%20play-brightgreen)
-[![Report a bug](https://img.shields.io/badge/report-a%20bug-red?logo=gitlab)](https://gitlab.com/octagram-labs-group/TCSCC-Recomp/-/issues)
+[![Report a bug](https://img.shields.io/badge/report-a%20bug-red?logo=forgejo)](https://git.8gramlabs.com/8gramlabs/TCSCC-Recomp/issues)
 ![platform](https://img.shields.io/badge/platform-Windows%20x64-blue)
 ![renderer](https://img.shields.io/badge/renderer-Direct3D%2011-informational)
 ![fps](https://img.shields.io/badge/up%20to-240%20fps-brightgreen)
 ![license](https://img.shields.io/badge/license-GPL--3.0-green)
+
+[![Download](https://img.shields.io/badge/Download-latest%20release-fb6116?style=for-the-badge&logo=forgejo)](https://git.8gramlabs.com/8gramlabs/TCSCC-Recomp/releases/latest)
+<a href="https://git.8gramlabs.com/8gramlabs/TCSCC-Recomp/releases/latest"><img src="https://git.8gramlabs.com/badge/8gramlabs/TCSCC-Recomp/downloads.svg" alt="Downloads"></a>
 
 </div>
 
 > [!NOTE]
 > **Complete, ready to play.** All 11 story chapters load and play with sound and saves, Deniable Ops plays,
 > and co-op / Face-Off work online over Steam (System Link and Xbox LIVE Player Match). Please
-> [report](https://gitlab.com/octagram-labs-group/TCSCC-Recomp/-/issues) anything that looks or plays wrong.
-> **Download:** [TCSCC Recomp 0.1.0](https://gitlab.com/octagram-labs-group/TCSCC-Recomp/-/releases/permalink/latest). Later versions install from the in-game update notification.
+> [report](https://git.8gramlabs.com/8gramlabs/TCSCC-Recomp/issues) anything that looks or plays wrong.
+> **Download:** [TCSCC Recomp 0.1.0](https://git.8gramlabs.com/8gramlabs/TCSCC-Recomp/releases/latest). Later versions install from the in-game update notification.
 
 > [!IMPORTANT]
 > **No game files are included, and none ever will be.** You need your own copy of the Xbox 360 game
@@ -44,7 +47,7 @@
 - **The console's system calls are reimplemented** for Windows: files, threads, saves, controller, audio.
 - **The Xbox 360 GPU commands and shaders are translated to Direct3D 11** as the game runs.
 
-It is the same method as the [SCDA Recomp](https://gitlab.com/octagram-labs-group/SCDA360pcport) (*Double Agent*),
+It is the same method as the [SCDA Recomp](https://git.8gramlabs.com/8gramlabs/SCDA360pcport) (*Double Agent*),
 and the runtime started as a fork of it, but every engine-specific fix has been redone for this game.
 
 ## Screenshots
@@ -274,7 +277,7 @@ Tests: `python -I -m unittest discover -s tools/tests -t .` and `tools/test_runt
 
 ## Reporting bugs
 
-[Open an issue](https://gitlab.com/octagram-labs-group/TCSCC-Recomp/-/issues) with a screenshot or video, the mission and
+[Open an issue](https://git.8gramlabs.com/8gramlabs/TCSCC-Recomp/issues) with a screenshot or video, the mission and
 place, and your `tcscc.log`.
 
 ## Credits and license
