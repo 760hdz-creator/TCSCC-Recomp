@@ -7,13 +7,13 @@
 **Tom Clancy's Splinter Cell: Conviction (Xbox 360) as a native Windows program. No emulator.**
 
 ![status](https://img.shields.io/badge/status-complete%20%E2%80%93%20ready%20to%20play-brightgreen)
-[![Report a bug](https://img.shields.io/badge/report-a%20bug-red?logo=forgejo)](https://git.8gramlabs.com/8gramlabs/TCSCC-Recomp/issues)
+[![Report a bug](https://img.shields.io/badge/report-a%20bug-red?logo=data:image/svg%2bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI%2BPGRlZnM%2BPGNsaXBQYXRoIGlkPSJsIj48cmVjdCB3aWR0aD0iMTIiIGhlaWdodD0iMjQiLz48L2NsaXBQYXRoPjxjbGlwUGF0aCBpZD0iciI%2BPHJlY3QgeD0iMTIiIHdpZHRoPSIxMiIgaGVpZ2h0PSIyNCIvPjwvY2xpcFBhdGg%2BPC9kZWZzPjxwYXRoIGQ9Ik03IDUgMi41IDEyIDcgMTkiIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2Y1ZjdmYSIgc3Ryb2tlLXdpZHRoPSIyLjYiIHN0cm9rZS1saW5lam9pbj0ibWl0ZXIiLz48cGF0aCBkPSJNMTcgNSAyMS41IDEyIDE3IDE5IiBmaWxsPSJub25lIiBzdHJva2U9IiNmYjYxMTYiIHN0cm9rZS13aWR0aD0iMi42IiBzdHJva2UtbGluZWpvaW49Im1pdGVyIi8%2BPGcgZmlsbD0ibm9uZSIgc3Ryb2tlLXdpZHRoPSIyLjMiPjxnIGNsaXAtcGF0aD0idXJsKCNsKSIgc3Ryb2tlPSIjZjVmN2ZhIj48Y2lyY2xlIGN4PSIxMiIgY3k9IjgiIHI9IjMuMyIvPjxjaXJjbGUgY3g9IjEyIiBjeT0iMTYiIHI9IjMuNiIvPjwvZz48ZyBjbGlwLXBhdGg9InVybCgjcikiIHN0cm9rZT0iI2ZiNjExNiI%2BPGNpcmNsZSBjeD0iMTIiIGN5PSI4IiByPSIzLjMiLz48Y2lyY2xlIGN4PSIxMiIgY3k9IjE2IiByPSIzLjYiLz48L2c%2BPC9nPjwvc3ZnPgo=)](https://git.8gramlabs.com/8gramlabs/TCSCC-Recomp/issues)
 ![platform](https://img.shields.io/badge/platform-Windows%20x64-blue)
 ![renderer](https://img.shields.io/badge/renderer-Direct3D%2011-informational)
 ![fps](https://img.shields.io/badge/up%20to-240%20fps-brightgreen)
 ![license](https://img.shields.io/badge/license-GPL--3.0-green)
 
-[![Download](https://img.shields.io/badge/Download-latest%20release-fb6116?style=for-the-badge&logo=forgejo)](https://git.8gramlabs.com/8gramlabs/TCSCC-Recomp/releases/latest)
+[![Download](https://img.shields.io/badge/Download-latest%20release-fb6116?style=for-the-badge&logo=data:image/svg%2bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI%2BPGRlZnM%2BPGNsaXBQYXRoIGlkPSJsIj48cmVjdCB3aWR0aD0iMTIiIGhlaWdodD0iMjQiLz48L2NsaXBQYXRoPjxjbGlwUGF0aCBpZD0iciI%2BPHJlY3QgeD0iMTIiIHdpZHRoPSIxMiIgaGVpZ2h0PSIyNCIvPjwvY2xpcFBhdGg%2BPC9kZWZzPjxwYXRoIGQ9Ik03IDUgMi41IDEyIDcgMTkiIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2Y1ZjdmYSIgc3Ryb2tlLXdpZHRoPSIyLjYiIHN0cm9rZS1saW5lam9pbj0ibWl0ZXIiLz48cGF0aCBkPSJNMTcgNSAyMS41IDEyIDE3IDE5IiBmaWxsPSJub25lIiBzdHJva2U9IiNmYjYxMTYiIHN0cm9rZS13aWR0aD0iMi42IiBzdHJva2UtbGluZWpvaW49Im1pdGVyIi8%2BPGcgZmlsbD0ibm9uZSIgc3Ryb2tlLXdpZHRoPSIyLjMiPjxnIGNsaXAtcGF0aD0idXJsKCNsKSIgc3Ryb2tlPSIjZjVmN2ZhIj48Y2lyY2xlIGN4PSIxMiIgY3k9IjgiIHI9IjMuMyIvPjxjaXJjbGUgY3g9IjEyIiBjeT0iMTYiIHI9IjMuNiIvPjwvZz48ZyBjbGlwLXBhdGg9InVybCgjcikiIHN0cm9rZT0iI2ZiNjExNiI%2BPGNpcmNsZSBjeD0iMTIiIGN5PSI4IiByPSIzLjMiLz48Y2lyY2xlIGN4PSIxMiIgY3k9IjE2IiByPSIzLjYiLz48L2c%2BPC9nPjwvc3ZnPgo=)](https://git.8gramlabs.com/8gramlabs/TCSCC-Recomp/releases/latest)
 <a href="https://git.8gramlabs.com/8gramlabs/TCSCC-Recomp/releases/latest"><img src="https://git.8gramlabs.com/badge/8gramlabs/TCSCC-Recomp/downloads.svg" alt="Downloads"></a>
 
 </div>
