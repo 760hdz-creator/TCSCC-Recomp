@@ -19,6 +19,9 @@
 </div>
 
 > [!NOTE]
+> **Antivirus and "Windows protected your PC" warnings.** `TCSCC_Setup.exe` is not code-signed (signing certificates cost money), so Windows SmartScreen and some antivirus programs may warn about it or flag it on heuristics. These are false positives: I can assure you nothing in it is malicious. If Windows says "Windows protected your PC", click **More info**, then **Run anyway**. All of the source code is right here in this repo, so if that would make you feel more comfortable, you're always welcome to [build it yourself](#building-from-source). Thanks for giving it a try!
+
+> [!NOTE]
 > **Complete, ready to play.** All 11 story chapters load and play with sound and saves, Deniable Ops plays,
 > and co-op / Face-Off work online over Steam (System Link and Xbox LIVE Player Match). Please
 > [report](https://git.8gramlabs.com/8gramlabs/TCSCC-Recomp/issues) anything that looks or plays wrong.
@@ -27,9 +30,6 @@
 > [!IMPORTANT]
 > **No game files are included, and none ever will be.** You need your own copy of the Xbox 360 game
 > (disc USA/Europe, Title ID `5553080B`).
-
-> [!NOTE]
-> **Antivirus and "Windows protected your PC" warnings.** `TCSCC_Setup.exe` is not code-signed (signing certificates cost money), so Windows SmartScreen and some antivirus programs may warn about it or flag it on heuristics. These are false positives: I can assure you nothing in it is malicious. If Windows says "Windows protected your PC", click **More info**, then **Run anyway**. Every release is built from the source code in this repo, so if you would rather not trust the download, you can [build it yourself](#building-from-source).
 
 <div align="center">
 <img src="docs/images/title.jpg" width="820" alt="Title screen">
