@@ -21,6 +21,13 @@
 > [!NOTE]
 > **Antivirus and "Windows protected your PC" warnings.** `TCSCC_Setup.exe` is not code-signed (signing certificates cost money), so Windows SmartScreen and some antivirus programs may warn about it or flag it on heuristics. These are false positives: I can assure you nothing in it is malicious. If Windows says "Windows protected your PC", click **More info**, then **Run anyway**. All of the source code is right here in this repo, so if that would make you feel more comfortable, you're always welcome to [build it yourself](#building-from-source). Thanks for giving it a try!
 
+> [!TIP]
+> **Support my work.** I'm the only one working on these projects, and I build and maintain them in my free time. If you'd like to help, any support goes a long way toward keeping them updated and making new ones. Thank you so much for your support!
+
+<p align="center">
+  <a href="https://www.paypal.com/donate/?business=3KMJ88RZUH9JJ&amp;no_recurring=0&amp;currency_code=USD"><img src="https://img.shields.io/badge/Donate%20with%20PayPal-0070BA?style=for-the-badge&amp;logo=paypal&amp;logoColor=white" alt="Donate with PayPal"></a>
+</p>
+
 > [!NOTE]
 > **Complete, ready to play.** All 11 story chapters load and play with sound and saves, Deniable Ops plays,
 > and co-op / Face-Off work online over Steam (System Link and Xbox LIVE Player Match). Please
