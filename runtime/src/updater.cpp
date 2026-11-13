@@ -20,6 +20,9 @@
 #ifndef SCDA_UPDATE_REPO
 #define SCDA_UPDATE_REPO "" // no release feed: update check off
 #endif
+#ifndef SCDA_UPDATE_FORGE_REPO
+#define SCDA_UPDATE_FORGE_REPO "" // owner/name on git.8gramlabs.com, also asked; empty = not asked
+#endif
 
 namespace updater {
 
@@ -28,6 +31,7 @@ namespace {
 std::mutex g_mutex;
 Status g_status;
 std::string g_installerUrl;  // the offered release's TCSCC_Setup.exe
+std::string g_fallbackUrl;   // the same version's TCSCC_Setup.exe on the other source, if any
 std::wstring g_setupPath;    // the downloaded installer
 
 std::wstring Wide(const std::string& s)
@@ -47,9 +51,9 @@ std::string Lower(std::string t)
 bool IsExe(const std::string& t) { return t.size() > 4 && Lower(t.substr(t.size() - 4)) == ".exe"; }
 
 // HTTPS GET through WinHTTP (redirects followed: permalink/latest answers 302); `sink` gets the body
-// in chunks and returns false to stop. 404 -> `notFound`.
+// in chunks and returns false to stop. 404 -> `notFound`. `who` names the server in errors.
 template <typename Sink>
-bool HttpGet(const std::wstring& url, std::string& error, bool& notFound, uint64_t& length, Sink sink)
+bool HttpGet(const std::wstring& url, std::string& error, bool& notFound, uint64_t& length, Sink sink, const std::string& who = "GitLab")
 {
     notFound = false;
     URL_COMPONENTS u{ sizeof u };
@@ -89,13 +93,13 @@ bool HttpGet(const std::wstring& url, std::string& error, bool& notFound, uint64
                               : nullptr };
     if (!request.h)
     {
-        error = "no connection to GitLab";
+        error = "no connection to " + who;
         return false;
     }
     if (!WinHttpSendRequest(request.h, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) ||
         !WinHttpReceiveResponse(request.h, nullptr))
     {
-        error = "no connection to GitLab (error " + std::to_string(GetLastError()) + ")";
+        error = "no connection to " + who + " (error " + std::to_string(GetLastError()) + ")";
         return false;
     }
     DWORD status = 0, size = sizeof status;
@@ -109,7 +113,7 @@ bool HttpGet(const std::wstring& url, std::string& error, bool& notFound, uint64
     }
     if (status != 200)
     {
-        error = "GitLab answered " + std::to_string(status) + (status == 403 || status == 429 ? " (rate limit, try later)" : "");
+        error = who + " answered " + std::to_string(status) + (status == 403 || status == 429 ? " (rate limit, try later)" : "");
         return false;
     }
     wchar_t len[32] = {};
@@ -145,95 +149,172 @@ void Fail(const std::string& error, bool download)
     g_status.download = download;
 }
 
+// One source's latest release.
+struct Offer
+{
+    std::string source;         // "GitLab" / "the forge"
+    bool ok = false, none = false; // answered with a tagged release / answered: no release
+    std::string version, title, url, error;
+};
+
+Offer Fetch(bool gitlab)
+{
+    Offer o;
+    o.source = gitlab ? "GitLab" : "the forge";
+    std::wstring url;
+    if (gitlab)
+    {
+        // GitLab wants the project path URL-encoded ("group/name" -> "group%2Fname").
+        std::string project;
+        for (const char c : Repo())
+            project += c == '/' ? std::string("%2F") : std::string(1, c);
+        url = Wide("https://gitlab.com/api/v4/projects/" + project + "/releases/permalink/latest");
+    }
+    else // Forgejo answers like GitHub: /releases/latest skips drafts and pre-releases
+        url = Wide("https://git.8gramlabs.com/api/v1/repos/" + ForgeRepo() + "/releases/latest");
+    std::string body;
+    bool notFound = false;
+    uint64_t length = 0;
+    if (!HttpGet(url, o.error, notFound, length, [&](const char* d, size_t n) { body.append(d, n); return body.size() < (8u << 20); }, o.source))
+    {
+        o.none = notFound; // no release yet (or the project is not public)
+        return o;
+    }
+    if (!ParseRelease(body, o.version, o.title, o.url))
+        o.error = "the latest release has no version tag";
+    else
+        o.ok = true;
+    return o;
+}
+
+// Asks GitLab and the forge at once (either may be down or behind: the forge copies GitLab's
+// releases once a day). The higher version wins; for the same version the one with the installer,
+// then the forge (its downloads are counted on the site). The other source with the same version
+// stays as the download's fallback.
 void RunCheck()
 {
-    if (Repo().empty())
+    if (Repo().empty() && ForgeRepo().empty())
     {
         std::lock_guard lock(g_mutex);
         g_status.state = State::NoReleases; // no feed configured ([Update] Repo= or SCDA_UPDATE_REPO)
         return;
     }
-    // GitLab wants the project path URL-encoded ("group/name" -> "group%2Fname").
-    std::string project;
-    for (const char c : Repo())
-        project += c == '/' ? std::string("%2F") : std::string(1, c);
-    std::string body, error;
-    bool notFound = false;
-    uint64_t length = 0;
-    const bool ok = HttpGet(Wide("https://gitlab.com/api/v4/projects/" + project + "/releases/permalink/latest"), error, notFound, length,
-                            [&](const char* d, size_t n) { body.append(d, n); return body.size() < (8u << 20); });
-    std::string version, title, url;
+    Offer lab, forge;
+    std::thread labThread;
+    if (!Repo().empty())
+        labThread = std::thread([&] { lab = Fetch(true); });
+    if (!ForgeRepo().empty())
+        forge = Fetch(false);
+    if (labThread.joinable())
+        labThread.join();
+    std::vector<const Offer*> offers;
+    for (const Offer* o : { &forge, &lab }) // forge first: kept first on a full tie
     {
-        std::lock_guard lock(g_mutex);
-        Status& s = g_status;
-        s.error.clear();
-        s.download = false;
-        g_installerUrl.clear();
-        if (!ok && notFound)
-            s.state = State::NoReleases; // no release yet (or the project is not public)
-        else if (!ok)
-            s.state = State::Failed, s.error = error;
-        else if (!ParseRelease(body, version, title, url))
-            s.state = State::Failed, s.error = "the latest release has no version tag";
+        if (!o->source.empty())
+            RuntimeLog("[update] %s: %s\n", o->source.c_str(),
+                       o->ok ? ("release " + o->version + (o->url.empty() ? ", no installer" : ", installer")).c_str()
+                             : o->none ? "no release" : o->error.c_str());
+        if (o->ok)
+            offers.push_back(o);
+    }
+    std::stable_sort(offers.begin(), offers.end(), [](const Offer* x, const Offer* y) {
+        if (const int v = CompareVersions(x->version, y->version))
+            return v > 0;
+        return !x->url.empty() && y->url.empty();
+    });
+    std::lock_guard lock(g_mutex);
+    Status& s = g_status;
+    s.error.clear();
+    s.download = false;
+    g_installerUrl.clear();
+    g_fallbackUrl.clear();
+    if (offers.empty())
+    {
+        const bool none = (lab.source.empty() || lab.none) && (forge.source.empty() || forge.none);
+        s.state = none ? State::NoReleases : State::Failed;
+        if (!none)
+            s.error = lab.error.empty() || lab.none ? forge.error
+                      : forge.error.empty() || forge.none ? lab.error
+                                                          : "GitLab: " + lab.error + "; the forge: " + forge.error;
+    }
+    else
+    {
+        const Offer& best = *offers[0];
+        s.latest = best.version;
+        s.title = best.title;
+        if (CompareVersions(best.version, CurrentVersion()) <= 0)
+            s.state = State::UpToDate;
+        else if (best.url.empty())
+            s.state = State::Failed, s.error = "release " + best.version + " has no TCSCC_Setup.exe";
         else
         {
-            s.latest = version;
-            s.title = title;
-            if (CompareVersions(version, CurrentVersion()) <= 0)
-                s.state = State::UpToDate;
-            else if (url.empty())
-                s.state = State::Failed, s.error = "release " + version + " has no TCSCC_Setup.exe";
-            else
-                s.state = State::Available, g_installerUrl = url;
+            s.state = State::Available;
+            g_installerUrl = best.url;
+            if (offers.size() > 1 && CompareVersions(offers[1]->version, best.version) == 0)
+                g_fallbackUrl = offers[1]->url;
         }
-        RuntimeLog("[update] %s: state %d latest '%s' (this build %s)%s%s\n", Repo().c_str(), int(s.state), s.latest.c_str(), CurrentVersion(),
-                   s.error.empty() ? "" : ": ", s.error.c_str());
     }
+    RuntimeLog("[update] state %d latest '%s' (this build %s)%s%s\n", int(s.state), s.latest.c_str(), CurrentVersion(),
+               s.error.empty() ? "" : ": ", s.error.c_str());
 }
 
 void RunDownload()
 {
-    std::string url, version;
+    std::string version;
+    std::vector<std::string> urls; // the chosen source, then the other one with the same version
     {
         std::lock_guard lock(g_mutex);
-        url = g_installerUrl;
         version = g_status.latest;
+        for (const std::string& u : { g_installerUrl, g_fallbackUrl })
+            if (!u.empty())
+                urls.push_back(u);
     }
     const std::filesystem::path folder = SettingsPath().parent_path() / "update";
     std::error_code ec;
     std::filesystem::create_directories(folder, ec);
     const std::wstring path = (folder / (L"TCSCC_Setup_" + Wide(version) + L".exe")).wstring();
     const std::wstring part = path + L".part";
-    HANDLE f = CreateFileW(part.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (f == INVALID_HANDLE_VALUE)
-        return Fail("could not write the download", true);
     std::string error;
-    bool notFound = false, exe = true;
-    uint64_t length = 0, done = 0;
-    const bool ok = HttpGet(Wide(url), error, notFound, length, [&](const char* d, size_t n) {
-        if (done == 0 && (n < 2 || d[0] != 'M' || d[1] != 'Z')) // GitLab links carry no checksum: at least a Windows program
-        {
-            exe = false;
-            error = "the download is not an installer";
-            return false;
-        }
-        DWORD put = 0;
-        if (!WriteFile(f, d, DWORD(n), &put, nullptr) || put != n)
-            return false;
-        done += n;
-        std::lock_guard lock(g_mutex);
-        g_status.percent = length ? int(std::min<uint64_t>(done * 100 / length, 99)) : 0;
-        return true;
-    });
-    CloseHandle(f);
-    if (ok && length && done != length)
-        error = "the download is incomplete";
-    if (!ok || !error.empty())
+    uint64_t done = 0;
+    bool saved = false;
+    for (size_t i = 0; i < urls.size() && !saved; i++)
     {
-        DeleteFileW(part.c_str());
-        RuntimeLog("[update] download failed: %s\n", error.c_str());
-        return Fail(error.empty() ? "the download failed" : error, true);
+        const std::string& url = urls[i];
+        const std::string who = url.find("git.8gramlabs.com") != std::string::npos ? "the forge" : "GitLab";
+        HANDLE f = CreateFileW(part.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (f == INVALID_HANDLE_VALUE)
+            return Fail("could not write the download", true);
+        error.clear();
+        done = 0;
+        bool notFound = false;
+        uint64_t length = 0;
+        const bool ok = HttpGet(Wide(url), error, notFound, length, [&](const char* d, size_t n) {
+            if (done == 0 && (n < 2 || d[0] != 'M' || d[1] != 'Z')) // release links carry no checksum: at least a Windows program
+            {
+                error = "the download is not an installer";
+                return false;
+            }
+            DWORD put = 0;
+            if (!WriteFile(f, d, DWORD(n), &put, nullptr) || put != n)
+                return false;
+            done += n;
+            std::lock_guard lock(g_mutex);
+            g_status.percent = length ? int(std::min<uint64_t>(done * 100 / length, 99)) : 0;
+            return true;
+        }, who);
+        CloseHandle(f);
+        if (ok && length && done != length)
+            error = "the download is incomplete";
+        if (ok && error.empty())
+            saved = true;
+        else
+        {
+            DeleteFileW(part.c_str());
+            RuntimeLog("[update] download from %s failed: %s%s\n", who.c_str(), error.c_str(), i + 1 < urls.size() ? " (trying the other source)" : "");
+        }
     }
+    if (!saved)
+        return Fail(error.empty() ? "the download failed" : error, true);
     DeleteFileW(path.c_str());
     if (!MoveFileW(part.c_str(), path.c_str()))
         return Fail("could not save the download", true);
@@ -313,7 +394,19 @@ const std::string& Repo()
     return repo;
 }
 
-std::string ReleasePageUrl() { return "https://gitlab.com/" + Repo() + "/-/releases"; }
+const std::string& ForgeRepo()
+{
+    // SCDA_NO_FORGE_UPDATE=1 skips the forge; SCDA_UPDATE_FORGE_REPO=<owner/name> asks another repo (tests).
+    static const std::string repo = getenv("SCDA_NO_FORGE_UPDATE") ? std::string()
+                                  : getenv("SCDA_UPDATE_FORGE_REPO") ? std::string(getenv("SCDA_UPDATE_FORGE_REPO"))
+                                                                     : std::string(SCDA_UPDATE_FORGE_REPO);
+    return repo;
+}
+
+std::string ReleasePageUrl()
+{
+    return ForgeRepo().empty() ? "https://gitlab.com/" + Repo() + "/-/releases" : "https://git.8gramlabs.com/" + ForgeRepo() + "/releases";
+}
 
 Status Get()
 {
@@ -469,46 +562,54 @@ bool ParseRelease(const std::string& json, std::string& version, std::string& ti
     version = JsonString(json, "tag_name");
     if (!version.empty() && (version[0] == 'v' || version[0] == 'V'))
         version.erase(0, 1);
-    title = JsonString(json, "name"); // GitLab sends the release's own name first
+    title = JsonString(json, "name"); // GitLab and the forge both send the release's own name first
     installerUrl.clear();
     if (version.empty())
         return false;
-    // assets.links: each object at depth 1 of the array (assets.sources are the source archives).
-    size_t p = json.find("\"links\"");
-    p = p == std::string::npos ? p : json.find('[', p);
-    if (p == std::string::npos)
-        return true;
-    int depth = 0;
-    bool inString = false;
-    size_t start = 0;
-    for (size_t i = p + 1; i < json.size(); i++)
-    {
-        const char c = json[i];
-        if (inString)
+    // The installer among the objects at depth 1 of an array: GitLab's assets.links (assets.sources
+    // are the source archives), else the forge's (Forgejo) assets[]. False when `key` is absent.
+    const auto scan = [&](const char* key) {
+        size_t p = json.find(key);
+        p = p == std::string::npos ? p : json.find('[', p);
+        if (p == std::string::npos)
+            return false;
+        int depth = 0;
+        bool inString = false;
+        size_t start = 0;
+        for (size_t i = p + 1; i < json.size(); i++)
         {
-            if (c == '\\')
-                i++;
-            else if (c == '"')
-                inString = false;
-            continue;
-        }
-        if (c == '"')
-            inString = true;
-        else if (c == '{' && depth++ == 0)
-            start = i;
-        else if (c == '}' && --depth == 0)
-        {
-            const std::string link = json.substr(start, i + 1 - start);
-            const std::string name = JsonString(link, "name"), url = JsonString(link, "url"), direct = JsonString(link, "direct_asset_url");
-            const bool named = Lower(name) == "tcscc_setup.exe";
-            if (named || (installerUrl.empty() && (IsExe(name) || IsExe(url) || IsExe(direct))))
-                installerUrl = direct.empty() ? url : direct;
-            if (named)
+            const char c = json[i];
+            if (inString)
+            {
+                if (c == '\\')
+                    i++;
+                else if (c == '"')
+                    inString = false;
+                continue;
+            }
+            if (c == '"')
+                inString = true;
+            else if (c == '{' && depth++ == 0)
+                start = i;
+            else if (c == '}' && --depth == 0)
+            {
+                const std::string link = json.substr(start, i + 1 - start);
+                const std::string name = JsonString(link, "name"), url = JsonString(link, "url"), direct = JsonString(link, "direct_asset_url"),
+                                  download = JsonString(link, "browser_download_url");
+                const std::string best = !direct.empty() ? direct : !download.empty() ? download : url;
+                const bool named = Lower(name) == "tcscc_setup.exe";
+                if (named || (installerUrl.empty() && (IsExe(name) || IsExe(url) || IsExe(direct) || IsExe(download))))
+                    installerUrl = best;
+                if (named)
+                    break;
+            }
+            else if (c == ']' && depth == 0)
                 break;
         }
-        else if (c == ']' && depth == 0)
-            break;
-    }
+        return true;
+    };
+    if (!scan("\"links\""))
+        scan("\"assets\"");
     return true;
 }
 

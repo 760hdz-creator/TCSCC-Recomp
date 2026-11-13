@@ -481,7 +481,7 @@ void UpdateTab()
     if (st.state == S::Downloaded && !updater::CanInstall())
         ImGui::TextWrapped("This copy is not an installed one: run TCSCC_Setup.exe from the releases page to update it.");
     ImGui::Spacing();
-    ImGui::TextDisabled("Releases: gitlab.com/%s", updater::Repo().c_str());
+    ImGui::TextDisabled("Releases: gitlab.com/%s and git.8gramlabs.com/%s", updater::Repo().c_str(), updater::ForgeRepo().c_str());
 }
 
 void Menu()

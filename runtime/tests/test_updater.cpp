@@ -50,3 +50,17 @@ TEST(updater_parse_gitlab_release)
 
     CHECK(!updater::ParseRelease(R"({"message":"404 Not Found"})", version, title, url));
 }
+
+TEST(updater_parse_forge_release)
+{
+    // Shape of git.8gramlabs.com/api/v1/repos/<owner>/<repo>/releases/latest (Forgejo), trimmed.
+    const std::string json = R"({"id":9,"tag_name":"v0.1.6","target_commitish":"main","name":"TCSCC Recomp 0.1.6","body":"notes",)"
+        R"("draft":false,"prerelease":false,"author":{"id":1,"login":"siteadmin"},"assets":[)"
+        R"({"id":4,"name":"TCSCC_Setup_0.1.6.zip","size":10,"download_count":1,"uuid":"a","browser_download_url":"https://git.8gramlabs.com/8gramlabs/TCSCC-Recomp/releases/download/v0.1.6/TCSCC_Setup_0.1.6.zip","type":"attachment"},)"
+        R"({"id":5,"name":"TCSCC_Setup.exe","size":20,"download_count":2,"uuid":"b","browser_download_url":"https://git.8gramlabs.com/8gramlabs/TCSCC-Recomp/releases/download/v0.1.6/TCSCC_Setup.exe","type":"attachment"}]})";
+    std::string version, title, url;
+    CHECK(updater::ParseRelease(json, version, title, url));
+    CHECK_EQ(version, std::string("0.1.6"));
+    CHECK_EQ(title, std::string("TCSCC Recomp 0.1.6"));
+    CHECK_EQ(url, std::string("https://git.8gramlabs.com/8gramlabs/TCSCC-Recomp/releases/download/v0.1.6/TCSCC_Setup.exe"));
+}

@@ -1,6 +1,7 @@
 // In-game updates (update notification at the main menu, F1 menu > Update tab): the latest release
 // of the port's GitLab project (SCDA_UPDATE_REPO, group/project; [Update] Repo= in settings.ini
-// overrides it), compared with this build's version (SCDA_VERSION, the CMake project version).
+// overrides it) and of its copy on the 8gram Labs forge (SCDA_UPDATE_FORGE_REPO, git.8gramlabs.com),
+// both asked, higher version wins, compared with this build's version (SCDA_VERSION, the CMake project version).
 // Only a strictly higher version is offered, never a downgrade. The release's TCSCC_Setup.exe link
 // is downloaded to %LOCALAPPDATA%\TCSCCRecomp\update (checked: starts with "MZ", full length), then
 // the game quits and a hidden watcher runs that installer's --update over this install folder
@@ -24,8 +25,9 @@ struct Status
 };
 
 const char* CurrentVersion(); // SCDA_VERSION, or SCDA_VERSION_OVERRIDE (tests: pretend to be an older build)
-const std::string& Repo();
-// https://gitlab.com/<repo>/-/releases
+const std::string& Repo();      // GitLab group/project
+const std::string& ForgeRepo(); // forge owner/name, also asked (empty = not asked)
+// https://git.8gramlabs.com/<forge repo>/releases, or https://gitlab.com/<repo>/-/releases without the forge
 std::string ReleasePageUrl();
 Status Get();
 void Check();    // in the background; ignored while busy
@@ -42,9 +44,10 @@ bool Install(std::string& error);
 int CompareVersions(const std::string& a, const std::string& b);
 // The string value of "key" in a JSON object (first occurrence, any depth), unescaped; empty if absent.
 std::string JsonString(const std::string& json, const std::string& key);
-// A GitLab release object (GET /projects/:id/releases/permalink/latest): its version (tag_name
-// without a leading v) and the installer's URL (the assets.links entry named TCSCC_Setup.exe, else
-// the first .exe link; direct_asset_url preferred). False when the JSON holds no tag.
+// A GitLab release object (GET /projects/:id/releases/permalink/latest) or a forge one (Forgejo
+// GET /repos/:owner/:repo/releases/latest): its version (tag_name without a leading v) and the
+// installer's URL (the assets.links / assets[] entry named TCSCC_Setup.exe, else the first .exe;
+// direct_asset_url, then browser_download_url, preferred). False when the JSON holds no tag.
 bool ParseRelease(const std::string& json, std::string& version, std::string& title, std::string& installerUrl);
 
 } // namespace updater

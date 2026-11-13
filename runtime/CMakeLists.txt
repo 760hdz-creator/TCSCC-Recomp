@@ -30,6 +30,7 @@ endif()
 # This build's version (project VERSION; the in-game updater compares it with the latest GitLab release
 # of SCDA_UPDATE_REPO; tools/installer/build.bat reads the same number). Release tag = v<VERSION>.
 set(SCDA_UPDATE_REPO "octagram-labs-group/TCSCC-Recomp" CACHE STRING "GitLab group/project the in-game updater checks" FORCE)
+set(SCDA_UPDATE_FORGE_REPO "8gramlabs/TCSCC-Recomp" CACHE STRING "git.8gramlabs.com owner/name the in-game updater also checks (empty = none)")
 
 # SDL3 (zlib): native PlayStation / Switch / other gamepads (src/pad.cpp), linked static so an
 # update that replaces scda.exe alone carries it. Source: external/SDL (github.com/libsdl-org/SDL
@@ -174,5 +175,5 @@ add_test(NAME scda_tests COMMAND scda_tests)
 # XenosRecomp fork (MIT): fmt header-only from XenonRecomp's thirdparty.
 foreach(t scda scda_tests)
     target_include_directories(${t} PRIVATE "${XENON_ROOT}/thirdparty/fmt/include")
-    target_compile_definitions(${t} PRIVATE FMT_HEADER_ONLY SCDA_VERSION="${PROJECT_VERSION}" SCDA_UPDATE_REPO="${SCDA_UPDATE_REPO}")
+    target_compile_definitions(${t} PRIVATE FMT_HEADER_ONLY SCDA_VERSION="${PROJECT_VERSION}" SCDA_UPDATE_REPO="${SCDA_UPDATE_REPO}" SCDA_UPDATE_FORGE_REPO="${SCDA_UPDATE_FORGE_REPO}")
 endforeach()
