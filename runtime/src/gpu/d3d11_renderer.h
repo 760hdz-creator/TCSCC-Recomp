@@ -98,6 +98,8 @@ private:
     void ExecuteQuery(const OcclusionQuery& q);
     void ExecuteFence(const Fence& f);
     void FlushMemExport(char why);
+    bool HarvestMemExport(bool wait);
+    static bool MemExportAsync();
     void WritePendingFences();
     void BindRegisterState(const RegisterFile& regs, uint32_t texSlots);
     void ApplyRegisterWrites(const Frame& frame, size_t end);

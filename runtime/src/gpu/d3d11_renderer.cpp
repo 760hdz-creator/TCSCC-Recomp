@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <map>
 #include <tuple>
@@ -513,13 +514,19 @@ struct DrawResources
     uint32_t memoryBytes = 0;
     // PS memexport window (MemExport, translate.cpp): UAV u7 over guest physical [exportBase,
     // +exportBytes), seeded from guest RAM before the draw and copied back after it.
-    ComPtr<ID3D11Buffer> exportBuf, exportStaging;
+    ComPtr<ID3D11Buffer> exportBuf, exportStaging[3];
     ComPtr<ID3D11UnorderedAccessView> exportUav;
     uint32_t exportBase = 0, exportBytes = 0;
-    // The last memexport draw's window, copied into exportStaging but not yet written back to guest
-    // RAM (FlushMemExport).
+    // The last memexport draw's window, copied into exportStaging[exportSlot] but not yet written
+    // back to guest RAM (FlushMemExport).
     bool exportPending = false;
-    uint32_t exportPendingBase = 0, exportPendingBytes = 0, exportPendingDrawn = 0;
+    uint32_t exportPendingBase = 0, exportPendingBytes = 0, exportPendingDrawn = 0, exportSlot = 0;
+    // Async write-back (SCDA_MEMEXPORT_ASYNC, see FlushMemExport): windows copied to staging but not
+    // read yet (oldest first), and the newest window read back (its written range [lo, hi]).
+    struct ExportInFlight { uint32_t slot, base, bytes; };
+    std::deque<ExportInFlight> exportInFlight;
+    std::vector<uint8_t> exportLast;
+    uint32_t exportLastBase = 0, exportLastBytes = 0, exportLastLo = 1, exportLastHi = 0;
     // Dynamic ring for per-draw index data (NO_OVERWRITE appends, DISCARD on wrap).
     ComPtr<ID3D11Buffer> indexRing;
     uint32_t indexRingBytes = 0, indexRingPos = 0;
@@ -2871,11 +2878,12 @@ void D3D11Renderer::ExecuteDraw(const DrawCall& d, const Frame& frame)
             bd.MiscFlags = 0;
             bd.Usage = D3D11_USAGE_STAGING;
             bd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-            m_device->CreateBuffer(&bd, nullptr, &r.exportStaging);
+            for (auto& s : r.exportStaging)
+                m_device->CreateBuffer(&bd, nullptr, &s);
         }
         const uint32_t bytes = (r.exportBytes + 3) & ~3u;
         const D3D11_BOX box{ 0, 0, 0, bytes, 1, 1 };
-        if (r.exportUav && r.exportStaging)
+        if (r.exportUav && r.exportStaging[0] && r.exportStaging[1] && r.exportStaging[2])
         {
             // Back-to-back export draws over the same window (the l3d pass issues 3-4 per frame): the
             // window already holds the guest bytes plus the earlier draws' writes, i.e. what a
@@ -2885,6 +2893,13 @@ void D3D11Renderer::ExecuteDraw(const DrawCall& d, const Frame& frame)
             if (!chained)
             {
                 FlushMemExport('E');
+                if (MemExportAsync())
+                {
+                    // Next staging buffer; one still in flight is read back first (never overwritten unread).
+                    r.exportSlot = (r.exportSlot + 1) % 3;
+                    while (std::any_of(r.exportInFlight.begin(), r.exportInFlight.end(), [&](const auto& e) { return e.slot == r.exportSlot; }))
+                        HarvestMemExport(true);
+                }
                 m_context->UpdateSubresource(r.exportBuf.Get(), 0, &box, PhysicalPtr(r.exportBase), 0, 0);
                 static const uint32_t kNoRange[2] = { ~0u, 0 }; // MemExport's written [min, max]
                 const D3D11_BOX rangeBox{ (4u << 20) - 8, 0, 0, 4u << 20, 1, 1 };
@@ -3080,14 +3095,15 @@ void D3D11Renderer::ExecuteDraw(const DrawCall& d, const Frame& frame)
     // PS memexport: unbind u7 and copy the window into exportStaging. The write-back to guest RAM (the
     // CPU reads it, e.g. l3d visibility bytes in sub_82EF9990) waits for FlushMemExport: the title can
     // only see it behind a later fence, so mapping right here only stalled the CPU on the GPU.
-    if (memExportDraw && r.exportUav && r.exportStaging)
+    if (memExportDraw && r.exportUav && r.exportStaging[r.exportSlot])
     {
+        ID3D11Buffer* staging = r.exportStaging[r.exportSlot].Get();
         ID3D11UnorderedAccessView* none = nullptr;
         m_context->OMSetRenderTargetsAndUnorderedAccessViews(D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL, nullptr, nullptr, 7, 1, &none, nullptr);
         const D3D11_BOX box{ 0, 0, 0, (r.exportBytes + 3) & ~3u, 1, 1 };
         const D3D11_BOX rangeBox{ (4u << 20) - 8, 0, 0, 4u << 20, 1, 1 };
-        m_context->CopySubresourceRegion(r.exportStaging.Get(), 0, 0, 0, 0, r.exportBuf.Get(), 0, &box);
-        m_context->CopySubresourceRegion(r.exportStaging.Get(), 0, (4u << 20) - 8, 0, 0, r.exportBuf.Get(), 0, &rangeBox);
+        m_context->CopySubresourceRegion(staging, 0, 0, 0, 0, r.exportBuf.Get(), 0, &box);
+        m_context->CopySubresourceRegion(staging, 0, (4u << 20) - 8, 0, 0, r.exportBuf.Get(), 0, &rangeBox);
         r.exportPending = true;
         r.exportPendingBase = r.exportBase;
         r.exportPendingBytes = r.exportBytes;
@@ -3248,24 +3264,92 @@ void D3D11Renderer::ExecuteQuery(const OcclusionQuery& q)
 // Writes the pending memexport window back to guest RAM (waits for the GPU to reach its copy). Runs
 // before every fence (the title reads the bytes behind one), before the next memexport draw seeds the
 // window, and at the end of every Frame.
+// Default (SCDA_MEMEXPORT_ASYNC=0 = old blocking Map): the write-back never waits for the GPU. The title
+// fences right after the l3d visibility pass, so a blocking Map drained the GPU every frame (GitLab #1:
+// RX 6600 8 ms/frame, 4080S uncapped 70 -> 73-76 fps without it). Each window goes to its own staging
+// buffer (ring of 3); a flush writes the newest window the GPU has finished, which is the current one
+// when the GPU kept up and otherwise the previous frame's (same base + size only; else it waits as
+// before). A window read later than its flush is never written to guest RAM (the title owns it then).
+bool D3D11Renderer::MemExportAsync()
+{
+    static const bool on = [] { const char* v = getenv("SCDA_MEMEXPORT_ASYNC"); return !(v && *v == '0') && !getenv("SCDA_MEMEXPORT_SYNC"); }();
+    return on;
+}
+
+// Reads the oldest in-flight staging window into exportLast. wait = block until the GPU wrote it.
+bool D3D11Renderer::HarvestMemExport(bool wait)
+{
+    DrawResources& r = *m_draw;
+    if (r.exportInFlight.empty())
+        return false;
+    const DrawResources::ExportInFlight e = r.exportInFlight.front();
+    D3D11_MAPPED_SUBRESOURCE map;
+    LARGE_INTEGER m0, m1, qf;
+    QueryPerformanceCounter(&m0);
+    const HRESULT hr = m_context->Map(r.exportStaging[e.slot].Get(), 0, D3D11_MAP_READ, wait ? 0 : D3D11_MAP_FLAG_DO_NOT_WAIT, &map);
+    QueryPerformanceCounter(&m1);
+    QueryPerformanceFrequency(&qf);
+    m_readbackUs += uint64_t((m1.QuadPart - m0.QuadPart) * 1000000 / qf.QuadPart);
+    if (hr == DXGI_ERROR_WAS_STILL_DRAWING)
+        return false;
+    r.exportInFlight.pop_front();
+    if (FAILED(hr))
+        return true; // dropped
+    const uint8_t* data = static_cast<const uint8_t*>(map.pData);
+    uint32_t lo, hi;
+    memcpy(&lo, data + (4u << 20) - 8, 4);
+    memcpy(&hi, data + (4u << 20) - 4, 4);
+    r.exportLastBase = e.base;
+    r.exportLastBytes = e.bytes;
+    r.exportLastLo = 1;
+    r.exportLastHi = 0;
+    if (lo <= hi && hi < e.bytes)
+    {
+        r.exportLast.resize(e.bytes);
+        memcpy(r.exportLast.data() + lo, data + lo, hi - lo + 1);
+        r.exportLastLo = lo;
+        r.exportLastHi = hi;
+    }
+    m_context->Unmap(r.exportStaging[e.slot].Get(), 0);
+    return true;
+}
+
 void D3D11Renderer::FlushMemExport(char why)
 {
     if (!m_draw || !m_draw->exportPending)
         return;
     DrawResources& r = *m_draw;
     r.exportPending = false;
+    static const bool trace = getenv("SCDA_TRACE_MEMEXPORT") != nullptr;
+    static uint32_t traced;
+    if (MemExportAsync())
+    {
+        r.exportInFlight.push_back({ r.exportSlot, r.exportPendingBase, r.exportPendingBytes });
+        uint32_t harvested = 0;
+        while (HarvestMemExport(false))
+            harvested++;
+        const bool current = r.exportInFlight.empty(); // the GPU already finished this window
+        const bool reuse = r.exportLastBase == r.exportPendingBase && r.exportLastBytes == r.exportPendingBytes;
+        uint32_t waits = 0;
+        if (!current && !reuse) // nothing usable for this window (first frame, window moved): wait
+            for (; HarvestMemExport(true); waits++) {}
+        if (trace && traced++ < 400)
+            RuntimeLog("[memexport] present %llu flush %c async: %s (harvested %u, waited %u, in flight %zu)\n", (unsigned long long)m_presented, why,
+                current ? "current" : waits ? "waited" : "previous", harvested, waits, r.exportInFlight.size());
+        if (r.exportLastBase == r.exportPendingBase && r.exportLastBytes == r.exportPendingBytes && r.exportLastLo <= r.exportLastHi)
+            memcpy(const_cast<uint8_t*>(PhysicalPtr(r.exportLastBase)) + r.exportLastLo, r.exportLast.data() + r.exportLastLo, r.exportLastHi - r.exportLastLo + 1);
+        return;
+    }
     D3D11_MAPPED_SUBRESOURCE map;
     LARGE_INTEGER m0, m1, qf;
     QueryPerformanceCounter(&m0);
-    const HRESULT mapped = m_context->Map(r.exportStaging.Get(), 0, D3D11_MAP_READ, 0, &map);
+    const HRESULT mapped = m_context->Map(r.exportStaging[r.exportSlot].Get(), 0, D3D11_MAP_READ, 0, &map);
     QueryPerformanceCounter(&m1);
     QueryPerformanceFrequency(&qf);
     const uint32_t us = uint32_t((m1.QuadPart - m0.QuadPart) * 1000000 / qf.QuadPart);
     m_readbackUs += us; // [perf] GPU readback stalls
     // SCDA_TRACE_MEMEXPORT=1: why each write-back ran (E next export draw, F fence, P/W end of partial/whole
     // Frame, S sync), draws issued since the export draw, Map wait.
-    static const bool trace = getenv("SCDA_TRACE_MEMEXPORT") != nullptr;
-    static uint32_t traced;
     if (trace && traced++ < 400)
         RuntimeLog("[memexport] present %llu flush %c after %u draws, map %u us\n", (unsigned long long)m_presented, why, m_lastDrawn - r.exportPendingDrawn, us);
     if (FAILED(mapped))
@@ -3279,7 +3363,7 @@ void D3D11Renderer::FlushMemExport(char why)
     static uint32_t logged;
     if (logged++ < 4)
         RuntimeLog("[memexport] draw wrote phys 0x%08X..0x%08X\n", r.exportPendingBase + lo, r.exportPendingBase + hi);
-    m_context->Unmap(r.exportStaging.Get(), 0);
+    m_context->Unmap(r.exportStaging[r.exportSlot].Get(), 0);
 }
 
 // EVENT_WRITE_SHD: written now unless a query ended before it is still pending (then with its
