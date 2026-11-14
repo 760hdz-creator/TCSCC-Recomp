@@ -227,7 +227,9 @@ static void WindowThread(DisplaySettings s)
         AdjustWindowRect(&r, style, FALSE);
     HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"Splinter Cell: Conviction Recomp", style, x, y,
         r.right - r.left, r.bottom - r.top, nullptr, nullptr, inst, nullptr);
-    ShowWindow(hwnd, SW_SHOW);
+    // SCDA_START_MINIMIZED=1 (test runs): start minimized without taking focus. The swap chain keeps
+    // its created size (WM_SIZE 0x0 is ignored), so the game still renders and [perf] stays valid.
+    ShowWindow(hwnd, getenv("SCDA_START_MINIMIZED") ? SW_SHOWMINNOACTIVE : SW_SHOW);
     if (s.mode == DisplaySettings::Windowed)
         GetWindowRect(hwnd, &g_windowedRect);
     else
@@ -497,6 +499,18 @@ static void RenderThread(DisplaySettings s)
                 RuntimeLog("[perf] renderer busy %.0f ms/s (partials included), partials %.1f/frame, GPU readback stalls %.0f ms/s, guest query wait %.0f ms/s\n",
                     double(perfAllTicks) * tickMs / secs, double(perfPartials) / frames, double(renderer.ReadbackUsTake()) / 1000.0 / secs,
                     double(GuestQueryWaitUsTake()) / 1000.0 / secs);
+                {
+                    // Where the renderer's time goes (ms per frame): all draws, of which state bind / vertex
+                    // upload / draw calls; resolves; swap-chain Present.
+                    auto ms = [&](D3D11Renderer::Phase p) { return double(renderer.PhaseTicksTake(p)) * tickMs / frames; };
+                    const double draws = ms(D3D11Renderer::kPhaseDraws), bind = ms(D3D11Renderer::kPhaseBind), vertex = ms(D3D11Renderer::kPhaseVertex),
+                                 call = ms(D3D11Renderer::kPhaseDrawCall), resolve = ms(D3D11Renderer::kPhaseResolve), present = ms(D3D11Renderer::kPhasePresent);
+                    RuntimeLog("[perf] renderer ms/frame: draws %.2f (bind %.2f, vertex upload %.2f, draw calls %.2f), resolves %.2f, present %.2f\n",
+                        draws, bind, vertex, call, resolve, present);
+                    RuntimeLog("[perf] bind ms/frame: targets+state %.2f, textures %.2f, constants %.2f, SRVs %.2f, samplers %.2f\n",
+                        ms(D3D11Renderer::kPhaseBindTargets), ms(D3D11Renderer::kPhaseBindTextures), ms(D3D11Renderer::kPhaseBindConstants),
+                        ms(D3D11Renderer::kPhaseBindSrvs), ms(D3D11Renderer::kPhaseBindSamplers));
+                }
                 // CPU actually used (kernel + user) vs wall time: a renderer near 1000 ms/s with little
                 // readback stall is CPU-bound; a title D3D thread near 1000 ms/s limits the frame rate.
                 {

@@ -141,6 +141,8 @@ target_include_directories(scda PRIVATE include src)
 target_link_libraries(scda PRIVATE scda_ppc scda_imgui scda_sdl gdiplus winhttp shell32 bcrypt dbghelp winmm d3d11 dxgi d3dcompiler xinput synchronization xaudio2 scda_xma)
 # Recompiled code runs on the host stack; the main guest thread recurses deeply.
 target_link_options(scda PRIVATE /STACK:0x4000000)
+# GUI app (no console window at launch); main() stays the entry. Logs go to tcscc.log.
+target_link_options(scda PRIVATE /SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup)
 target_compile_definitions(scda PRIVATE SCDA_EXPECTED_IMAGE_SHA256="${SCDA_EXPECTED_IMAGE_SHA256}" NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
 
 # Steam online (src/online/, ported from the TTT2 port): built when the Steamworks SDK sits in

@@ -32,6 +32,11 @@ public:
     uint32_t LastDrawn() const { return m_lastDrawn; }
     // Microseconds spent blocked in GPU -> CPU readbacks (PS memexport) since the last call.
     uint64_t ReadbackUsTake() { const uint64_t us = m_readbackUs; m_readbackUs = 0; return us; }
+    // [perf] renderer phases (QPC ticks, renderer thread): 0 all draws (ExecuteDraw), 1 state bind,
+    // 2 vertex-memory upload, 3 draw calls, 4 resolves, 5 swap-chain Present.
+    enum Phase { kPhaseDraws, kPhaseBind, kPhaseVertex, kPhaseDrawCall, kPhaseResolve, kPhasePresent,
+        kPhaseBindTargets, kPhaseBindTextures, kPhaseBindConstants, kPhaseBindSrvs, kPhaseBindSamplers, kPhaseCount }; // bind sub-phases
+    uint64_t PhaseTicksTake(Phase p) { const uint64_t t = m_phaseTicks[p]; m_phaseTicks[p] = 0; return t; }
     uint32_t LastSkipped() const { return m_lastSkipped; }
     // Resolves that copied the target in the last frame; whether it presented the swap's frontbuffer
     // resolve (else the render target itself).
@@ -126,6 +131,7 @@ private:
     float m_scale = 1;
     uint32_t m_anisotropy = 1;
     uint64_t m_readbackUs = 0; // renderer thread only
+    uint64_t m_phaseTicks[kPhaseCount] = {};
     bool m_cleanGoggles = false;
     float m_gamma = 1.0f;
     bool m_ultrawide = false; // Hor+ in windows wider than 16:9 (PresentViewport, camera.cpp)

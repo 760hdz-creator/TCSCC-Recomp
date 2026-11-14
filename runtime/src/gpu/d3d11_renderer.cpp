@@ -15,6 +15,7 @@
 #include <vector>
 #include <wrl/client.h>
 #include <dxgi1_6.h>
+#include <d3d11_1.h>
 #include <gpu/d3d11_renderer.h>
 #include "../camera.h"
 #include <gpu/draw_state.h>
@@ -33,7 +34,7 @@ namespace
 // SCDA_CB_STATS counters (render thread only).
 struct CbStats
 {
-    unsigned long long aluBinds[2], aluUploads[2], sharedBinds, sharedUploads;
+    unsigned long long aluBinds[2], aluUploads[2], sharedBinds, sharedUploads, memUploads, memBytes;
 };
 CbStats g_cbStats{};
 
@@ -61,6 +62,15 @@ static void UploadConstants(ID3D11DeviceContext* context, ID3D11Buffer* buffer, 
 }
 
 using Microsoft::WRL::ComPtr;
+static constexpr uint32_t kCbRingBytes = 4u << 20;
+// Adds the scope's QPC ticks to a [perf] phase counter.
+struct PhaseTimer
+{
+    uint64_t& sum;
+    LARGE_INTEGER t0;
+    explicit PhaseTimer(uint64_t& s) : sum(s) { QueryPerformanceCounter(&t0); }
+    ~PhaseTimer() { LARGE_INTEGER t1; QueryPerformanceCounter(&t1); sum += uint64_t(t1.QuadPart - t0.QuadPart); }
+};
 
 // Guest pixels -> host texels at a (possibly fractional: 1.5 = 1920x1080) internal resolution scale.
 static uint32_t Scaled(uint32_t v, float scale) { return uint32_t(std::lround(double(v) * scale)); }
@@ -507,6 +517,14 @@ struct DrawResources
     ComPtr<ID3D11RasterizerState> rasterizer;
     ComPtr<ID3D11SamplerState> sampler;
     ComPtr<ID3D11Buffer> constants[3]; // b0 VS, b1 PS, b2 shared
+    // Constant ring (default when the driver has D3D11.1 offsetting; SCDA_CB_RING=0 = old per-buffer
+    // DISCARD): b0-b2 are 256-byte aligned windows of one DYNAMIC buffer, written NO_OVERWRITE and
+    // bound by offset. ~3.6k DISCARD renames per frame were driver time (AMD DX11 especially).
+    ComPtr<ID3D11DeviceContext1> context1;
+    ComPtr<ID3D11Buffer> cbRing;
+    uint32_t cbRingPos = 0;
+    UINT cbFirst[3] = {}, cbNum[3] = {};
+    bool cbRingBound = false; // b0-b2 point at the ring windows above (frame start / post passes unbind)
     ComPtr<ID3D11ShaderResourceView> white;
     // Raw view of guest physical memory from address 0 (t96); grown on demand.
     ComPtr<ID3D11Buffer> memory;
@@ -844,6 +862,23 @@ bool D3D11Renderer::CreateDrawResources()
         }
         if (FAILED(m_device->CreateBuffer(&bd, nullptr, &r->constants[i])))
             return false;
+    }
+    {
+        static const bool ringOff = [] { const char* v = getenv("SCDA_CB_RING"); return (v && *v == '0') || CbDefaultUsage(); }();
+        D3D11_FEATURE_DATA_D3D11_OPTIONS o{};
+        if (!ringOff && SUCCEEDED(m_context->QueryInterface(IID_PPV_ARGS(&r->context1))) &&
+            SUCCEEDED(m_device->CheckFeatureSupport(D3D11_FEATURE_D3D11_OPTIONS, &o, sizeof o)) &&
+            o.ConstantBufferOffsetting && o.MapNoOverwriteOnDynamicConstantBuffer)
+        {
+            D3D11_BUFFER_DESC bd{};
+            bd.ByteWidth = kCbRingBytes;
+            bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+            bd.Usage = D3D11_USAGE_DYNAMIC;
+            bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+            if (FAILED(m_device->CreateBuffer(&bd, nullptr, &r->cbRing)))
+                r->cbRing.Reset();
+        }
+        RuntimeLog("[d3d11] constant ring %s\n", r->cbRing ? "on" : ringOff ? "off (SCDA_CB_RING=0)" : "unsupported (per-buffer DISCARD)");
     }
 
     // Unsupported or unreadable textures sample opaque white.
@@ -1297,6 +1332,7 @@ void D3D11Renderer::UploadVertexMemory(const DrawCall& d, const Frame& frame)
         }
         D3D11_BOX box{ range.physical, 0, 0, end, 1, 1 };
         m_context->UpdateSubresource(r.memory.Get(), 0, &box, snap.Bytes().data(), 0, 0);
+        g_cbStats.memUploads++, g_cbStats.memBytes += range.bytes;
         if (check)
         {
             if (r.uploadMirror.size() < r.memoryBytes)
@@ -1524,8 +1560,13 @@ static void AliasedClearColor(const RegisterFile& regs, float rgba[4])
 void D3D11Renderer::BindRegisterState(const RegisterFile& regs, uint32_t texSlots)
 {
     DrawResources& r = *m_draw;
+    LARGE_INTEGER mark;
+    QueryPerformanceCounter(&mark);
+    auto lap = [&](Phase p) { LARGE_INTEGER now; QueryPerformanceCounter(&now); m_phaseTicks[p] += uint64_t(now.QuadPart - mark.QuadPart); mark = now; };
     for (uint32_t pixel = 0; pixel < 2; pixel++)
     {
+        if (r.cbRing)
+            break; // uploaded with b2 below (one Map per draw)
         g_cbStats.aluBinds[pixel]++;
         if (!r.aluDirty[pixel])
             continue; // b0/b1 already hold these constants
@@ -1580,6 +1621,11 @@ void D3D11Renderer::BindRegisterState(const RegisterFile& regs, uint32_t texSlot
         m_context->OMSetRenderTargets(count, rtvs, DepthTargetFor(m_device, m_context, r, keys[4]));
         r.srvShadow = false;
         D3D11_VIEWPORT vp{ 0, 0, float(Scaled(layout.samplePitch, targetScale)), float(Scaled(layout.sampleRows, targetScale)), 0, 1 };
+        // SCDA_TINY_VIEWPORT=1 (perf bench): every draw is still submitted, but rasterises into 1x1, so a
+        // weak GPU (AMD iGPU) stops being the limit and the run measures the driver's CPU cost per call.
+        static const bool tinyViewport = getenv("SCDA_TINY_VIEWPORT") != nullptr;
+        if (tinyViewport)
+            vp.Width = vp.Height = 1;
         m_context->RSSetViewports(1, &vp);
         std::copy(keys, keys + 5, r.boundKeys);
         r.bound = true;
@@ -1689,6 +1735,7 @@ void D3D11Renderer::BindRegisterState(const RegisterFile& regs, uint32_t texSlot
     }
     m_context->OMSetDepthStencilState(depth.Get(), z.ref);
 
+    lap(kPhaseBindTargets);
     // Textures: every texture fetch constant the stages might sample (the shader's slots are not
     // known here), converted on the CPU once per frame.
     ID3D11ShaderResourceView* srvs[32];
@@ -2084,10 +2131,55 @@ void D3D11Renderer::BindRegisterState(const RegisterFile& regs, uint32_t texSlot
         if (it->second)
             srvs[slot] = it->second.Get();
     }
+    lap(kPhaseBindTextures);
     // b2 only when the final payload differs from the last upload (SCDA_NO_CB_SKIP=1: always).
     static const bool noCbSkip = getenv("SCDA_NO_CB_SKIP") != nullptr;
     g_cbStats.sharedBinds++;
-    if (noCbSkip || !r.sharedValid || memcmp(&shared, &r.lastShared, sizeof shared) != 0)
+    if (r.cbRing)
+    {
+        // b0 / b1 / b2 that changed go into one NO_OVERWRITE window; a wrap DISCARDs the ring, which
+        // drops every earlier window, so then all three are written again.
+        auto align = [](uint32_t n) { return (n + 255) & ~255u; };
+        const uint32_t sizes[3] = { 4096, 4096, align(sizeof shared) };
+        bool dirty[3] = { r.aluDirty[0] || !r.cbRingBound, r.aluDirty[1] || !r.cbRingBound,
+                          noCbSkip || !r.sharedValid || !r.cbRingBound || memcmp(&shared, &r.lastShared, sizeof shared) != 0 };
+        g_cbStats.aluBinds[0]++, g_cbStats.aluBinds[1]++;
+        if (dirty[0] || dirty[1] || dirty[2])
+        {
+            D3D11_MAP mode = D3D11_MAP_WRITE_NO_OVERWRITE;
+            if (r.cbRingPos + sizes[0] + sizes[1] + sizes[2] > kCbRingBytes)
+            {
+                mode = D3D11_MAP_WRITE_DISCARD;
+                r.cbRingPos = 0;
+                dirty[0] = dirty[1] = dirty[2] = true;
+            }
+            D3D11_MAPPED_SUBRESOURCE map;
+            if (SUCCEEDED(m_context->Map(r.cbRing.Get(), 0, mode, 0, &map)))
+            {
+                const void* src[3] = { regs.Data() + kRegAluConstants, regs.Data() + kRegAluConstants + 1024, &shared };
+                const uint32_t bytes[3] = { 4096, 4096, uint32_t(sizeof shared) };
+                for (uint32_t i = 0; i < 3; i++)
+                    if (dirty[i])
+                    {
+                        memcpy(static_cast<uint8_t*>(map.pData) + r.cbRingPos, src[i], bytes[i]);
+                        r.cbFirst[i] = r.cbRingPos / 16;
+                        r.cbNum[i] = sizes[i] / 16;
+                        r.cbRingPos += sizes[i];
+                    }
+                m_context->Unmap(r.cbRing.Get(), 0);
+                ID3D11Buffer* rings[3] = { r.cbRing.Get(), r.cbRing.Get(), r.cbRing.Get() };
+                r.context1->VSSetConstantBuffers1(0, 3, rings, r.cbFirst, r.cbNum);
+                r.context1->PSSetConstantBuffers1(0, 3, rings, r.cbFirst, r.cbNum);
+                r.context1->GSSetConstantBuffers1(0, 3, rings, r.cbFirst, r.cbNum); // pointListGs reads b2
+                r.cbRingBound = true;
+                g_cbStats.aluUploads[0] += dirty[0], g_cbStats.aluUploads[1] += dirty[1], g_cbStats.sharedUploads += dirty[2];
+                r.aluDirty[0] = r.aluDirty[1] = false;
+                r.lastShared = shared;
+                r.sharedValid = true;
+            }
+        }
+    }
+    else if (noCbSkip || !r.sharedValid || memcmp(&shared, &r.lastShared, sizeof shared) != 0)
     {
         UploadConstants(m_context, r.constants[2].Get(), &shared, sizeof shared);
         r.lastShared = shared;
@@ -2096,6 +2188,7 @@ void D3D11Renderer::BindRegisterState(const RegisterFile& regs, uint32_t texSlot
     }
     // Only the changed range per stage (6 x 32-slot binds per draw were ~a third of the driver time
     // on newyork_02). SCDA_NO_SRV_SHADOW=1: always rebind all 96.
+    lap(kPhaseBindConstants);
     static const bool noSrvShadow = getenv("SCDA_NO_SRV_SHADOW") != nullptr;
     ID3D11ShaderResourceView* want[96];
     std::copy(srvs, srvs + 32, want);
@@ -2121,6 +2214,7 @@ void D3D11Renderer::BindRegisterState(const RegisterFile& regs, uint32_t texSlot
     r.srvShadow = true;
 
     // Samplers s0-s15 from fetch constants 0-15 (the translator indexes samplers by fetch slot & 15).
+    lap(kPhaseBindSrvs);
     ID3D11SamplerState* samplers[16];
     for (uint32_t slot = 0; slot < 16; slot++)
     {
@@ -2180,6 +2274,7 @@ void D3D11Renderer::BindRegisterState(const RegisterFile& regs, uint32_t texSlot
     }
     m_context->VSSetSamplers(0, 16, samplers);
     m_context->PSSetSamplers(0, 16, samplers);
+    lap(kPhaseBindSamplers);
 }
 
 void D3D11Renderer::ExecuteDraw(const DrawCall& d, const Frame& frame)
@@ -2672,7 +2767,10 @@ void D3D11Renderer::ExecuteDraw(const DrawCall& d, const Frame& frame)
     {
         r.lastTexSlots = r.stateDirty ? texSlots : r.lastTexSlots | texSlots;
         g_aliasQuadZ = DepthOnlyOverwritesColor(r.regs) ? SnapshotVertexDword(d, frame, r.regs, 2) : NAN;
-        BindRegisterState(r.regs, r.lastTexSlots);
+        {
+            PhaseTimer pt(m_phaseTicks[kPhaseBind]);
+            BindRegisterState(r.regs, r.lastTexSlots);
+        }
         r.stateDirty = false;
     }
     // Okhotsk_02 surfacing (docs/remaining_bugs.md): the lens-drop pass (PS 7c17e516, additive into RT0
@@ -2787,7 +2885,10 @@ void D3D11Renderer::ExecuteDraw(const DrawCall& d, const Frame& frame)
             r.stateDirty = true;
         }
     }
-    UploadVertexMemory(d, frame);
+    {
+        PhaseTimer pt(m_phaseTicks[kPhaseVertex]);
+        UploadVertexMemory(d, frame);
+    }
     m_context->VSSetShader(vs.Get(), nullptr, 0);
     // RB_MODECONTROL 5 (depth only): the pixel shader does not run, so its kills (a masked prepass
     // PS left bound with another draw's texture) must not drop depth (Xenia xenos::ModeControl).
@@ -3087,10 +3188,14 @@ void D3D11Renderer::ExecuteDraw(const DrawCall& d, const Frame& frame)
             }
             m_context->IASetIndexBuffer(ib.Get(), wide ? DXGI_FORMAT_R32_UINT : DXGI_FORMAT_R16_UINT, 0);
         }
+        PhaseTimer pt(m_phaseTicks[kPhaseDrawCall]);
         m_context->DrawIndexed(count, 0, 0);
     }
     else
+    {
+        PhaseTimer pt(m_phaseTicks[kPhaseDrawCall]);
         m_context->Draw(d.indexCount, autoOffset);
+    }
     m_lastDrawn++;
     // PS memexport: unbind u7 and copy the window into exportStaging. The write-back to guest RAM (the
     // CPU reads it, e.g. l3d visibility bytes in sub_82EF9990) waits for FlushMemExport: the title can
@@ -4130,6 +4235,7 @@ void D3D11Renderer::Present(const Frame& frame)
         m_context->VSSetConstantBuffers(0, 3, cbs);
         m_context->PSSetConstantBuffers(0, 3, cbs);
         m_context->GSSetConstantBuffers(0, 3, cbs); // pointListGs reads b2
+        r.cbRingBound = false; // post passes rebound b0: the first draw writes and binds the ring again
         r.stateDirty = true;
         r.applied = 0;
         // Draws and resolves in stream order: resolve k runs before draw resolves[k].drawIndex.
@@ -4190,6 +4296,7 @@ void D3D11Renderer::Present(const Frame& frame)
                     RuntimeLog("[fb] present %llu frame %llu%s resolve dest %08X h %u draw %u/%zu\n", (unsigned long long)m_presented,
                         (unsigned long long)frame.stats.frame, frame.partial ? " partial" : "", frame.resolves[next].destBase,
                         ResolveHeight(frame.resolves[next]), frame.resolves[next].drawIndex, frame.draws.size());
+                PhaseTimer pt(m_phaseTicks[kPhaseResolve]);
                 ExecuteResolve(frame.resolves[next]);
             }
             for (; nextQuery < frame.queries.size() && frame.queries[nextQuery].drawIndex <= i; nextQuery++)
@@ -4197,7 +4304,10 @@ void D3D11Renderer::Present(const Frame& frame)
             for (; nextFence < frame.fences.size() && frame.fences[nextFence].drawIndex <= i; nextFence++)
                 ExecuteFence(frame.fences[nextFence]);
             if (i < std::min(frame.draws.size(), drawLimit))
+            {
+                PhaseTimer pt(m_phaseTicks[kPhaseDraws]);
                 ExecuteDraw(frame.draws[i], frame);
+            }
             // SCDA_DUMP_DRAWS=<dir>,<step>[,<first>,<last>]: on a SCDA_DUMP_FRAME frame, RT0 after every
             // step-th draw in [first, last] (bisecting which draw writes what in one run).
             static const char* dumpDraws = getenv("SCDA_DUMP_DRAWS");
@@ -4417,7 +4527,11 @@ void D3D11Renderer::Present(const Frame& frame)
             Dump(m_backDumpPath, tex.Get());
         m_backDumpPath.clear();
     }
-    HRESULT hr = m_swapChain->Present(m_vsync ? 1 : 0, 0);
+    HRESULT hr;
+    {
+        PhaseTimer pt(m_phaseTicks[kPhasePresent]);
+        hr = m_swapChain->Present(m_vsync ? 1 : 0, 0);
+    }
     if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET)
     {
         printf("[d3d11] device lost (0x%08lX, reason 0x%08lX): recreating\n", (unsigned long)hr, (unsigned long)m_device->GetDeviceRemovedReason());
@@ -4430,8 +4544,8 @@ void D3D11Renderer::Present(const Frame& frame)
     if (cbStatsEvery && m_presented % cbStatsEvery == 0)
     {
         const CbStats& c = g_cbStats;
-        RuntimeLog("[cb] present %llu: vs %llu/%llu ps %llu/%llu shared %llu/%llu (uploads/binds)\n", m_presented,
-            c.aluUploads[0], c.aluBinds[0], c.aluUploads[1], c.aluBinds[1], c.sharedUploads, c.sharedBinds);
+        RuntimeLog("[cb] present %llu: vs %llu/%llu ps %llu/%llu shared %llu/%llu (uploads/binds), memory %llu uploads %llu KB\n", m_presented,
+            c.aluUploads[0], c.aluBinds[0], c.aluUploads[1], c.aluBinds[1], c.sharedUploads, c.sharedBinds, c.memUploads, c.memBytes >> 10);
         g_cbStats = {};
     }
     if (g_traceJumpPresents > 0)
