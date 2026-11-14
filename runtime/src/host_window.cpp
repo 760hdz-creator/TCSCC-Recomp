@@ -296,6 +296,8 @@ static void RenderThread(DisplaySettings s)
             // The title may be waiting for a query result before it swaps: run the queries it has
             // issued so far (partial frame), then collect results.
             const bool flushed = Frames().FlushOpenIfWaiting();
+            if (!flushed)
+                renderer.WaitMemExport();
             renderer.PollQueries();
             if (flushed)
                 continue; // the partial is queued: run it now

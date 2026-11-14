@@ -93,6 +93,9 @@ public:
     void PollQueries();
     // A fence is held back until earlier host queries answer (the title is likely waiting on it).
     bool HasPendingFences() const;
+    // Idle renderer (no frame queued) with a fence held for a memexport window: block until the GPU wrote
+    // it (no spinning; the title is likely waiting on that fence), then write it and the fences.
+    void WaitMemExport();
 
 private:
     void CreateBackBufferView();

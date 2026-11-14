@@ -525,6 +525,12 @@ struct DrawResources
     uint32_t cbRingPos = 0;
     UINT cbFirst[3] = {}, cbNum[3] = {};
     bool cbRingBound = false; // b0-b2 point at the ring windows above (frame start / post passes unbind)
+    // s0-s15 as bound now (VS = PS), valid while samplerShadow (frame start binds defaults and clears it);
+    // per slot, the fetch dwords + settings the last decode used and its state (BindRegisterState).
+    ID3D11SamplerState* boundSamplers[16] = {};
+    bool samplerShadow = false;
+    struct SamplerSlot { uint32_t raw[6]; uint32_t anisotropy; int32_t bias; ID3D11SamplerState* state; bool valid = false; };
+    SamplerSlot samplerSlots[16];
     ComPtr<ID3D11ShaderResourceView> white;
     // Raw view of guest physical memory from address 0 (t96); grown on demand.
     ComPtr<ID3D11Buffer> memory;
@@ -539,12 +545,10 @@ struct DrawResources
     // back to guest RAM (FlushMemExport).
     bool exportPending = false;
     uint32_t exportPendingBase = 0, exportPendingBytes = 0, exportPendingDrawn = 0, exportSlot = 0;
-    // Async write-back (SCDA_MEMEXPORT_ASYNC, see FlushMemExport): windows copied to staging but not
-    // read yet (oldest first), and the newest window read back (its written range [lo, hi]).
-    struct ExportInFlight { uint32_t slot, base, bytes; };
+    // Deferred write-back (default, see FlushMemExport): windows copied to staging but not read yet,
+    // oldest first. seq orders them with query ends (fences wait for both); pushed = GetTickCount64.
+    struct ExportInFlight { uint32_t slot, base, bytes; uint64_t seq, pushed; bool flushed; };
     std::deque<ExportInFlight> exportInFlight;
-    std::vector<uint8_t> exportLast;
-    uint32_t exportLastBase = 0, exportLastBytes = 0, exportLastLo = 1, exportLastHi = 0;
     // Dynamic ring for per-draw index data (NO_OVERWRITE appends, DISCARD on wrap).
     ComPtr<ID3D11Buffer> indexRing;
     uint32_t indexRingBytes = 0, indexRingPos = 0;
@@ -2221,6 +2225,15 @@ void D3D11Renderer::BindRegisterState(const RegisterFile& regs, uint32_t texSlot
         samplers[slot] = r.sampler.Get();
         if (!((texSlots | texSlots >> 16) >> slot & 1)) // sampler = fetch slot & 15
             continue;
+        // Same fetch dwords and settings as the last decode of this slot: same state (SCDA_NO_FETCH_CACHE=1: decode always).
+        static const bool noSamplerCache = getenv("SCDA_NO_FETCH_CACHE") != nullptr;
+        const uint32_t* raw = regs.Data() + kRegFetchConstants + slot * 6;
+        DrawResources::SamplerSlot& ss = r.samplerSlots[slot];
+        if (!noSamplerCache && ss.valid && ss.anisotropy == r.anisotropy && ss.bias == r.lodBiasTenths && !memcmp(ss.raw, raw, sizeof ss.raw))
+        {
+            samplers[slot] = ss.state;
+            continue;
+        }
         HostSampler hs = DecodeSampler(regs, slot);
         // One mip level (minLod == maxLod) with a linear mag and a point min filter (Conviction's DOF / bloom
         // upsampling of its 260x144 and 520x288 buffers): min follows mag. Which one applies depends on the
@@ -2271,9 +2284,28 @@ void D3D11Renderer::BindRegisterState(const RegisterFile& regs, uint32_t texSlot
             m_device->CreateSamplerState(&sd, &state);
         }
         samplers[slot] = state ? state.Get() : r.sampler.Get();
+        memcpy(ss.raw, raw, sizeof ss.raw);
+        ss.anisotropy = r.anisotropy;
+        ss.bias = r.lodBiasTenths;
+        ss.state = samplers[slot]; // owned by r.samplers (never erased while the device lives)
+        ss.valid = !traceSamplers;
     }
-    m_context->VSSetSamplers(0, 16, samplers);
-    m_context->PSSetSamplers(0, 16, samplers);
+    // Only the changed range is set (SCDA_NO_SRV_SHADOW=1: all 16 every draw).
+    uint32_t sFirst = 0, sLast = 16;
+    if (r.samplerShadow && !noSrvShadow)
+    {
+        while (sFirst < 16 && r.boundSamplers[sFirst] == samplers[sFirst])
+            sFirst++;
+        while (sLast > sFirst && r.boundSamplers[sLast - 1] == samplers[sLast - 1])
+            sLast--;
+    }
+    if (sFirst < sLast)
+    {
+        m_context->VSSetSamplers(sFirst, sLast - sFirst, samplers + sFirst);
+        m_context->PSSetSamplers(sFirst, sLast - sFirst, samplers + sFirst);
+    }
+    std::copy(samplers, samplers + 16, r.boundSamplers);
+    r.samplerShadow = true;
     lap(kPhaseBindSamplers);
 }
 
@@ -3369,19 +3401,21 @@ void D3D11Renderer::ExecuteQuery(const OcclusionQuery& q)
 // Writes the pending memexport window back to guest RAM (waits for the GPU to reach its copy). Runs
 // before every fence (the title reads the bytes behind one), before the next memexport draw seeds the
 // window, and at the end of every Frame.
-// Default (SCDA_MEMEXPORT_ASYNC=0 = old blocking Map): the write-back never waits for the GPU. The title
-// fences right after the l3d visibility pass, so a blocking Map drained the GPU every frame (GitLab #1:
-// RX 6600 8 ms/frame, 4080S uncapped 70 -> 73-76 fps without it). Each window goes to its own staging
-// buffer (ring of 3); a flush writes the newest window the GPU has finished, which is the current one
-// when the GPU kept up and otherwise the previous frame's (same base + size only; else it waits as
-// before). A window read later than its flush is never written to guest RAM (the title owns it then).
+// Default (SCDA_MEMEXPORT_ASYNC=0 = old blocking Map at the flush): the write-back never blocks the
+// renderer. The title fences right after the l3d visibility pass, so a blocking Map drained the GPU
+// every frame (GitLab #1: RX 6600 8 ms/frame; 4080S 65 vs 73 fps). Each window goes to its own staging
+// buffer (ring of 3) and is written to guest RAM when the GPU has finished it (HarvestMemExport, polled
+// with the queries); fences after it are held until then (ExecuteFence / WritePendingFences), so the
+// title, which reads the bytes behind a fence, waits instead and always sees this frame's bytes.
+// 0.1.8 wrote the previous frame's bytes instead of waiting: wrong whenever the object list changed
+// (c1.w = total count shifts every slot), lights dropped out for single frames (GitLab #1 flicker).
 bool D3D11Renderer::MemExportAsync()
 {
     static const bool on = [] { const char* v = getenv("SCDA_MEMEXPORT_ASYNC"); return !(v && *v == '0') && !getenv("SCDA_MEMEXPORT_SYNC"); }();
     return on;
 }
 
-// Reads the oldest in-flight staging window into exportLast. wait = block until the GPU wrote it.
+// Writes the oldest in-flight staging window back to guest RAM. wait = block until the GPU wrote it.
 bool D3D11Renderer::HarvestMemExport(bool wait)
 {
     DrawResources& r = *m_draw;
@@ -3404,17 +3438,8 @@ bool D3D11Renderer::HarvestMemExport(bool wait)
     uint32_t lo, hi;
     memcpy(&lo, data + (4u << 20) - 8, 4);
     memcpy(&hi, data + (4u << 20) - 4, 4);
-    r.exportLastBase = e.base;
-    r.exportLastBytes = e.bytes;
-    r.exportLastLo = 1;
-    r.exportLastHi = 0;
-    if (lo <= hi && hi < e.bytes)
-    {
-        r.exportLast.resize(e.bytes);
-        memcpy(r.exportLast.data() + lo, data + lo, hi - lo + 1);
-        r.exportLastLo = lo;
-        r.exportLastHi = hi;
-    }
+    if (lo <= hi && hi < e.bytes) // only the bytes the draws wrote (and those between)
+        memcpy(const_cast<uint8_t*>(PhysicalPtr(e.base)) + lo, data + lo, hi - lo + 1);
     m_context->Unmap(r.exportStaging[e.slot].Get(), 0);
     return true;
 }
@@ -3429,20 +3454,13 @@ void D3D11Renderer::FlushMemExport(char why)
     static uint32_t traced;
     if (MemExportAsync())
     {
-        r.exportInFlight.push_back({ r.exportSlot, r.exportPendingBase, r.exportPendingBytes });
+        r.exportInFlight.push_back({ r.exportSlot, r.exportPendingBase, r.exportPendingBytes, r.querySeq++, GetTickCount64(), false });
         uint32_t harvested = 0;
         while (HarvestMemExport(false))
             harvested++;
-        const bool current = r.exportInFlight.empty(); // the GPU already finished this window
-        const bool reuse = r.exportLastBase == r.exportPendingBase && r.exportLastBytes == r.exportPendingBytes;
-        uint32_t waits = 0;
-        if (!current && !reuse) // nothing usable for this window (first frame, window moved): wait
-            for (; HarvestMemExport(true); waits++) {}
         if (trace && traced++ < 400)
-            RuntimeLog("[memexport] present %llu flush %c async: %s (harvested %u, waited %u, in flight %zu)\n", (unsigned long long)m_presented, why,
-                current ? "current" : waits ? "waited" : "previous", harvested, waits, r.exportInFlight.size());
-        if (r.exportLastBase == r.exportPendingBase && r.exportLastBytes == r.exportPendingBytes && r.exportLastLo <= r.exportLastHi)
-            memcpy(const_cast<uint8_t*>(PhysicalPtr(r.exportLastBase)) + r.exportLastLo, r.exportLast.data() + r.exportLastLo, r.exportLastHi - r.exportLastLo + 1);
+            RuntimeLog("[memexport] present %llu flush %c deferred: harvested %u, in flight %zu\n", (unsigned long long)m_presented, why, harvested,
+                r.exportInFlight.size());
         return;
     }
     D3D11_MAPPED_SUBRESOURCE map;
@@ -3477,7 +3495,7 @@ void D3D11Renderer::ExecuteFence(const Fence& f)
 {
     DrawResources& r = *m_draw;
     FlushMemExport('F');
-    if (r.pendingQueries.empty() && r.pendingFences.empty())
+    if (r.pendingQueries.empty() && r.pendingFences.empty() && r.exportInFlight.empty())
     {
         Frames().VisibleWrite([&] { WriteFence(f); return true; });
         return;
@@ -3487,14 +3505,24 @@ void D3D11Renderer::ExecuteFence(const Fence& f)
 
 bool D3D11Renderer::HasPendingFences() const { return m_draw && !m_draw->pendingFences.empty(); }
 
+void D3D11Renderer::WaitMemExport()
+{
+    if (!m_draw || m_draw->pendingFences.empty() || m_draw->exportInFlight.empty())
+        return;
+    while (HarvestMemExport(true)) {}
+    WritePendingFences();
+}
+
 void D3D11Renderer::WritePendingFences()
 {
     DrawResources& r = *m_draw;
+    while (HarvestMemExport(false)) {}
     size_t n = 0;
     for (; n < r.pendingFences.size(); n++)
     {
         const uint64_t seq = r.pendingFences[n].seq;
-        if (std::any_of(r.pendingQueries.begin(), r.pendingQueries.end(), [&](const DrawResources::PendingQuery& q) { return q.seq < seq; }))
+        if (std::any_of(r.pendingQueries.begin(), r.pendingQueries.end(), [&](const DrawResources::PendingQuery& q) { return q.seq < seq; }) ||
+            std::any_of(r.exportInFlight.begin(), r.exportInFlight.end(), [&](const DrawResources::ExportInFlight& e) { return e.seq < seq; }))
             break;
     }
     if (n)
@@ -3542,6 +3570,16 @@ void D3D11Renderer::PollQueries()
                 p.generation, (unsigned long long)samples, guest, lost ? " (lost: fallback)" : "", written ? "" : " (older generation: dropped)");
         return true;
     });
+    // A memexport window a held fence waits for: submit the copy once (a DO_NOT_WAIT Map need not
+    // flush), and after 2 s read it blocking (a title polling that fence must never wait forever).
+    if (!r.exportInFlight.empty() && !r.pendingFences.empty())
+    {
+        DrawResources::ExportInFlight& e = r.exportInFlight.front();
+        if (!e.flushed)
+            m_context->Flush(), e.flushed = true;
+        else if (now - e.pushed > 2000)
+            HarvestMemExport(true);
+    }
     WritePendingFences();
 }
 
@@ -4214,6 +4252,7 @@ void D3D11Renderer::Present(const Frame& frame)
                 Frames().QueryAnswered();
             r.pendingQueries.clear();
             r.pendingFences.clear();
+            r.exportInFlight.clear(); // would land in the relaunched title's memory
         }
         // A new internal resolution (F1 menu) starts with a guest frame, never between its partials.
         if (const float scale = m_pendingScale; scale > 0 && !m_midGuestFrame)
@@ -4236,6 +4275,7 @@ void D3D11Renderer::Present(const Frame& frame)
         m_context->PSSetConstantBuffers(0, 3, cbs);
         m_context->GSSetConstantBuffers(0, 3, cbs); // pointListGs reads b2
         r.cbRingBound = false; // post passes rebound b0: the first draw writes and binds the ring again
+        r.samplerShadow = false; // post passes and the defaults above replaced s0-s15
         r.stateDirty = true;
         r.applied = 0;
         // Draws and resolves in stream order: resolve k runs before draw resolves[k].drawIndex.
