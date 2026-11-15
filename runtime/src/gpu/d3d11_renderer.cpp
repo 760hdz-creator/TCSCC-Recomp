@@ -3415,6 +3415,8 @@ bool D3D11Renderer::MemExportAsync()
     return on;
 }
 
+extern std::atomic<uint32_t> g_memexportInFlight; // defined below FlushMemExport
+
 // Writes the oldest in-flight staging window back to guest RAM. wait = block until the GPU wrote it.
 bool D3D11Renderer::HarvestMemExport(bool wait)
 {
@@ -3432,6 +3434,7 @@ bool D3D11Renderer::HarvestMemExport(bool wait)
     if (hr == DXGI_ERROR_WAS_STILL_DRAWING)
         return false;
     r.exportInFlight.pop_front();
+    g_memexportInFlight = uint32_t(r.exportInFlight.size());
     if (FAILED(hr))
         return true; // dropped
     const uint8_t* data = static_cast<const uint8_t*>(map.pData);
@@ -3444,6 +3447,9 @@ bool D3D11Renderer::HarvestMemExport(bool wait)
     return true;
 }
 
+// Memexport windows not yet written back (l3d_trace SCDA_TRACE_VISREAD: the title must never read the bytes then).
+std::atomic<uint32_t> g_memexportInFlight{ 0 };
+
 void D3D11Renderer::FlushMemExport(char why)
 {
     if (!m_draw || !m_draw->exportPending)
@@ -3455,6 +3461,7 @@ void D3D11Renderer::FlushMemExport(char why)
     if (MemExportAsync())
     {
         r.exportInFlight.push_back({ r.exportSlot, r.exportPendingBase, r.exportPendingBytes, r.querySeq++, GetTickCount64(), false });
+        g_memexportInFlight = uint32_t(r.exportInFlight.size());
         uint32_t harvested = 0;
         while (HarvestMemExport(false))
             harvested++;
@@ -3509,7 +3516,9 @@ void D3D11Renderer::WaitMemExport()
 {
     if (!m_draw || m_draw->pendingFences.empty() || m_draw->exportInFlight.empty())
         return;
+    const uint64_t counted = m_readbackUs; // idle time, not a stall: kept out of [perf] readback stalls
     while (HarvestMemExport(true)) {}
+    m_readbackUs = counted;
     WritePendingFences();
 }
 

@@ -1,3 +1,4 @@
+#include <atomic>
 #include <runtime.h>
 #include <cstdio>
 #include <cstdlib>
@@ -115,6 +116,17 @@ PPC_FUNC(sub_82511988)
     static long calls = 0;
     const uint32_t lr = uint32_t(ctx.lr), res = ctx.r3.u32, out = ctx.r5.u32;
     __imp__sub_82511988(ctx, base);
+    // SCDA_TRACE_VISREAD=1: visibility / light-list locks that returned while a memexport window was
+    // still in flight (the title would read last frame's bytes); logged every 1000 locks.
+    static const bool traceRead = getenv("SCDA_TRACE_VISREAD") != nullptr;
+    if (traceRead && (lr == 0x82EF99F0 || lr == 0x82EF914C))
+    {
+        extern std::atomic<uint32_t> g_memexportInFlight;
+        static uint32_t locks, early;
+        early += g_memexportInFlight.load() != 0;
+        if (++locks % 1000 == 0)
+            RuntimeLog("[visread] %u locks, %u with a window in flight\n", locks, early);
+    }
     uint32_t PzVisFill(uint32_t ptr, uint8_t* base);
     if (lr == 0x82EF99F0)
         PzVisFill(PPC_LOAD_U32(out + 4), base);
