@@ -102,6 +102,27 @@ TEST(raw_cond_exec_tests_bool_constant)
     CHECK(!CompileHlsl(t.hlsl, true, &err).empty());
 }
 
+// cube takes its direction as (z, w, x) of the swizzled src0 (Xenia). Harbour water PS 65474598
+// uses r1.xxyz: the raw register sampled the wrong face. A constant source must still compile.
+TEST(raw_cube_direction_uses_source_swizzle)
+{
+    ShaderBlob b = AluShader(1, 18);
+    b.ucode[4] = 0xFCu << 16;                         // src1 swizzle xxyz
+    b.ucode[5] = (18u << 24) | (1u << 31) | (2u << 16); // cube, src1 = register r2
+    TranslateResult t = TranslateShader(b);
+    CHECK(t.ok);
+    CHECK(t.hlsl.find("cube(float4((r2.xxyz).zwx, 0.0)") != std::string::npos);
+    std::string err;
+    CHECK(!CompileHlsl(t.hlsl, true, &err).empty());
+    b.ucode[5] = (18u << 24) | (255u << 16);          // src1 = constant c255
+    t = TranslateShader(b);
+    CHECK(t.ok);
+    CHECK(t.hlsl.find("cube(float4((g_PSConstants[255].xxyz).zwx, 0.0)") != std::string::npos);
+    if (CompileHlsl(t.hlsl, true, &err).empty())
+        printf("  compile: %s\n", err.c_str());
+    CHECK(!CompileHlsl(t.hlsl, true, &err).empty());
+}
+
 // Review Focus: a control-flow address past the end of the microcode fails cleanly.
 TEST(raw_rejects_out_of_range_exec_address)
 {
