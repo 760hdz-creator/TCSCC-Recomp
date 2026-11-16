@@ -158,7 +158,10 @@ void ReceiveLoop()
 
 } // namespace
 
-const char* GameProtocol() { return "tcscc-recomp-1"; }
+// Includes the build version: co-op runs the same simulation on both PCs, and builds that differ in
+// anything the simulation sees (0.1.8 had no 30 fps hold) desync within a few steps (forge #3).
+// Lobby search and Steam invites match this string exactly, so other builds never see the session.
+const char* GameProtocol() { return "tcscc-recomp-1-" SCDA_VERSION; }
 
 bool IsLoopbackPeer(uint64_t peer) { return (peer & 0xFFFFFFFF00000000ull) == kLoopTag; }
 uint64_t LoopbackPeer(int index) { return kLoopTag | uint16_t(kBasePort + index); }

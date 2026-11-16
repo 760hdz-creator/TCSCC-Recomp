@@ -10,7 +10,7 @@ port, `C:\ttt2\port\src\runtime\kernel`), `online_identity.cpp`, `main_menu.cpp`
 - `net_transport`: loopback UDP 127.0.0.1:28200+n (peer 0x4C4F4F50'0000|port; `SCDA_NET=loopback`; test
   `SCDA_NET_DELAY/JITTER/LOSS/SEED`) or Steam.
 - `steam_net`: app 480 (Spacewar), SteamNetworkingMessages over Valve relays (ICE off), lobbies with
-  `proto=tcscc-recomp-1` + `rec=<hex>`, Join Game, friends, invites, persona name.
+  `proto=tcscc-recomp-1-<version>` (other builds never match: forge #3) + `rec=<hex>`, Join Game, friends, invites, persona name.
 - `steam_bridge`: Steam runs in `tcscc.exe --steam-bridge <in> <out>` (Steam Input would hide the pads in the game
   process), log `steam_helper.log` next to the exe, restarted if lost. `SCDA_STEAM_INPROC=1` diagnostics.
 - SDK: `external/steamworks_sdk_165` (git-ignored); `steam_api64.dll` delay-loaded, copied next to the exe; the
