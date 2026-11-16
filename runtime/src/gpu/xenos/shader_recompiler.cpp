@@ -914,12 +914,17 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
         case AluVectorOpcode::Cube:
             // The direction is the whole first source: a register, or (select 0) a float constant
             // (water PS d5defa8e: c255; printing it as r255 failed the compile and skipped the draw).
-            if (instr.src1Select)
-                print("cube(r{}, cubeMapData)", instr.src1Register);
-            else
-                print("cube({}[{}{}], cubeMapData)", isPixelShader ? "g_PSConstants" : "g_VSConstants", instr.src1Register,
-                    instr.const0Relative ? (instr.constAddressRegisterRelative ? " + a0" : " + aL") : "");
+            // The direction is (z, w, x) of the SWIZZLED source (Xenia: operand .z_xy; usual form
+            // src0.zzxy gives the register's xyz). The raw register dropped a non-default swizzle:
+            // harbour water PS 65474598 sampled the cube's -Z face instead of the sky (brown water).
+        {
+            const uint32_t savedLanes = laneOverride;
+            laneOverride = 0b1111;
+            const std::string src = op(VECTOR_0);
+            laneOverride = savedLanes;
+            print("cube(float4(({}).zwx, 0.0), cubeMapData)", src);
             break;
+        }
 
         case AluVectorOpcode::Max4:
             print("max4({})", op(VECTOR_0));

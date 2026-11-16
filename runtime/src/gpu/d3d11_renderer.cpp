@@ -1038,6 +1038,11 @@ static ID3D11ShaderResourceView* CubeView(ID3D11Device* device, ID3D11DeviceCont
                 char name[96];
                 snprintf(name, sizeof(name), "\\%08X_%u_%ux%u_face%u.bmp", t.physical, t.format, t.width, t.height, face);
                 WriteBmp(dumpDir + std::string(name), texels, t.width, t.height);
+                std::vector<uint32_t> alpha(texels.size()); // _a: alpha as grey (RGBM cubes keep the intensity there)
+                for (size_t i = 0; i < texels.size(); i++)
+                    alpha[i] = (texels[i] >> 24) * 0x010101u | 0xFF000000u;
+                snprintf(name, sizeof(name), "\\%08X_%u_%ux%u_face%u_a.bmp", t.physical, t.format, t.width, t.height, face);
+                WriteBmp(dumpDir + std::string(name), alpha, t.width, t.height);
             }
         }
     }
@@ -3306,13 +3311,27 @@ void D3D11Renderer::ExecuteDraw(const DrawCall& d, const Frame& frame)
                             uint32_t(HostFrontCounterClockwise(r.regs)), std::bit_cast<float>(r.regs[0x210F]), std::bit_cast<float>(r.regs[0x2111]), r.regs[0x2206]);
                         RuntimeLog("[pixel]   psbools %08X %08X %08X %08X loops %08X %08X\n", r.regs[kRegBoolConstants + 4], r.regs[kRegBoolConstants + 5],
                             r.regs[kRegBoolConstants + 6], r.regs[kRegBoolConstants + 7], r.regs[kRegLoopConstants + 16], r.regs[kRegLoopConstants + 31]);
-                        for (uint32_t slot = 0; slot < 4; slot++) // texture fetch constants 0-3: base, format, size
+                        for (uint32_t slot = 0; slot < 16; slot++) // texture fetch constants 0-15: base, format, size, dword 5 (dimension)
                         {
                             const uint32_t f[3] = { r.regs[0x4800 + 6 * slot], r.regs[0x4801 + 6 * slot], r.regs[0x4802 + 6 * slot] };
                             if (f[1] & 0xFFFFF000)
-                                RuntimeLog("[pixel]   tf%u base %08X fmt %u size %ux%u\n", slot, f[1] & 0xFFFFF000, f[1] & 0x3F,
-                                    (f[2] & 0x1FFF) + 1, ((f[2] >> 13) & 0x1FFF) + 1);
+                                RuntimeLog("[pixel]   tf%u base %08X fmt %u size %ux%u dw5 %08X\n", slot, f[1] & 0xFFFFF000, f[1] & 0x3F,
+                                    (f[2] & 0x1FFF) + 1, ((f[2] >> 13) & 0x1FFF) + 1, r.regs[0x4805 + 6 * slot]);
                         }
+                        // SCDA_PIXEL_WATCH_PSC=<n>,<n>,...: also log those pixel shader float constants.
+                        if (const char* psc = getenv("SCDA_PIXEL_WATCH_PSC"))
+                            for (const char* p = psc; *p;)
+                            {
+                                char* end;
+                                const unsigned long n = strtoul(p, &end, 10);
+                                if (end == p || n > 255)
+                                    break;
+                                const uint32_t base = kRegAluConstants + (256 + uint32_t(n)) * 4;
+                                const uint32_t c[4] = { r.regs[base], r.regs[base + 1], r.regs[base + 2], r.regs[base + 3] };
+                                RuntimeLog("[pixel]   c%lu %g %g %g %g\n", n, std::bit_cast<float>(c[0]), std::bit_cast<float>(c[1]),
+                                    std::bit_cast<float>(c[2]), std::bit_cast<float>(c[3]));
+                                p = *end == ',' ? end + 1 : end;
+                            }
                         lastValue = v;
                     }
                 }

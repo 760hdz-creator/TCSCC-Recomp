@@ -23,10 +23,18 @@ Scene Select 01_Market, LOCALAPPDATA = copy with a profile, SCDA_UNLOCK_ALL=1, s
 - Cube textures ARE bound (CubeView, d3d11_renderer.cpp ~980): SCDA_TRACE_CUBE at the harbour lists DXT5 (fmt 20)
   cubes 64/128/256, tiled, faces made. Faces dumped to SCDA_DUMP_TEXTURES (114 face bmps) - not yet inspected.
 
-## Next
-1. Which cube does the water bind at s9 (pixel log prints tf0-3 only: extend to tf9 / log fetch 9 for PS 6547...)?
-   Look at its dumped faces: black/garbage = face stride / tiling / DXT5 RGBM alpha wrong.
-2. Check CubeView: face stride for packed mips (Xenos cube faces may include the mip tail per face), generated mips
-   vs guest mips (LOD is explicit: generated mips of RGBM data average alpha wrongly but should not give black).
-3. Check translator cube(): face/coordinate mapping vs Xenia (tfetchCubeLod, cubeMapData).
-4. A/B: SCDA_NO_CUBE=1 (old: no cube) - if identical, the cube contributes nothing (stays 0).
+## Cause + fix (2026-11-16, translator v38)
+- Water binds s9 = cube 0B59C000 DXT5 256x256 (RGBM: intensity in alpha). Faces de-tile and decode fine
+  (SCDA_DUMP_TEXTURES now also writes `_a.bmp` alpha faces).
+- Instrumented PS (SCDA_HLSL_OVERRIDE, RT exp bias x4): cube.a = 6/255 = the flat value of face 5 (-Z, ground),
+  fog r5.z ~0.05. So the fetch looked down, not at the sky.
+- `cube` takes its direction from the SWIZZLED src0: (swz.z, swz.w, swz.x) (Xenia: operand .z_xy). The translator
+  passed the raw register. Fine for the usual src0.zzxy; this shader uses r1.xxyz (direction = y,z,x).
+  In a harbour run only 10 of 37 cube ops use zzxy (13 xxyz, 12 xxzy, 1 wwyz, 1 yyzw): most cube reflections
+  in the game sampled the wrong direction.
+- Fix: shader_recompiler.cpp Cube emits `cube(float4((<swizzled src0>).zwx, 0.0), ...)`. Water pixel
+  0.104/0.080/0.054 -> 0.165/0.116/0.099; frame 8000 shows city lights + sky reflected.
+- Tools added: SCDA_PIXEL_WATCH logs fetch slots 0-15 (+ dw5), SCDA_PIXEL_WATCH_PSC=<n,..> logs PS constants.
+
+## Open
+- White "lamp globe" circles (cafe lamp + small one over the rail): separate, not looked at.
