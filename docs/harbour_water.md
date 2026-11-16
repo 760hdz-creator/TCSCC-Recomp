@@ -37,4 +37,7 @@ Scene Select 01_Market, LOCALAPPDATA = copy with a profile, SCDA_UNLOCK_ALL=1, s
 - Tools added: SCDA_PIXEL_WATCH logs fetch slots 0-15 (+ dw5), SCDA_PIXEL_WATCH_PSC=<n,..> logs PS constants.
 
 ## Open
-- White "lamp globe" circles (cafe lamp + small one over the rail): separate, not looked at.
+- White "lamp globe" (cafe lamp, frame 8000 pixel 748,95), measured on v38: glow sprite PS e0ef0dbb (1 2D fetch,
+  no cube) takes the pixel to HDR ~7.0 (x4 bias space), glass PS c1a4d8f6 (has a cube fetch) blends over (1.76),
+  two additive passes, tonemapped 0.86 white. The globe path has no cube fetch on the bright step, so v38 does not
+  explain it. Bright may be correct at night: needs a real-360 reference of the lamps before calling it a bug.
