@@ -27,6 +27,7 @@
 #include "overlay.h"
 #include "updater.h"
 #include <recomp_page.h>
+#include <online_identity.h>
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
 
@@ -117,11 +118,17 @@ void Apply(const DisplaySettings& s)
     HostWindowSetMode(s.mode);
     // Frame rate cap (settings.h frameRate): guest vblank 2x the cap; above 60 the engine limiter's
     // minimum frame time (float 0x82002E00, the title's 1/60 otherwise) becomes 1/cap.
-    const float minFrame = s.frameRate > 60 ? 1.0f / float(s.frameRate) : 0.016667f;
+    // Online (System Link / LIVE): co-op runs one simulation on both PCs, and peers at different frame
+    // rates end the match "OUT OF SYNC" (forge #3, reproduced on loopback 144 vs 30). Console pacing then.
+    const bool online = online::RemotePacketWithin(10000);
+    if (static bool logged; online && !logged && s.frameRate > 30)
+        logged = true, RuntimeLog("[online] match: frame rate held at 30 (synced simulation)\n");
+    const int frameRate = online ? 30 : s.frameRate;
+    const float minFrame = frameRate > 60 ? 1.0f / float(frameRate) : 0.016667f;
     uint32_t bits;
     memcpy(&bits, &minFrame, 4);
     GuestStore32(0x82002E00, bits);
-    InterruptsSetVblankRate(s.frameRate <= 30 ? 60 : s.frameRate * 2);
+    InterruptsSetVblankRate(frameRate <= 30 ? 60 : frameRate * 2);
 }
 
 // Writes the keys that changed.
