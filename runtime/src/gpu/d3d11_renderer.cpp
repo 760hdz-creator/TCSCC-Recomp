@@ -613,6 +613,14 @@ struct DrawResources
     RegisterFile regs;
     size_t applied = 0;
     bool stateDirty = true;            // registers changed, or bindings invalidated, since the last bind
+    // Texture loop of BindRegisterState must run again: a fetch constant changed, bindings were
+    // invalidated (resolve, frame end: per-frame texture checks), else its last outputs are reused.
+    // Every register write sets stateDirty (ALU constants each draw), so without this the whole
+    // texture loop (decode, resolve/texture lookups) ran per draw. SCDA_NO_TEX_MEMO=1: old.
+    bool texDirty = true;
+    uint32_t texMemoSlots = 0;
+    ID3D11ShaderResourceView* texMemo[96] = {}; // 2D t0-31, volume, cube (as passed to the SRV phase)
+    uint32_t texMemoSwizzle[32] = {};           // shared.texSwizzle as the loop set it (0 = untouched)
     bool aluDirty[2] = { true, true }; // b0 / b1 constants changed since their last upload
     // b2 as last uploaded (SharedConstants has no padding); sharedValid false = must upload.
     SharedConstants lastShared{};
@@ -1180,7 +1188,7 @@ static uint64_t ProbeBytes(const uint8_t* p, size_t n)
     return h | 1;
 }
 
-constexpr uint32_t kTexStableFrames = 4, kTexFullEvery = 16;
+constexpr uint32_t kTexStableFrames = 4, kTexFullEvery = 16, kTexProbeEvery = 4; // kTexFullEvery % kTexProbeEvery == 0
 static struct { uint32_t probes = 0, skips = 0; uint64_t bytes = 0; } g_texHash; // SCDA_TRACE_TEXHASH counters (render thread)
 
 // The resolve's view for a w x h fetch: the whole texture, or a top-left crop copied after each resolve.
@@ -1385,6 +1393,7 @@ void D3D11Renderer::ApplyRegisterWrites(const Frame& frame, size_t end)
         {
             r.regs.Clear();
             r.aluDirty[0] = r.aluDirty[1] = true;
+            r.texDirty = true;
         }
         else
         {
@@ -1396,6 +1405,8 @@ void D3D11Renderer::ApplyRegisterWrites(const Frame& frame, size_t end)
             static const bool noCbSkip = getenv("SCDA_NO_CB_SKIP") != nullptr;
             if (w.index - kRegAluConstants < 2048 && (noCbSkip || r.regs[w.index] != w.value))
                 r.aluDirty[(w.index - kRegAluConstants) >> 10] = true;
+            if (w.index - kRegFetchConstants < 32 * 6 && r.regs[w.index] != w.value)
+                r.texDirty = true;
             r.regs.Set(w.index, w.value);
         }
         r.stateDirty = true;
@@ -1750,7 +1761,20 @@ void D3D11Renderer::BindRegisterState(const RegisterFile& regs, uint32_t texSlot
     ID3D11ShaderResourceView* srvs[32];
     ID3D11ShaderResourceView* cubeSrvs[32] = {};
     ID3D11ShaderResourceView* volumeSrvs[32] = {};
-    for (uint32_t slot = 0; slot < 32; slot++)
+    static const bool noTexMemo = getenv("SCDA_NO_TEX_MEMO") != nullptr;
+    const bool texReuse = !noTexMemo && !r.texDirty && r.texMemoSlots == texSlots;
+    if (texReuse)
+    {
+        std::copy(r.texMemo, r.texMemo + 32, srvs);
+        std::copy(r.texMemo + 32, r.texMemo + 64, volumeSrvs);
+        std::copy(r.texMemo + 64, r.texMemo + 96, cubeSrvs);
+        for (uint32_t slot = 0; slot < 32; slot++)
+            if (r.texMemoSwizzle[slot])
+                shared.texSwizzle[slot] = r.texMemoSwizzle[slot];
+    }
+    uint32_t swizzleBefore[32];
+    std::copy(shared.texSwizzle, shared.texSwizzle + 32, swizzleBefore);
+    for (uint32_t slot = 0; slot < 32 && !texReuse; slot++)
     {
         srvs[slot] = r.white.Get();
         if (!(texSlots >> slot & 1))
@@ -1912,7 +1936,15 @@ void D3D11Renderer::BindRegisterState(const RegisterFile& regs, uint32_t texSlot
             // SCDA_TEXHASH_COMPARE=1: always full-hash, log each change the probe alone would have missed.
             static const bool compare = getenv("SCDA_TEXHASH_COMPARE") != nullptr;
             const bool readable = GuestRangeReadable(guest, guestBytes);
-            const uint64_t probe = readable ? ProbeBytes(guest, guestBytes) : 0;
+            // A stable texture is probed only every kTexProbeEvery presents (staggered by key; its full-hash
+            // presents are probe presents too). The probe's 18 scattered reads were ~1 ms/frame of cache
+            // misses (Banya, ~270 textures). Changing textures (never stable) are still probed per present.
+            // shortcut: a stable texture's first change shows up to kTexProbeEvery - 1 presents late.
+            // SCDA_TEX_PROBE_EVERY=1: probe every present (old).
+            static const uint32_t probeEvery = getenv("SCDA_TEX_PROBE_EVERY") ? std::max(1, atoi(getenv("SCDA_TEX_PROBE_EVERY"))) : kTexProbeEvery;
+            const bool skipProbe = cached.srv && !noCache && !compare && cached.probe && cached.stable >= kTexStableFrames && cached.icon < 0 &&
+                (m_presented + (key * 0x9E3779B97F4A7C15ull >> 32)) % probeEvery != 0;
+            const uint64_t probe = skipProbe ? cached.probe : readable ? ProbeBytes(guest, guestBytes) : 0;
             const bool probeOnly = cached.srv && !noCache && probe && probe == cached.probe && cached.stable >= kTexStableFrames && cached.icon < 0 &&
                 m_presented < cached.fullAt + kTexFullEvery && (m_presented + (key * 0x9E3779B97F4A7C15ull >> 32)) % kTexFullEvery != 0;
             uint64_t hash = cached.hash;
@@ -2139,6 +2171,16 @@ void D3D11Renderer::BindRegisterState(const RegisterFile& regs, uint32_t texSlot
         }
         if (it->second)
             srvs[slot] = it->second.Get();
+    }
+    if (!texReuse)
+    {
+        std::copy(srvs, srvs + 32, r.texMemo);
+        std::copy(volumeSrvs, volumeSrvs + 32, r.texMemo + 32);
+        std::copy(cubeSrvs, cubeSrvs + 32, r.texMemo + 64);
+        for (uint32_t slot = 0; slot < 32; slot++)
+            r.texMemoSwizzle[slot] = shared.texSwizzle[slot] != swizzleBefore[slot] ? shared.texSwizzle[slot] : 0;
+        r.texMemoSlots = texSlots;
+        r.texDirty = false;
     }
     lap(kPhaseBindTextures);
     // b2 only when the final payload differs from the last upload (SCDA_NO_CB_SKIP=1: always).
@@ -2797,7 +2839,7 @@ void D3D11Renderer::ExecuteDraw(const DrawCall& d, const Frame& frame)
         {
             r.exportBase = base;
             r.exportBytes = bytes;
-            r.stateDirty = true;
+            r.stateDirty = r.texDirty = true;
         }
     }
     if (r.stateDirty || (texSlots & ~r.lastTexSlots))
@@ -2868,7 +2910,7 @@ void D3D11Renderer::ExecuteDraw(const DrawCall& d, const Frame& frame)
             ID3D11ShaderResourceView* srv = avg.Get();
             m_context->PSSetShaderResources(kHlslTex2DSlot + averageSlot, 1, &srv);
             r.srvShadow = false;
-            r.stateDirty = true; // the next draw rebinds the guest textures
+            r.stateDirty = r.texDirty = true; // the next draw rebinds the guest textures
         }
     }
     // SCDA_TEX_FLAT=<ps hash hex>:<slot>:<RRGGBBAA hex>[,..]: draws with that PS sample a 1x1 texture of
@@ -2919,7 +2961,7 @@ void D3D11Renderer::ExecuteDraw(const DrawCall& d, const Frame& frame)
             ID3D11ShaderResourceView* srv = f.srv.Get();
             m_context->PSSetShaderResources(kHlslTex2DSlot + f.slot, 1, &srv);
             r.srvShadow = false;
-            r.stateDirty = true;
+            r.stateDirty = r.texDirty = true;
         }
     }
     {
@@ -3963,7 +4005,7 @@ void D3D11Renderer::ExecuteResolve(const Resolve& res)
     if (ResolveClearsDepth(res))
         if (ID3D11DepthStencilView* dsv = DepthTargetFor(m_device, m_context, r, EdramDepthKey(res.depthInfo, res.surfaceInfo)))
             m_context->ClearDepthStencilView(dsv, D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, ResolveDepthClearValue(res), UINT8(res.depthClear & 0xFF));
-    r.stateDirty = true; // texture bindings may now point at a new resolve
+    r.stateDirty = r.texDirty = true; // texture bindings may now point at a new resolve
 }
 
 void D3D11Renderer::Blit(ID3D11ShaderResourceView* source)
@@ -4221,7 +4263,7 @@ void D3D11Renderer::ApplyScale(float scale)
     r.last = nullptr;
     std::fill(r.boundTargets, r.boundTargets + 4, nullptr);
     r.bound = false; r.srvShadow = false;
-    r.stateDirty = true;
+    r.stateDirty = r.texDirty = true;
     r.scale = m_scale = scale;
     RuntimeLog("[d3d11] internal resolution %ux%u (scale %g)\n", Scaled(kTargetWidth, m_scale), Scaled(720u, m_scale), double(m_scale));
 }
@@ -4272,7 +4314,7 @@ void D3D11Renderer::Present(const Frame& frame)
             r.textureCache.clear();
             r.last = nullptr;
             std::fill(r.boundTargets, r.boundTargets + 4, nullptr);
-            r.stateDirty = true;
+            r.stateDirty = r.texDirty = true;
             r.aluDirty[0] = r.aluDirty[1] = true;
             r.sharedValid = false;
             r.activeQuery.Reset(); // results would land in the relaunched title's memory
@@ -4304,7 +4346,7 @@ void D3D11Renderer::Present(const Frame& frame)
         m_context->GSSetConstantBuffers(0, 3, cbs); // pointListGs reads b2
         r.cbRingBound = false; // post passes rebound b0: the first draw writes and binds the ring again
         r.samplerShadow = false; // post passes and the defaults above replaced s0-s15
-        r.stateDirty = true;
+        r.stateDirty = r.texDirty = true;
         r.applied = 0;
         // Draws and resolves in stream order: resolve k runs before draw resolves[k].drawIndex.
         // SCDA_DRAW_LIMIT=<n>: run only draws [0, n) (and the resolves before them), then show the
@@ -4486,6 +4528,7 @@ void D3D11Renderer::Present(const Frame& frame)
             RuntimeLog("[texhash] present %llu: %u checks, %u probe-only, %.1f MB hashed\n", m_presented, g_texHash.probes, g_texHash.skips, g_texHash.bytes / 1048576.0);
         g_texHash = {};
         r.textures.clear();
+        r.texDirty = true; // textures are checked against guest memory once per frame
         if (m_presented % 60 == 0) // drop textures unused for ~10 s
             std::erase_if(r.textureCache, [&](auto& e) { return e.second.lastUsed + 600 < m_presented; });
         ID3D11ShaderResourceView* none[32] = {};
