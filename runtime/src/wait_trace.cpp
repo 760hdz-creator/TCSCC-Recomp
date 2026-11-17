@@ -1,5 +1,6 @@
 #include <windows.h>
 #include <runtime.h>
+#include "gpu_state.h"
 #include <algorithm>
 #include <array>
 #include <map>
@@ -19,7 +20,51 @@ PPC_FUNC(sub_82514FE0)
     static const LONGLONG freq = [] { LARGE_INTEGER f; QueryPerformanceFrequency(&f); return f.QuadPart; }();
     LARGE_INTEGER t0, t1;
     QueryPerformanceCounter(&t0);
-    __imp__sub_82514FE0(ctx, base);
+    // The title's lock of its dynamic sprite vertex buffer (sub_82514168 lr 825142B8 < 82514570 <
+    // 8290E718) waits once a frame for the GPU to EXECUTE the fence after the draws that read it:
+    // the game thread then idles while the renderer works (~290 ms/s at 85 fps). The draws' vertex
+    // and index data are copied when the command processor PARSES them, so this one wait ends when
+    // the fence is parsed. Same kick as the original when the fence is not submitted yet.
+    // EXPERIMENT, default off (no measured gain before the interrupt-latency fix; sprite correctness
+    // not verified): SCDA_VB_WAIT_PARSED=1 enables it.
+    static const bool waitExecuted = getenv("SCDA_VB_WAIT_PARSED") == nullptr;
+    bool early = false;
+    if (!waitExecuted && lr == 0x825142B8 && ctx.r4.u32)
+    {
+        const uint32_t sp1 = GuestLoad32(ctx.r1.u32), sp2 = sp1 > 0x10000 && sp1 < 0xF0000000u ? GuestLoad32(sp1) : 0;
+        if (sp2 > 0x10000 && sp2 < 0xF0000000u && GuestLoad32(sp1 - 8) == 0x82514570 && GuestLoad32(sp2 - 8) == 0x8290E718)
+        {
+            const uint32_t device = ctx.r3.u32, target = ctx.r4.u32;
+            const uint32_t fenceVa = GuestLoad32(device + 10896);
+            const uint32_t physical = GuestPhysical(fenceVa & ~3u);
+            if (target == GuestLoad32(device + 10908) && !(ctx.r7.u32 & 0xFF) && !GuestLoad32(device + 13408))
+            {
+                PPCContext saved = ctx; // kick: the fence is not in the ring yet (as sub_82514FE0 does)
+                ctx.r3.u64 = device;
+                ctx.lr = 0x82515040;
+                sub_82515DE0(ctx, base);
+                ctx = saved;
+            }
+            CommandProcessorWake();
+            const ULONGLONG start = GetTickCount64();
+            for (uint32_t spins = 0;; spins++)
+            {
+                uint32_t parsed = 0;
+                const uint32_t cur = GuestLoad32(device + 10908), done = GuestLoad32(fenceVa);
+                if ((cur - target) >= (cur - done) || (CpFenceParsedValue(physical, parsed) && (cur - target) >= (cur - parsed)))
+                {
+                    early = true;
+                    break;
+                }
+                if (GetTickCount64() - start > 100)
+                    break; // fall back to the real wait
+                if (spins > 64)
+                    SwitchToThread();
+            }
+        }
+    }
+    if (!early)
+        __imp__sub_82514FE0(ctx, base);
     QueryPerformanceCounter(&t1);
     const uint32_t us = uint32_t((t1.QuadPart - t0.QuadPart) * 1000000 / freq);
     GuestGpuWaitAdd(us);

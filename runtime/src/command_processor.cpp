@@ -21,6 +21,40 @@
 #include <pm4.h>
 #include <runtime.h>
 
+// Fence values as parsed (not yet executed): the command processor has snapshotted every draw
+// before them (vertex/index data copied into the Frame), so the guest may rewrite those buffers.
+// Small fixed table: the title uses a handful of fence addresses.
+// Idle CP thread wake-up (it polls the ring write pointer every 1 ms otherwise).
+static HANDLE CpWakeEvent()
+{
+    static const HANDLE h = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    return h;
+}
+void CommandProcessorWake() { SetEvent(CpWakeEvent()); }
+static std::mutex g_parsedFenceMutex;
+static std::pair<uint32_t, uint32_t> g_parsedFences[16];
+void CpFenceParsed(uint32_t physical, uint32_t value)
+{
+    std::lock_guard lock(g_parsedFenceMutex);
+    for (auto& f : g_parsedFences)
+        if (f.first == physical || f.first == 0)
+        {
+            f = { physical, value };
+            return;
+        }
+}
+bool CpFenceParsedValue(uint32_t physical, uint32_t& value)
+{
+    std::lock_guard lock(g_parsedFenceMutex);
+    for (auto& f : g_parsedFences)
+        if (f.first == physical)
+        {
+            value = f.second;
+            return true;
+        }
+    return false;
+}
+
 enum : uint32_t
 {
     kOpNop = 0x10,
@@ -477,6 +511,7 @@ static bool ExecutePacket(uint32_t h, const Pm4Payload& p, int depth, CpStats& s
             GpuStore(p(1), value);
         else
             Frames().AddFence(GuestPhysical(p(1) & ~3u), GpuSwap(value, p(1)));
+        CpFenceParsed(GuestPhysical(p(1) & ~3u), GpuSwap(value, p(1))); // as the guest reads it
         st.fences++;
         return true;
     }
@@ -706,7 +741,7 @@ void CommandProcessorStart()
                 if (!idle)
                     TimelineEvent('S');
                 idle = true;
-                Sleep(1);
+                WaitForSingleObject(CpWakeEvent(), 1); // was Sleep(1): CommandProcessorWake cuts the wait short
             }
             else if (idle)
             {

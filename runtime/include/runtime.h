@@ -33,6 +33,12 @@ void RuntimeLog(const char* fmt, ...);
 void TimelineEvent(char kind, uint32_t a = 0, uint32_t b = 0);
 // Guest time blocked in D3D BlockOnFence (wait_trace.cpp adds, timeline.cpp keeps): us since the last Take.
 void GuestGpuWaitAdd(uint32_t us);
+// Fence values the command processor has parsed (command_processor.cpp): CpFenceParsedValue
+// false = no fence parsed at that physical address yet.
+void CpFenceParsed(uint32_t physical, uint32_t value);
+// Wakes the idle command processor thread now (the guest just advanced the ring write pointer).
+void CommandProcessorWake();
+bool CpFenceParsedValue(uint32_t physical, uint32_t& value);
 uint64_t GuestGpuWaitUsTake();
 // Guest time polling occlusion-query results until ready (GetData sub_825283A0), for [perf].
 void GuestQueryWaitAdd(uint32_t us);

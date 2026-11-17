@@ -130,6 +130,19 @@ void TitleSleep(DWORD ms)
         TitleThreadExit();
 }
 
+// TitleSleep that also returns early when wake is signalled.
+void TitleSleepOr(HANDLE wake, DWORD ms)
+{
+    if (!t_self)
+    {
+        WaitForSingleObject(wake, ms);
+        return;
+    }
+    const HANDLE both[2] = { g_stopEvent, wake };
+    if (WaitForMultipleObjects(2, both, FALSE, ms) == WAIT_OBJECT_0)
+        TitleThreadExit();
+}
+
 HANDLE TitleRelaunchEvent() { return g_relaunchEvent; }
 
 void TitleForceRelaunch()

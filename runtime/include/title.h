@@ -26,6 +26,8 @@ void TitleCheckExit();
 // WaitForMultipleObjectsEx / Sleep for HLE waits: a title thread exits when a stop arrives.
 DWORD TitleWait(DWORD count, const HANDLE* handles, bool waitAll, DWORD ms, bool alertable);
 void TitleSleep(DWORD ms);
+// TitleSleep that also returns as soon as wake is signalled.
+void TitleSleepOr(HANDLE wake, DWORD ms);
 
 // Relaunch: called on a title thread (XamLoaderLaunchTitle); never returns.
 [[noreturn]] void TitleRequestRelaunch();

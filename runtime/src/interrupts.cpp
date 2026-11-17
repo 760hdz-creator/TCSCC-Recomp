@@ -20,10 +20,24 @@ static std::vector<std::pair<uint32_t, uint32_t>> g_queue; // (source, cpu)
 
 void InterruptsSetPaused(bool paused) { g_paused = paused; }
 
+// Signalled by InterruptsQueue: the interrupt thread delivers at once instead of at its next 1 ms
+// poll. The CP waits once a frame for D3D's handler to acknowledge (clears 0xA00092C0) before it
+// parses on, so that poll was ~1-2 ms of serial latency per frame. SCDA_IRQ_POLL=1: poll only (old).
+static HANDLE IrqEvent()
+{
+    static const HANDLE h = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    return h;
+}
+static const bool g_irqPoll = getenv("SCDA_IRQ_POLL") != nullptr;
+
 void InterruptsQueue(uint32_t source, uint32_t cpu)
 {
-    std::lock_guard lock(g_queueMutex);
-    g_queue.push_back({ source, cpu });
+    {
+        std::lock_guard lock(g_queueMutex);
+        g_queue.push_back({ source, cpu });
+    }
+    if (!g_irqPoll)
+        SetEvent(IrqEvent());
 }
 
 // cpu -> PCR+0x10C (current processor): handlers act per CPU (D3D clears its bit in scratch 0).
@@ -107,6 +121,8 @@ static DWORD WINAPI InterruptThread(void*)
             Deliver(*ctx, source, cpu);
             TimelineEvent('g', source, cpu);
         }
+        if (!pending.empty() && !g_irqPoll)
+            CommandProcessorWake(); // it may be polling for this handler's acknowledgement
 
         QueryPerformanceCounter(&now);
         if (now.QuadPart >= next.QuadPart)
@@ -116,7 +132,12 @@ static DWORD WINAPI InterruptThread(void*)
                 next.QuadPart = now.QuadPart + period; // fell far behind: do not burst
             Vsync(*ctx);
         }
-        TitleSleep(1);
+        if (g_irqPoll)
+            TitleSleep(1);
+        else
+        {
+            TitleSleepOr(IrqEvent(), 1); // 1 ms as before (vblank timing), or until an interrupt arrives
+        }
     }
 }
 
