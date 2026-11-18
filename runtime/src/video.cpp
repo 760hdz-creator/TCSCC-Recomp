@@ -146,6 +146,42 @@ SCDA_IMPORT(VdSwap)
     // Bounded wait so a stopped interrupt thread can never deadlock the caller.
     for (int i = 0; i < 100 && Gpu().swapsSubmitted.load() > Gpu().swapsSeen.load() + 2; i++)
         Sleep(1);
+    // SCDA_TEST_STALL=<every>,<min ms>,<max ms>[,<from frame>]: test hitches (slow PCs); on average one
+    // swap in <every> sleeps a random min..max ms on the title thread. Fixed seed per run.
+    static const struct Stall { int every = 0, lo = 0, hi = 0, from = 0; } stall = [] {
+        Stall s;
+        if (const char* e = getenv("SCDA_TEST_STALL"))
+            sscanf(e, "%d,%d,%d,%d", &s.every, &s.lo, &s.hi, &s.from);
+        return s;
+    }();
+    if (stall.every > 0)
+    {
+        static uint32_t rng = 12345, swaps = 0;
+        rng = rng * 1664525u + 1013904223u;
+        if (++swaps >= uint32_t(stall.from) && (rng >> 8) % uint32_t(stall.every) == 0)
+            Sleep(DWORD(stall.lo + int((rng >> 16) % uint32_t(stall.hi - stall.lo + 1))));
+    }
+    // SCDA_TRACE_DT=1: main loop sub_824E53B0 frame time, once per 30 swaps. Net clock *0x837B177C:
+    // state +164 == 3 -> dt = const/+184 (fixed step), else dt = 6-frame mean of real time clamped
+    // to [*0x82002E00, *0x82002E04]. Raw dt 0x8371CAE8, game dt 0x8371CAEC, frame target 0x837B56F8.
+    static const bool traceDt = getenv("SCDA_TRACE_DT") != nullptr;
+    if (traceDt)
+    {
+        auto f = [](uint32_t a) { uint32_t b = GuestLoad32(a); float v; memcpy(&v, &b, 4); return v; };
+        static float lo = 1e9f, hi = 0.0f;
+        static uint32_t n = 0;
+        const float dt = f(0x8371CAEC);
+        lo = dt < lo ? dt : lo, hi = dt > hi ? dt : hi;
+        if (++n % 30 == 0)
+        {
+            const uint32_t clock = GuestLoad32(0x837B177C);
+            RuntimeLog("[dt] swap %u: game dt %.4f (min %.4f max %.4f) raw %.4f | net clock %08X state %d rate %.2f | "
+                       "target %.4f flags %u/%u\n", n, dt, lo, hi, f(0x8371CAE8), clock,
+                       clock ? int(GuestLoad32(clock + 164)) : -1, clock ? f(clock + 184) : 0.0f, f(0x837B56F8),
+                       GuestLoad32(0x8371CAE0), GuestLoad32(0x8371CAE4));
+            lo = 1e9f, hi = 0.0f;
+        }
+    }
     Gpu().swapsSubmitted++;
     GuestStore32(buffer, 0xC0000000u | (62u << 16) | (0x10u << 8)); // type 3 NOP, 63 payload dwords
     GuestStore32(buffer + 4, kSwapMarker);

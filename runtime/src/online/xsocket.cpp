@@ -1,7 +1,8 @@
 // Virtual Xbox sockets (online step 2, ported from the TTT2 port's xsocket.cpp): the game's NetDll socket
 // API on top of the packet transport (net_transport.h) - no host sockets for game traffic. Addresses are
 // the virtual IN_ADDRs of xnet.h (a remote peer 10.78.x.y; our own 10.77.x.y, also 127.0.0.1).
-//  - datagrams (UDP 17 / VDP 254, payload untouched): one packet each, unreliable channel. A LAN broadcast
+//  - datagrams (UDP 17 / VDP 254, payload untouched): unreliable channel; unicast sent twice with a
+//    sequence number in connId, duplicates dropped on receive (forge #3). A LAN broadcast
 //    (255.255.255.255 or x.x.x.255) goes to every LAN peer (xnet::LanPeers: System Link discovery);
 //  - streams (TCP): SYN / SYN-ACK / DATA / FIN / RST on the reliable channel, a connection is
 //    (peer, connection id, direction);
@@ -68,6 +69,10 @@ std::mutex g_m;
 std::condition_variable g_cv;
 struct SentBroadcast { ULONGLONG at; uint8_t proto; uint16_t srcPort, dstPort; std::vector<uint8_t> data; };
 std::deque<SentBroadcast> g_broadcasts; // under g_m
+// Unicast datagram duplicates (forge #3), under g_m: our next sequence per peer (random start, never 0),
+// and per sender the last sequence seen in each of 1024 slots.
+std::map<uint64_t, uint32_t> g_datagramSeq;
+std::map<uint64_t, std::vector<uint32_t>> g_datagramSeen;
 std::map<uint32_t, Socket> g_sockets;
 uint32_t g_nextHandle = 0xD4000000u;
 uint16_t g_nextEphemeral = 49152;
@@ -219,6 +224,17 @@ void XSocketReceive(uint64_t from, net::Channel, const uint8_t* data, size_t siz
     {
     case Op::Datagram:
     {
+        // Second copy of a unicast datagram (sequence in connId, see the send side): drop.
+        if (h.connId)
+        {
+            auto& seen = g_datagramSeen[from];
+            if (seen.empty())
+                seen.assign(1024, 0);
+            uint32_t& slot = seen[h.connId % 1024];
+            if (slot == h.connId)
+                break;
+            slot = h.connId;
+        }
         bool delivered = false;
         for (auto& [handle, s] : g_sockets)
             if (s.kind == Kind::Datagram && s.bound && s.port == h.dstPort && (s.proto == h.proto || h.proto == 17 || s.proto == 17))
@@ -351,7 +367,18 @@ int SendDatagram(Socket& s, uint32_t handle, uint32_t to, const uint8_t* data, u
         g_m.lock();
         return int(length);
     }
-    SendPacket(peer, net::Channel::Unreliable, Op::Datagram, s.proto, false, s.port, port, 0, data, length);
+    // Unicast datagrams are sent TWICE with a sequence number in connId; the receiver drops the second
+    // copy (forge #3). Quazal re-sends a lost VDP packet on LAN timers: over the internet (lag + loss) one
+    // loss stalled the co-op turn clock for seconds and its peer-wait watchdog (sub_82CED150, 4.8 s) ended
+    // the match "Out of sync". Two copies make a loss ~loss^2 at no added latency. (Steam's reliable
+    // channel was worse: every loss holds back all later packets for a round trip.)
+    uint32_t& seq = g_datagramSeq[peer];
+    if (!seq)
+        xnet::Random(&seq, sizeof(seq));
+    if (!++seq)
+        seq = 1;
+    SendPacket(peer, net::Channel::Unreliable, Op::Datagram, s.proto, false, s.port, port, seq, data, length);
+    SendPacket(peer, net::Channel::Unreliable, Op::Datagram, s.proto, false, s.port, port, seq, data, length);
     TraceBytes("sendto", handle, xnet::AddrOfPeer(peer), port, data, int(length));
     return int(length);
 }

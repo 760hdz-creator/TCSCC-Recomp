@@ -83,6 +83,24 @@ port, `C:\ttt2\port\src\runtime\kernel`), `online_identity.cpp`, `main_menu.cpp`
   PLAYER MATCH > FIND MATCH > Start); B = a copy in another dir, `240:START` + SCDA_TEST_INVITE=55; both
   SCDA_ONLINE=1 SCDA_NET=loopback, own LOCALAPPDATA copies, image path as argument.
 
+## Co-op "Out of sync" over the internet (forge #3, fixed 0.1.11)
+- Co-op runs a Quazal turn clock (object *0x837B177C: state +164 3 = running / 4 = stop asked / 5-6 =
+  ended, turn +152, turns/s +184 = 15 in intros, 30 in play). In a match the main loop's frame time is
+  1 / rate (lockstep): frame rate, stutter, Scale/AA/draw distance/FOV/ultrawide and mouse do NOT desync
+  it (all tried on loopback 2026-11-17, incl. host stalls 100-400 ms and 144 fps unheld).
+- Cause: lag + packet loss. Quazal re-sends a lost VDP datagram on LAN timers; at 150 ms + 3% loss the
+  peer's turns came seconds late, and the peer-wait watchdog sub_82CED150 (timeout 4.8 s, *0x837B1820)
+  called stop sub_83109388 (lr 82CED418) -> state 4/6 -> match ends ("XMsgCancelIORequest .. 0x837A5Fxx,
+  8" in the log = this). 150 ms without loss and 20 ms with 3% loss both survive.
+- Fix (xsocket.cpp): unicast datagrams sent twice, sequence in the header connId, duplicates dropped on
+  receive. 150 ms + 50 jitter + 3% / 5% loss: 6 min clean, longest wait 78 / 343 ms. Steam's reliable
+  channel was WORSE (head-of-line: every loss holds all later packets one round trip).
+- Log: `[sync]` lines (net_sync_trace.cpp, always on): state changes, 10 s summary (stepped / waiting ms,
+  longest), "STOP requested" + timeout, "ENDED: ...". Test: scratchpad sl.ps1 pattern + `SCDA_NET_DELAY/
+  JITTER/LOSS` (loss now also delays reliable packets by one re-send, in order). Test switches:
+  `SCDA_TEST_STALL=<every>,<min>,<max>[,<from swap>]`, `SCDA_TEST_HOLD_GAP=<from swap>,<swaps>`,
+  `SCDA_TRACE_DT=1` (main loop frame time + clock state per 30 swaps).
+
 ## Not done
 - Voice chat (XamVoice* / XHV stubs), XUserReadStats (leaderboards), in-game Steam invites, QoS, lag behaviour of
   LAN-speed-designed matches over the internet.

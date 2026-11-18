@@ -46,8 +46,8 @@ void FromSteam(uint64_t peer, bool reliable, const uint8_t* data, size_t size)
 }
 
 // Network conditions for tests (loopback only). Packets wait in a queue and leave from a sender thread
-// at their time; the reliable channel is never dropped and keeps its order (it stands in for Steam's
-// reliable messages).
+// at their time; the reliable channel keeps its order and its "lost" packets come one re-send later
+// (it stands in for Steam's reliable messages).
 struct Conditions { int delayMs = 0, jitterMs = 0, lossPct = 0; };
 const Conditions& Cond()
 {
@@ -55,7 +55,7 @@ const Conditions& Cond()
         auto get = [](const char* n, int hi) { const char* e = std::getenv(n); return e ? (std::max)(0, (std::min)(std::atoi(e), hi)) : 0; };
         Conditions r{ get("SCDA_NET_DELAY", 2000), get("SCDA_NET_JITTER", 2000), get("SCDA_NET_LOSS", 100) };
         if (r.delayMs || r.jitterMs || r.lossPct)
-            RuntimeLog("[net] test conditions: %d ms one way + 0..%d ms jitter, %d%% unreliable loss\n", r.delayMs, r.jitterMs, r.lossPct);
+            RuntimeLog("[net] test conditions: %d ms one way + 0..%d ms jitter, %d%% loss (reliable: re-sent)\n", r.delayMs, r.jitterMs, r.lossPct);
         return r;
     }();
     return c;
@@ -114,12 +114,17 @@ bool SendDelayed(const sockaddr_in& to, bool reliable, std::vector<uint8_t> byte
 {
     const Conditions& c = Cond();
     std::lock_guard l(g_delayMutex);
-    if (!reliable && c.lossPct && int(NextRandom() % 100) < c.lossPct)
+    const bool lost = c.lossPct && int(NextRandom() % 100) < c.lossPct;
+    if (!reliable && lost)
         return true; // lost on the way
     auto due = std::chrono::steady_clock::now() +
                std::chrono::milliseconds(c.delayMs + (c.jitterMs ? int(NextRandom() % uint32_t(c.jitterMs + 1)) : 0));
     if (reliable)
     {
+        // A lost reliable packet arrives one re-send later (Steam: about one round trip), and holds back
+        // the ones behind it (in order).
+        if (lost)
+            due += std::chrono::milliseconds(2 * c.delayMs + 20);
         if (due < g_lastReliableDue)
             due = g_lastReliableDue;
         g_lastReliableDue = due;

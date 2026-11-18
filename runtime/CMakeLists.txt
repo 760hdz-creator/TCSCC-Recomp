@@ -131,6 +131,7 @@ add_executable(scda
     src/online/xsession.cpp
     src/online_identity.cpp
     src/xma_xaudio.cpp
+    src/net_sync_trace.cpp
     src/wait_trace.cpp
     src/imports_stubs.cpp
     scda.rc)

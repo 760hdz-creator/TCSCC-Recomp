@@ -28,6 +28,7 @@
 #include "updater.h"
 #include <recomp_page.h>
 #include <online_identity.h>
+#include <gpu_state.h>
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
 
@@ -120,9 +121,14 @@ void Apply(const DisplaySettings& s)
     // minimum frame time (float 0x82002E00, the title's 1/60 otherwise) becomes 1/cap.
     // Online (System Link / LIVE): co-op runs one simulation on both PCs, and peers at different frame
     // rates end the match "OUT OF SYNC" (forge #3, reproduced on loopback 144 vs 30). Console pacing then.
-    const bool online = online::RemotePacketWithin(10000);
-    if (static bool logged; online && !logged && s.frameRate > 30)
-        logged = true, RuntimeLog("[online] match: frame rate held at 30 (synced simulation)\n");
+    bool online = online::RemotePacketWithin(10000);
+    // SCDA_TEST_HOLD_GAP=<from swap>,<swaps>: test only, drop the hold for a window (a long silent load).
+    static const auto gap = [] { std::pair<uint32_t, uint32_t> g{}; if (const char* e = getenv("SCDA_TEST_HOLD_GAP")) sscanf(e, "%u,%u", &g.first, &g.second); return g; }();
+    if (const uint32_t n = uint32_t(Gpu().swapsSubmitted.load()); gap.second && n >= gap.first && n < gap.first + gap.second)
+        online = false;
+    if (static bool held; online != held && s.frameRate > 30)
+        held = online, RuntimeLog(online ? "[online] match: frame rate held at 30 (synced simulation)\n"
+                                         : "[online] match over or peer silent 10 s: frame rate %d again\n", s.frameRate);
     const int frameRate = online ? 30 : s.frameRate;
     const float minFrame = frameRate > 60 ? 1.0f / float(frameRate) : 0.016667f;
     uint32_t bits;
