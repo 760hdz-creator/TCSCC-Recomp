@@ -290,6 +290,13 @@ place, and your `tcscc.log`.
 By **8gram Labs**. The source code is GPL-3.0 (see `LICENSE`). Built on XenonRecomp, XenosRecomp,
 UnleashedRecomp, Xenia (reference), FFmpeg, Dear ImGui and more: see [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 
+## Support
+
+This project is free, and it stays free. I work on it in my free time. If you'd like to support that, you can leave a
+tip on Ko-fi. Donations are completely optional and don't unlock anything.
+
+<a href="https://ko-fi.com/8gram_labs"><img src="https://ko-fi.com/img/githubbutton_sm.svg" alt="Support me on Ko-fi"></a>
+
 ## Legal
 
 This is an unofficial fan project. It isn't made, approved or supported by Ubisoft or Microsoft. *Tom Clancy's*,
