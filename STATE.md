@@ -1,5 +1,6 @@
 # STATE — fresh/: clean Conviction recomp (Title 5553080B), started 2026-11-03
 ## Setup
+- 2026-11-26 RECOMPLAUNCHER support (not pushed/released yet): outer installer `--prepare --game=<iso> --data=<dir>` / `--play --data=<dir>` (outer cc791f6, 09fda70; zip step c04086d), fresh/recomplauncher.json + badge (96cd780). Release must attach `TCSCC-Recomp-x.y.z-Windows-x64.zip` (outer build.bat makes it; docs/releasing.md). Tested: prepare from ISO into `_run/rl/recompdata`, already-set-up, update path, locked exe keeps data, play (minimized). Catalog entry tcscc-recomp is `host: gitlab`.
 - Nested git repo `G:\Project Zero\fresh` (outer ignores `/fresh/`). `assets/`, `external/` = junctions to outer (never rm -rf; `cmd /c rmdir`).
 - XenonRecomp patch `tools/patches/xenonrecomp_pz.patch` = live `external/XenonRecomp` diff vs ddd128b (outer copy STALE).
 - Test exe: copy `runtime\build\tcscc.exe` -> `_install\tcscc_fresh.exe`, run from `_install`, log `_install\tcscc.log`. Shader tests: set LOCALAPPDATA to a temp dir (disk cache keyed by translator version, now v34; any translate.cpp prelude change needs a `kTranslatorVersion` bump).
