@@ -1,0 +1,142 @@
+{
+  "$schema": "https://recomplauncher.com/schema/recomplauncher.json",
+  "format": 1,
+  "name": "TCSCC Recomp",
+  "inputs": [
+    {
+      "id": "game",
+      "role": "game",
+      "label": "Your disc image (.iso) of Splinter Cell: Conviction for the Xbox 360 (USA/Europe disc, title 5553080B).",
+      "formats": [{ "type": "file", "extensions": ["iso"] }],
+      "check": { "ids": ["5553080B"] }
+    }
+  ],
+  "start": {
+    "program": ["TCSCC_Setup.exe"],
+    "args": ["--play", "--data={data}"]
+  },
+  "prepare": {
+    "program": ["TCSCC_Setup.exe"],
+    "args": ["--prepare", "--game={input:game}", "--data={data}"],
+    "label": "Copies the game from your disc",
+    "done": ["{data}/tcscc.exe", "{data}/game/default.img", "{data}/version.txt"],
+    "keeps_copy": true
+  },
+  "config": [
+    {
+      "id": "main",
+      "format": "ini",
+      "file": [{ "path": "{local}/TCSCCRecomp/settings.ini" }]
+    }
+  ],
+  "settings": [
+    {
+      "id": "mode", "label": "Window", "group": "Display",
+      "help": "Borderless covers the screen without changing its resolution.",
+      "choices": [
+        { "label": "Windowed", "set": { "Display/Mode": "windowed" } },
+        { "label": "Borderless", "set": { "Display/Mode": "borderless" } },
+        { "label": "Fullscreen", "set": { "Display/Mode": "fullscreen" } }
+      ],
+      "defaults": { "Display/Mode": "windowed" }
+    },
+    {
+      "id": "scale", "label": "Resolution", "group": "Display",
+      "help": "What the game draws at. 720p is the console's own; higher is sharper and needs a faster graphics card.",
+      "choices": [
+        { "label": "720p", "set": { "Display/Scale": "1" } },
+        { "label": "1080p", "set": { "Display/Scale": "1.5" } },
+        { "label": "1440p", "set": { "Display/Scale": "2" } },
+        { "label": "2160p", "set": { "Display/Scale": "3" } },
+        { "label": "2880p", "set": { "Display/Scale": "4" } }
+      ],
+      "defaults": { "Display/Scale": "1" }
+    },
+    {
+      "id": "fps", "label": "Frame rate", "group": "Display",
+      "help": "30 is the console's own. The game plays at the same speed at all of them. Online co-op holds 30.",
+      "choices": [
+        { "label": "30", "set": { "Display/FrameRate": "30" } },
+        { "label": "60", "set": { "Display/FrameRate": "60" } },
+        { "label": "120", "set": { "Display/FrameRate": "120" } },
+        { "label": "144", "set": { "Display/FrameRate": "144" } },
+        { "label": "165", "set": { "Display/FrameRate": "165" } },
+        { "label": "240", "set": { "Display/FrameRate": "240" } }
+      ],
+      "defaults": { "Display/FrameRate": "30" }
+    },
+    {
+      "id": "vsync", "label": "V-Sync", "group": "Display",
+      "help": "Waits for your screen's refresh, so the picture doesn't tear.",
+      "choices": [
+        { "label": "On", "set": { "Display/VSync": "1" } },
+        { "label": "Off", "set": { "Display/VSync": "0" } }
+      ],
+      "defaults": { "Display/VSync": "1" }
+    },
+    {
+      "id": "ultrawide", "label": "Ultrawide", "group": "Display",
+      "help": "In a window wider than 16:9 the view widens to fill it. The HUD and menus are stretched.",
+      "choices": [
+        { "label": "Off", "set": { "Display/Ultrawide": "0" } },
+        { "label": "On", "set": { "Display/Ultrawide": "1" } }
+      ],
+      "defaults": { "Display/Ultrawide": "0" }
+    },
+    {
+      "id": "fov", "label": "Field of view", "group": "Display",
+      "help": "90 is the game's own.",
+      "slider": { "key": "Display/FOV", "min": 70, "max": 120, "step": 1, "format": "%.0f" },
+      "defaults": { "Display/FOV": "90" }
+    },
+    {
+      "id": "aa", "label": "Anti-aliasing", "group": "Graphics",
+      "help": "Smooths jagged edges.",
+      "choices": [
+        { "label": "Off", "set": { "Display/AntiAliasing": "Off" } },
+        { "label": "FXAA", "set": { "Display/AntiAliasing": "FXAA" } },
+        { "label": "SMAA", "set": { "Display/AntiAliasing": "SMAA" } }
+      ],
+      "defaults": { "Display/AntiAliasing": "Off" }
+    },
+    {
+      "id": "aniso", "label": "Texture filtering", "group": "Graphics",
+      "help": "Keeps floors and walls sharp at shallow angles.",
+      "choices": [
+        { "label": "Off", "set": { "Display/Anisotropy": "1" } },
+        { "label": "2x", "set": { "Display/Anisotropy": "2" } },
+        { "label": "4x", "set": { "Display/Anisotropy": "4" } },
+        { "label": "8x", "set": { "Display/Anisotropy": "8" } },
+        { "label": "16x", "set": { "Display/Anisotropy": "16" } }
+      ],
+      "defaults": { "Display/Anisotropy": "1" }
+    },
+    {
+      "id": "drawdist", "label": "Draw distance", "group": "Graphics",
+      "help": "How far away small objects and the finest detail stay drawn. Console changes nothing.",
+      "choices": [
+        { "label": "Console", "set": { "Display/DrawDistance": "Console" } },
+        { "label": "High", "set": { "Display/DrawDistance": "High" } },
+        { "label": "Ultra", "set": { "Display/DrawDistance": "Ultra" } },
+        { "label": "Maximum", "set": { "Display/DrawDistance": "Maximum" } }
+      ],
+      "defaults": { "Display/DrawDistance": "Console" }
+    }
+  ],
+  "folders": {
+    "game": [{ "path": "{data}" }],
+    "saves": [{ "path": "{local}/TCSCCRecomp/content" }],
+    "logs": [{ "path": "{data}" }]
+  },
+  "saves": ["{local}/TCSCCRecomp/content", "{local}/TCSCCRecomp/profile", "{local}/TCSCCRecomp/settings.ini"],
+  "actions": [
+    { "id": "saves", "label": "Saves", "help": "Your save games.", "open": "saves" },
+    { "id": "logs", "label": "Logs", "help": "The game's log (tcscc.log), for bug reports.", "open": "logs" }
+  ],
+  "exit_codes": {
+    "2": "The game isn't set up yet. Press Set Up Again on the game's page."
+  },
+  "system": {
+    "windows": { "version": "10", "graphics": { "d3d11": "11.0" } }
+  }
+}
