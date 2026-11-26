@@ -18,6 +18,10 @@
 
 <a href="https://recomplauncher.com/game/tcscc-recomp"><picture><source media="(prefers-color-scheme: dark)" srcset="https://recomplauncher.com/assets/press/launcher/badge-light.svg"><img alt="Get it on RecompLauncher" src="https://recomplauncher.com/assets/press/launcher/badge-dark.svg" height="48"></picture></a> <a href="https://recomplauncher.com/game/tcscc-recomp"><picture><source media="(prefers-color-scheme: dark)" srcset="https://recomplauncher.com/assets/press/verified-light.svg"><img alt="Verified developer on RecompLauncher" src="https://recomplauncher.com/assets/press/verified-dark.svg" height="48"></picture></a>
 
+This project is free, and it stays free. I work on it in my free time. If you'd like to support that, you can leave a tip on Ko-fi. Donations are completely optional and don't unlock anything.
+
+[![Support me on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/8gram_labs)
+
 </div>
 
 > [!NOTE]
@@ -289,13 +293,6 @@ place, and your `tcscc.log`.
 
 By **8gram Labs**. The source code is GPL-3.0 (see `LICENSE`). Built on XenonRecomp, XenosRecomp,
 UnleashedRecomp, Xenia (reference), FFmpeg, Dear ImGui and more: see [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
-
-## Support
-
-This project is free, and it stays free. I work on it in my free time. If you'd like to support that, you can leave a
-tip on Ko-fi. Donations are completely optional and don't unlock anything.
-
-<a href="https://ko-fi.com/8gram_labs"><img src="https://ko-fi.com/img/githubbutton_sm.svg" alt="Support me on Ko-fi"></a>
 
 ## Legal
 
